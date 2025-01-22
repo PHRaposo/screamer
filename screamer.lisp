@@ -2991,11 +2991,11 @@ function."
         (funcall continuation
                  (apply #'mapcar
                         (lambda (&rest args)
-                          (let (res) ;<==fix (phraposo)
+                          (let (res)
                            (apply (nondeterministic-function-function function)
-                                  (lambda (r) (push r res)) ;<== push (phraposo)
+                                  (lambda (r) (push r res))
                                  args)
-                            (reverse res))) ;<== reverse (phraposo)
+                            (reverse res)))
                         argument arguments))
         (funcall continuation (apply #'mapcar function argument arguments)))))
 

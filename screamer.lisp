@@ -3262,6 +3262,7 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
   (noticers nil)
   (enumerated-domain t)
   (enumerated-antidomain nil)
+  (backup-domain nil)
   value
   (possibly-integer? t)
   (possibly-noninteger-real? t)
@@ -3278,6 +3279,8 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
    (enumerated-domain :accessor variable-enumerated-domain :initform t)
    (enumerated-antidomain :accessor variable-enumerated-antidomain
                           :initform nil)
+   (backup-domain :accessor variable-backup-domain
+                          :initform nil) 
    (value :accessor variable-value)
    (possibly-integer? :accessor variable-possibly-integer? :initform t)
    (possibly-noninteger-real? :accessor variable-possibly-noninteger-real?
@@ -3297,6 +3300,11 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
 
 #+screamer-clos
 (defun-compile-time variable? (thing) (typep thing 'variable))
+
+(cl:defun real-integerp (x)
+ (and (realp x)
+      (or (integerp x)
+	      (zerop (mod x 1)))))
 
 (defun integers-between (low high)
   (cond ((and (typep low 'fixnum) (typep high 'fixnum))
@@ -3521,6 +3529,7 @@ Otherwise returns the value of X."
 (defun attach-noticer!-internal (noticer x)
   ;; note: Will loop if X is circular.
   (typecase x
+    (null nil)
     (cons (attach-noticer!-internal noticer (car x))
           (attach-noticer!-internal noticer (cdr x)))
     (variable (if (eq x (variable-value x))
@@ -3539,8 +3548,122 @@ Otherwise returns the value of X."
 (defun run-noticers (x)
   (dolist (noticer (variable-noticers x)) (funcall noticer)))
 
+(defun-compile-time noticer-name (x)
+ (write-to-string (third (multiple-value-list (function-lambda-expression x)))))
+ 
+(defun-compile-time delete-noticer (x subfunction)
+ (let ((noticers (variable-noticers x))
+        res)
+  (unless (null noticers) 
+   (dolist (noticer noticers)
+   (when (not (string-equal (noticer-name noticer) subfunction))
+         (push noticer res)))
+   (setf (variable-noticers x)
+   (if (null res) nil (nreverse res))))))
+
+(defvar-compile-time *integer-noticer*
+#+lispworks "(HARLEQUIN-COMMON-LISP:SUBFUNCTION 9 RESTRICT-INTEGER!)"
+#+sbcl "(LAMBDA () :IN RESTRICT-INTEGER!)"
+"NOTICER ATTACHED TO INTEGER VARIABLES.")
+
+(defvar *noninteger-noticer*
+#+lispworks "(HARLEQUIN-COMMON-LISP:SUBFUNCTION 9 RESTRICT-NONINTEGER!)"
+#+sbcl "(LAMBDA () :IN RESTRICT-NONINTEGER!)"
+"NOTICER ATTACHED TO NON-INTEGER VARIABLES.")
+
 ;;; Restrictions
 
+(defun restrict-integer! (x)
+  ;; NOTE: X must be a variable.
+  (unless (or (variable-possibly-integer? x)
+              (variable-possibly-noninteger-real? x))
+		  (fail))
+  (if (or (eq (variable-value x) x) (not (variable? (variable-value x))))
+      (let ((run? nil))
+	  	 (when (variable-possibly-noninteger-real? x)
+		  (if (not (eq (variable-enumerated-domain x) t))
+              (set-integer-enumerated-domain! x))
+	      (local (setf (variable-possibly-integer? x) t))
+	      (local (setf (variable-possibly-noninteger-real? x) nil))
+          (setf run? t))
+        (when (variable-possibly-nonreal-number? x)
+          (local (setf (variable-possibly-nonreal-number? x) nil))
+          (setf run? t))
+        (when (variable-possibly-boolean? x)
+          (local (setf (variable-possibly-boolean? x) nil))
+          (setf run? t))
+        (when (variable-possibly-nonboolean-nonnumber? x)
+          (local (setf (variable-possibly-nonboolean-nonnumber? x) nil))
+          (setf run? t))
+        (when (and (variable-lower-bound x)
+                   (not (integerp (variable-lower-bound x))))
+          (if (and (variable-upper-bound x)
+                   (< (variable-upper-bound x)
+                      (ceiling (variable-lower-bound x))))
+              (fail))
+          (local (setf (variable-lower-bound x)
+                       (ceiling (variable-lower-bound x))))
+          (setf run? t))
+        (when (and (variable-upper-bound x)
+                   (not (integerp (variable-upper-bound x))))
+          (if (and (variable-lower-bound x)
+                   (> (variable-lower-bound x)
+                      (floor (variable-upper-bound x))))
+              (fail))
+          (local (setf (variable-upper-bound x) (floor (variable-upper-bound x))))
+          (setf run? t))
+        (when run?
+          (cond ((eq (variable-enumerated-domain x) t)
+                 (if (and (variable-lower-bound x)
+                          (variable-upper-bound x)
+                          (or (null *maximum-discretization-range*)
+                              (<= (- (variable-upper-bound x)
+                                     (variable-lower-bound x))
+                                  *maximum-discretization-range*)))
+                     (set-enumerated-domain!
+                      x (integers-between
+                         (variable-lower-bound x)
+                         (variable-upper-bound x)))))
+                ((not (every #'integerp (variable-enumerated-domain x)))
+                 ;; NOTE: Could do less consing if had LOCAL DELETE-IF.
+                 ;;       This would also allow checking list only once.
+                 (set-enumerated-domain!
+                  x (remove-if-not #'integerp (variable-enumerated-domain x)))))
+		 (delete-noticer x *noninteger-noticer*)
+		 (unless (some #'(lambda (noticer) (string-equal (noticer-name noticer) *integer-noticer*)) (variable-noticers x))
+		  (attach-noticer!
+	       #'(lambda ()(when (and (bound? x) (not (integerp (value-of x)))) (fail))) x))
+          (run-noticers x)))))
+
+(defun restrict-noninteger! (x)
+  ;; NOTE: X must be a variable.
+  (unless (or (variable-possibly-integer? x)
+              (variable-possibly-noninteger-real? x)
+              (variable-possibly-nonreal-number? x)
+              (variable-possibly-boolean? x)
+              (variable-possibly-nonboolean-nonnumber? x))
+    (fail))
+	(when (or (eq (variable-value x) x) (not (variable? (variable-value x))))
+	  (when (or (variable-possibly-integer? x)
+	            (variable-possibly-noninteger-real? x))
+	    (local (setf (variable-possibly-integer? x) nil))
+		(local (setf (variable-possibly-noninteger-real? x) t))))
+	  (cond ((and (not (eq (variable-enumerated-domain x) t))
+                  (some #'real-integerp (variable-enumerated-domain x)))
+		     (set-noninteger-enumerated-domain! x))
+	        ((and (not (eq (variable-enumerated-domain x) t))
+                  (some #'integerp (variable-enumerated-domain x)))
+             ;; NOTE: Could do less consing if had LOCAL DELETE-IF.
+             ;;       This would also allow checking list only once.
+            (set-enumerated-domain!
+             x (remove-if #'integerp (variable-enumerated-domain x)))))
+	  (delete-noticer x *integer-noticer*)
+	   (unless (some #'(lambda (noticer)(equal (noticer-name noticer) *noninteger-noticer*)) (variable-noticers x))
+	   (attach-noticer!
+	   #'(lambda ()(when (and (bound? x) (integerp (value-of x))) (fail))) x))
+      (run-noticers x))
+
+#|
 (defun restrict-integer! (x)
   ;; note: X must be a variable.
   (unless (variable-possibly-integer? x) (fail))
@@ -3613,6 +3736,7 @@ Otherwise returns the value of X."
 	  (local (attach-noticer!
 	   #'(lambda ()(when (and (bound? x) (integerp (value-of x))) (fail))) x))
     (run-noticers x)))
+|#
 
 (defun restrict-real! (x)
   ;; note: X must be a variable.
@@ -4252,6 +4376,38 @@ Otherwise returns the value of X."
        t)
       (t nil))))
 
+(defun set-integer-enumerated-domain! (x)
+  ;; NOTE: X must be a variable.
+ (let ((domain (remove-if-not #'realp (variable-enumerated-domain x)))
+       (backup '())
+       (new-domain '()))
+   (dolist (n domain)
+   (when (not (real-integerp n))
+	 (pushnew n backup)))   
+   (when backup
+    (local (setf (variable-backup-domain x) backup))) 
+    (local (setf (variable-enumerated-domain x) t))
+   (dolist (n domain)
+   (if (not (integerp n))
+	   (pushnew (round n) new-domain)
+	   (pushnew n new-domain)))
+   (set-enumerated-domain! x (nreverse new-domain))))
+
+(defun set-noninteger-enumerated-domain! (x)
+  ;; NOTE: X must be a variable.   
+ (let ((domain (variable-enumerated-domain x))
+       (backup (variable-backup-domain x))
+       (new-domain '()))
+   (when backup 
+    (setf new-domain backup)
+	(local (setf (variable-backup-domain x) nil)))
+  (local (setf (variable-enumerated-domain x) t))
+  (dolist (n domain)
+   (if (integerp n)
+	   (pushnew (float n) new-domain)
+	   (pushnew n new-domain)))
+  (set-enumerated-domain! x (nreverse new-domain))))
+  
 (defun restrict-enumerated-domain! (x enumerated-domain)
   ;; note: X must be a variable such that (EQ X (VALUE-OF X)).
   ;; note: ENUMERATED-DOMAIN must not be a variable.
@@ -4704,15 +4860,15 @@ Otherwise returns the value of X."
              (attach-noticer!
               #'(lambda ()
                 (when (and (bound? y) (zerop (value-of y))) (fail))
-			          (*-rule-down x y z) (*-rule-down x z y)) x)
+		(*-rule-down x y z) (*-rule-down x z y)) x)
              (attach-noticer!
               #'(lambda () 
-			          (when (and (bound? y) (zerop (value-of y))) (fail))
-			          (*-rule-up x y z) (*-rule-down x z y)) y)
+	        (when (and (bound? y) (zerop (value-of y))) (fail))
+		(*-rule-up x y z) (*-rule-down x z y)) y)
              (attach-noticer!
               #'(lambda () 
-			          (when (and (bound? y) (zerop (value-of y))) (fail))
-			          (*-rule-up x y z) (*-rule-down x y z)) z)
+		(when (and (bound? y) (zerop (value-of y))) (fail))
+		(*-rule-up x y z) (*-rule-down x y z)) z)
              z))))
 
 (defun minv2 (x y)

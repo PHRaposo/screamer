@@ -3566,7 +3566,7 @@ Otherwise returns the value of X."
 #+sbcl "(LAMBDA () :IN RESTRICT-INTEGER!)"
 "NOTICER ATTACHED TO INTEGER VARIABLES.")
 
-(defvar *noninteger-noticer*
+(defvar-compile-time *noninteger-noticer*
 #+lispworks "(HARLEQUIN-COMMON-LISP:SUBFUNCTION 9 RESTRICT-NONINTEGER!)"
 #+sbcl "(LAMBDA () :IN RESTRICT-NONINTEGER!)"
 "NOTICER ATTACHED TO NON-INTEGER VARIABLES.")

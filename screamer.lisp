@@ -3549,7 +3549,7 @@ Otherwise returns the value of X."
   (dolist (noticer (variable-noticers x)) (funcall noticer)))
 
 (defun-compile-time noticer-name (x)
- (write-to-string
+ (symbol-name
   (car
    (last
     (third
@@ -4787,7 +4787,7 @@ Otherwise returns the value of X."
 (defun share-variable-value+ (x y)
 ;; Needs work: does not support Gaussian integers. 
 (let ((x (variablize x))
-	  (y (variablize y)))
+      (y (variablize y)))
  ;; Share the value of Y to Z (Z = 0 + Y or Z = Y - 0),
  ;;propagating the correct types.
  (cond ((and (variable-integer? x) (variable-integer? y))
@@ -4805,7 +4805,7 @@ Otherwise returns the value of X."
 (defun share-variable-value* (x y)
 ;; Needs work: does not support Gaussian integers. 
 (let ((x (variablize x))
-  (y (variablize y)))
+      (y (variablize y)))
 ;; Share the value of Y to Z (Z =  Y * 1 or Z = Y / 1),
 ;; propagating the correct types.
 (cond ((and (variable-integer? x) (variable-integer? y))
@@ -6335,14 +6335,14 @@ disunification operator available in Prolog-II."
  
 (defun transform+v (xs)
 "This function substitutes forms containing duplicated variables,
-to avoid the propagation o wrong number types".
- (let* ((xs (mapcar #'variablize xs))
-       (unique-variables (remove-duplicates (variables-in xs) :test #'equal))
-       (results '()))
+to avoid the propagation o wrong number types."
+ (let* ((variables (mapcar #'variablize xs))
+        (unique-variables (remove-duplicates (variables-in variables) :test #'equal))
+        (results '()))
   (let ((count 0)
 	(temp '()))
    (dolist (unique unique-variables)
-     (dolist (variable xs)
+     (dolist (variable variables)
      (when (equal unique variable)
 	   (incf count)))
    (push (list unique count) temp)
@@ -6351,7 +6351,7 @@ to avoid the propagation o wrong number types".
    (if (= 1 (second var-count))
        (push (car var-count) results)
        (push (*v (second var-count) (car var-count)) results)))
- (+v-internal (nreverse results)))))			 
+ (+v-internal (nreverse results)))))	 
 
 (defun +v (&rest xs)
   "Constrains its arguments to be numbers. Returns 0 if called with no

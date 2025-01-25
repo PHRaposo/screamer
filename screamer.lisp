@@ -3549,27 +3549,22 @@ Otherwise returns the value of X."
   (dolist (noticer (variable-noticers x)) (funcall noticer)))
 
 (defun-compile-time noticer-name (x)
- (write-to-string (third (multiple-value-list (function-lambda-expression x)))))
+ (write-to-string
+  (car
+   (last
+    (third
+	 (multiple-value-list
+	  (function-lambda-expression x)))))))
  
-(defun-compile-time delete-noticer (x subfunction)
+(defun-compile-time delete-noticer (x name)
  (let ((noticers (variable-noticers x))
         res)
   (unless (null noticers) 
    (dolist (noticer noticers)
-   (when (not (string-equal (noticer-name noticer) subfunction))
+   (when (not (string-equal (noticer-name noticer) name))
          (push noticer res)))
    (setf (variable-noticers x)
    (if (null res) nil (nreverse res))))))
-
-(defvar-compile-time *integer-noticer*
-#+lispworks "(HARLEQUIN-COMMON-LISP:SUBFUNCTION 9 RESTRICT-INTEGER!)"
-#+sbcl "(LAMBDA () :IN RESTRICT-INTEGER!)"
-"NOTICER ATTACHED TO INTEGER VARIABLES.")
-
-(defvar-compile-time *noninteger-noticer*
-#+lispworks "(HARLEQUIN-COMMON-LISP:SUBFUNCTION 9 RESTRICT-NONINTEGER!)"
-#+sbcl "(LAMBDA () :IN RESTRICT-NONINTEGER!)"
-"NOTICER ATTACHED TO NON-INTEGER VARIABLES.")
 
 ;;; Restrictions
 
@@ -3629,10 +3624,10 @@ Otherwise returns the value of X."
                  ;;       This would also allow checking list only once.
                  (set-enumerated-domain!
                   x (remove-if-not #'integerp (variable-enumerated-domain x)))))
-		 (delete-noticer x *noninteger-noticer*)
-		 (unless (some #'(lambda (noticer) (string-equal (noticer-name noticer) *integer-noticer*)) (variable-noticers x))
+		 (delete-noticer x "RESTRICT-NONINTEGER!")
+		 (unless (some #'(lambda (noticer) (string-equal (noticer-name noticer) "RESTRICT-INTEGER!")) (variable-noticers x))
 		  (attach-noticer!
-	       #'(lambda ()(when (and (bound? x) (not (integerp (value-of x)))) (fail))) x))
+	           #'(lambda ()(when (and (bound? x) (not (integerp (value-of x)))) (fail))) x))
           (run-noticers x)))))
 
 (defun restrict-noninteger! (x)
@@ -3657,8 +3652,8 @@ Otherwise returns the value of X."
              ;;       This would also allow checking list only once.
             (set-enumerated-domain!
              x (remove-if #'integerp (variable-enumerated-domain x)))))
-	  (delete-noticer x *integer-noticer*)
-	   (unless (some #'(lambda (noticer)(equal (noticer-name noticer) *noninteger-noticer*)) (variable-noticers x))
+	  (delete-noticer x "RESTRICT-INTEGER!")
+	   (unless (some #'(lambda (noticer)(string-equal (noticer-name noticer) "RESTRICT-NONINTEGER!")) (variable-noticers x))
 	   (attach-noticer!
 	   #'(lambda ()(when (and (bound? x) (integerp (value-of x))) (fail))) x))
       (run-noticers x))

@@ -3553,8 +3553,8 @@ Otherwise returns the value of X."
   (car
    (last
     (third
-	 (multiple-value-list
-	  (function-lambda-expression x)))))))
+     (multiple-value-list
+      (function-lambda-expression x)))))))
  
 (defun-compile-time delete-noticer (x name)
  (let ((noticers (variable-noticers x))
@@ -3645,7 +3645,16 @@ Otherwise returns the value of X."
 		(local (setf (variable-possibly-noninteger-real? x) t))))
 	  (cond ((and (not (eq (variable-enumerated-domain x) t))
                   (some #'real-integerp (variable-enumerated-domain x)))
-		     (set-noninteger-enumerated-domain! x))
+		     (set-noninteger-enumerated-domain! x)
+	   	     (if (variable-real? x)
+	   	         (let ((lower-bound (reduce #'min (variable-enumerated-domain x)))
+	   	               (upper-bound (reduce #'max (variable-enumerated-domain x))))
+	   	            (if (or (null (variable-lower-bound x))
+	   	                    (< lower-bound (variable-lower-bound x)))
+	   	                (setf (variable-lower-bound x) lower-bound))
+	   	            (if (or (null (variable-upper-bound x))
+	   	                 (> upper-bound (variable-upper-bound x)))
+	   	                 (setf (variable-upper-bound x) upper-bound)))))
 	        ((and (not (eq (variable-enumerated-domain x) t))
                   (some #'integerp (variable-enumerated-domain x)))
              ;; NOTE: Could do less consing if had LOCAL DELETE-IF.
@@ -4393,14 +4402,16 @@ Otherwise returns the value of X."
  (let ((domain (variable-enumerated-domain x))
        (backup (variable-backup-domain x))
        (new-domain '()))
-   (when backup 
+  (when backup 
     (setf new-domain backup)
-	(local (setf (variable-backup-domain x) nil)))
+    (local (setf (variable-backup-domain x) nil)))
   (local (setf (variable-enumerated-domain x) t))
   (dolist (n domain)
    (if (integerp n)
-	   (pushnew (float n) new-domain)
-	   (pushnew n new-domain)))
+       (pushnew (float n) new-domain)
+       (pushnew n new-domain)))
+  (when (every #'realp new-domain) 
+	(setf new-domain (sort new-domain #'>)))
   (set-enumerated-domain! x (nreverse new-domain))))
   
 (defun restrict-enumerated-domain! (x enumerated-domain)
@@ -4657,8 +4668,8 @@ Otherwise returns the value of X."
 (defun *zero-rule (x y)
 ;; Needs work: does not support Gaussian integers. 
 (let ((x (variablize x))
-	  (y (variablize y)))
- ;; Share the value of ZERO to Y propagating the correct types. 
+      (y (variablize y)))
+ ;; Share the value of Y when X = ZERO, propagating the correct types. 
  (cond ((and (variable-integer? x) (variable-integer? y))
         0)
        ((and (or (variable-noninteger? x) (variable-noninteger? y))
@@ -4773,11 +4784,12 @@ Otherwise returns the value of X."
         (y (value-of y)))
     (if (and (not (variable? x)) (not (variable? y)) (= x y)) (fail))))
 
-(defun share-variable-value (x y)
+(defun share-variable-value+ (x y)
 ;; Needs work: does not support Gaussian integers. 
 (let ((x (variablize x))
 	  (y (variablize y)))
- ;; Share the value of X to Y propagating the correct types. 
+ ;; Share the value of Y to Z (Z = 0 + Y or Z = Y - 0),
+ ;;propagating the correct types.
  (cond ((and (variable-integer? x) (variable-integer? y))
         (restrict-integer! y) (value-of y))
        ((and (or (variable-noninteger? x) (variable-noninteger? y))
@@ -4787,15 +4799,36 @@ Otherwise returns the value of X."
         (restrict-real! y) (value-of y))
        ((and (or (variable-real? x) (variable-real? y))
              (or (variable-nonreal? x) (variable-nonreal? y)))
-        (restrict-nonreal! y) (value-of y)))))
+        (restrict-nonreal! y) (value-of y))
+	   (t (value-of y)))))
 
+(defun share-variable-value* (x y)
+;; Needs work: does not support Gaussian integers. 
+(let ((x (variablize x))
+  (y (variablize y)))
+;; Share the value of Y to Z (Z =  Y * 1 or Z = Y / 1),
+;; propagating the correct types.
+(cond ((and (variable-integer? x) (variable-integer? y))
+       (restrict-integer! y) (value-of y))
+     ((and (variable-real? x) (variable-real? y))
+      (restrict-real! y) (value-of y))
+      ((and (or (variable-real? x) (variable-real? y))
+            (or (variable-nonreal? x) (variable-nonreal? y)))
+       (restrict-nonreal! y) (value-of y))
+   (t (value-of y)))))
+		   
+(defun share-number-type (x y)
+ (cond ((variable-real? x) (restrict-real! y))
+       ((variable-nonreal? x) (restrict-nonreal! y))
+       (t (fail))))
+	   
 ;;; Lifted Arithmetic Functions (Two argument optimized)
 
 (defun +v2 (x y)
   (assert!-numberpv x)
   (assert!-numberpv y)
-  (cond ((and (bound? x) (zerop (value-of x))) (share-variable-value x y))
-        ((and (bound? y) (zerop (value-of y))) (share-variable-value y x))
+  (cond ((and (bound? x) (zerop (value-of x))) (share-variable-value+ x y))
+        ((and (bound? y) (zerop (value-of y))) (share-variable-value+ y x))
         ((and (bound? x) (bound? y)) (+ (value-of x) (value-of y)))
         (t (let ((x (variablize x))
                  (y (variablize y))
@@ -4811,7 +4844,7 @@ Otherwise returns the value of X."
 (defun -v2 (x y)
   (assert!-numberpv x)
   (assert!-numberpv y)
-  (cond ((and (bound? y) (zerop (value-of y))) (share-variable-value y x))
+  (cond ((and (bound? y) (zerop (value-of y))) (share-variable-value+ y x))
         ((and (bound? x) (bound? y)) (- (value-of x) (value-of y)))
         (t (let ((x (variablize x))
                  (y (variablize y))
@@ -4829,8 +4862,8 @@ Otherwise returns the value of X."
   (assert!-numberpv y)
   (cond ((and (bound? x) (zerop (value-of x))) (*zero-rule x y))
         ((and (bound? y) (zerop (value-of y))) (*zero-rule y x))
-        ((and (bound? x) (= (value-of x) 1)) (share-variable-value x y))
-        ((and (bound? y) (= (value-of y) 1)) (share-variable-value y x))
+        ((and (bound? x) (= (value-of x) 1)) (share-variable-value* x y))
+        ((and (bound? y) (= (value-of y) 1)) (share-variable-value* y x))
         ((and (bound? x) (bound? y)) (* (value-of x) (value-of y)))
         (t (let ((x (variablize x))
                  (y (variablize y))
@@ -4847,7 +4880,7 @@ Otherwise returns the value of X."
   (assert!-numberpv x)
   (assert!-numberpv y)
   (cond ((and (bound? x) (zerop (value-of x))) (*zero-rule x y))
-        ((and (bound? y) (= (value-of y) 1))  (share-variable-value y x))
+        ((and (bound? y) (= (value-of y) 1))  (share-variable-value* y x))
         ((and (bound? x) (bound? y)) (/ (value-of x) (value-of y)))
         (t (let ((x (variablize x))
                  (y (variablize y))
@@ -5082,6 +5115,9 @@ Otherwise returns the value of X."
   (assert!-numberpv y)
   (let ((x (variablize x))
         (y (variablize y)))
+  ;;Needs work: only propagate if it is a real or non-real variable.	
+  (when (and (bound? x) (not (bound? y))) (share-number-type x y))
+  (when (and (bound? y) (not (bound? x))) (share-number-type y x)) 
     (attach-noticer! #'(lambda () (=-rule x y)) x)
     (attach-noticer! #'(lambda () (=-rule x y)) y)))
 
@@ -6292,6 +6328,31 @@ disunification operator available in Prolog-II."
 (defun +v-internal (xs)
   (if (null xs) 0 (+v2 (first xs) (+v-internal (rest xs)))))
 
+(defun duplicated-variables-in? (xs)
+ "Returns T if the list constains duplicates variables."
+ (let ((xs (mapcar #'variablize xs)))
+  (/= (length xs) (length (remove-duplicates xs :test #'equal)))))
+ 
+(defun transform+v (xs)
+"This function substitutes forms containing duplicated variables,
+to avoid the propagation o wrong number types".
+ (let* ((xs (mapcar #'variablize xs))
+       (unique-variables (remove-duplicates (variables-in xs) :test #'equal))
+       (results '()))
+  (let ((count 0)
+	(temp '()))
+   (dolist (unique unique-variables)
+     (dolist (variable xs)
+     (when (equal unique variable)
+	   (incf count)))
+   (push (list unique count) temp)
+   (setf count 0))
+  (dolist (var-count (nreverse temp))
+   (if (= 1 (second var-count))
+       (push (car var-count) results)
+       (push (*v (second var-count) (car var-count)) results)))
+ (+v-internal (nreverse results)))))			 
+
 (defun +v (&rest xs)
   "Constrains its arguments to be numbers. Returns 0 if called with no
 arguments. If called with a single argument, returns its value. If called with
@@ -6319,7 +6380,9 @@ the remaining argument. Otherwise returns number variable V.
 
 Note: Numeric contagion rules of Common Lisp are not applied if either
 argument equals zero."
-  (+v-internal xs))
+(if (duplicated-variables-in? xs)
+    (transform+v xs)
+    (+v-internal xs)))
 
 (defun -v-internal (x xs)
   (if (null xs) x (-v-internal (-v2 x (first xs)) (rest xs))))

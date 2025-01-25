@@ -2,12 +2,12 @@
 
 ;;; LaHaShem HaAretz U'Mloah
 
-(in-package :screamer-user)
+;(in-package :screamer-user)
 
-(eval-when (:compile-toplevel :load-toplevel)
+#-lispworks(eval-when (:compile-toplevel :load-toplevel)
   (require :iterate))
 
-(screamer:define-screamer-package :screams (:use :iterate))
+;(screamer:define-screamer-package :screams (:use :iterate))
 
 (in-package :screams)
 

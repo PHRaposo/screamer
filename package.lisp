@@ -60,6 +60,8 @@
            #:make-variable
            #:numberpv
            #:realpv
+	   #:restrict-integer!
+	   #:restrict-noninteger!
            #:integerpv
            #:booleanpv
            #:memberv

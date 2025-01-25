@@ -4383,9 +4383,9 @@ Otherwise returns the value of X."
     (local (setf (variable-backup-domain x) backup))) 
     (local (setf (variable-enumerated-domain x) t))
    (dolist (n domain)
-   (if (not (integerp n))
-	   (pushnew (round n) new-domain)
-	   (pushnew n new-domain)))
+    (if (not (integerp n))
+        (when (real-integerp n) (pushnew (round n) new-domain))
+	(pushnew n new-domain)))
    (set-enumerated-domain! x (nreverse new-domain))))
 
 (defun set-noninteger-enumerated-domain! (x)

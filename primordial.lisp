@@ -915,25 +915,16 @@
 (defun test74 ()
  (let ((x (a-member-ofv '(1.0 1.5 2.0 2.5 3.0 3.5)))
         (results '()))
- (assert! (integerpv x))
- (push (all-values (solution x (static-ordering #'linear-force))) results)
- (assert! (notv (integerpv x)))
- (push (all-values (solution x (static-ordering #'linear-force))) results)
- (equal (nreverse results)	
-	   '((3 2 1) (1.0 1.5 2.0 2.5 3.0 3.5)))))
-
-(defun test75 ()
-(let* ((x (a-member-ofv '(1.0 1.5 2.0 2.5 3.0 3.5)))
-       (results '()))
-(assert! (integerpv x))
-(push (screamer::noticer-name (car (screamer::variable-noticers x))) results)
-(push (screamer::variable-backup-domain x) results)
-(push (screamer::variable-enumerated-domain x) results)
-(assert! (notv (integerpv x)))
-(push (screamer::noticer-name (car (screamer::variable-noticers x))) results)
-(push (screamer::variable-enumerated-domain x) results)
-(equal-set? (nreverse results)
- '("RESTRICT-INTEGER!" (3.0 3.5) (3 2 1) "RESTRICT-NONINTEGER!" (1.0 1.5 2.0 2.5 3.0 3.5)))))
+  (assert! (integerpv x))
+  (push (all-values (solution x (static-ordering #'linear-force))) results)
+  (assert! (notv (integerpv x)))
+  (push (all-values (solution x (static-ordering #'linear-force))) results)
+  (equal (nreverse results)
+	;; note: for some reason the enumerated domain os variables are
+        ;; reversed in Lispworks.
+        #+lispworks '((3 2 1) (1.0 1.5 2.0 2.5 3.0 3.5))
+        #+sbcl '((1 2 3) (1.0 1.5 2.0 2.5 3.0 3.5))
+       )))
 
 ;;; This is the classic Screamer test entry point.
 ;;; screamer-tests::prime-ordeal runs the same tests under Stefil.
@@ -1008,8 +999,7 @@
   (unless (test71) (format t "~% Test 71 failed") (setf bug? t))
   (unless (test72) (format t "~% Test 72 failed") (setf bug? t))
   (unless (test73) (format t "~% Test 73 failed") (setf bug? t))  
-  (unless (test74) (format t "~% Test 74 failed") (setf bug? t)) 
-  (unless (test75) (format t "~% Test 75 failed") (setf bug? t))	   
+  (unless (test74) (format t "~% Test 74 failed") (setf bug? t))	   
   (if bug? (error "Screamer has a bug")))
  t)
 

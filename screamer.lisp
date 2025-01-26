@@ -4387,9 +4387,9 @@ Otherwise returns the value of X."
        (new-domain '()))
    (dolist (n domain)
    (when (not (real-integerp n))
-	 (pushnew n backup)))   
+	 (push n backup)))  
    (when backup
-    (local (setf (variable-backup-domain x) backup))) 
+    (local (setf (variable-backup-domain x) (nreverse backup))))
     (local (setf (variable-enumerated-domain x) t))
    (dolist (n domain)
     (if (not (integerp n))

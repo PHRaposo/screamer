@@ -5137,8 +5137,8 @@ Otherwise returns the value of X."
   (let ((x (variablize x))
         (y (variablize y)))
   ;;Needs work: only propagate if it is a real or non-real variable.	
-  (when (and (bound? x) (not (bound? y))) (share-number-type x y))
-  (when (and (bound? y) (not (bound? x))) (share-number-type y x)) 
+    ;;(when (and (bound? x) (not (bound? y))) (share-number-type x y))
+    ;;(when (and (bound? y) (not (bound? x))) (share-number-type y x)) 
     (attach-noticer! #'(lambda () (=-rule x y)) x)
     (attach-noticer! #'(lambda () (=-rule x y)) y)))
 

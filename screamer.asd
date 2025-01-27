@@ -36,7 +36,8 @@
   :version "4.0.0"
   :components
   ((:file "package")
-   (:file "screamer")))
+   (:file "screamer")
+   (:file "utils")))
 
 (defmethod perform ((o test-op) (c (eql (find-system :screamer))))
   (load-system :screamer-tests)

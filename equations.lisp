@@ -6,6 +6,8 @@
 
 #-lispworks(eval-when (:compile-toplevel :load-toplevel)
   (require :iterate))
+#+lispworks(unless (equal :warn sys::*stack-overflow-behaviour*)
+             (setf sys::*stack-overflow-behaviour* :warn))
 
 ;(screamer:define-screamer-package :screams (:use :iterate))
 

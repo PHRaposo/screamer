@@ -3548,7 +3548,7 @@ Otherwise returns the value of X."
 (defun run-noticers (x)
   (dolist (noticer (variable-noticers x)) (funcall noticer)))
 
-(defun-compile-time noticer-name (x)
+(defun noticer-name (x)
  (symbol-name
   (car
    (last
@@ -3556,7 +3556,7 @@ Otherwise returns the value of X."
      (multiple-value-list
       (function-lambda-expression x)))))))
  
-(defun-compile-time delete-noticer (x name)
+(defun delete-noticer (x name)
  (let ((noticers (variable-noticers x))
         res)
   (unless (null noticers) 

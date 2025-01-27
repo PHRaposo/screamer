@@ -3957,8 +3957,9 @@ Otherwise returns the value of X."
                            (variable-enumerated-domain x)))))
       (when (and (variable-lower-bound x)
                  (variable-upper-bound x)
-                 (zerop (- (variable-upper-bound x) (variable-lower-bound x))))
-        (local (setf (variable-value x)  (variable-lower-bound x))))
+                 (or (zerop (- (variable-upper-bound x) (variable-lower-bound x)))
+                     (roughly-= (- (variable-upper-bound x) (variable-lower-bound x)) 0.0)))
+        (local (setf (variable-value x) (variable-lower-bound x))))
       (run-noticers x))))
 
 (defun restrict-upper-bound! (x upper-bound)
@@ -3996,7 +3997,8 @@ Otherwise returns the value of X."
                            (variable-enumerated-domain x)))))
       (when (and (variable-lower-bound x)
                  (variable-upper-bound x)
-                 (zerop (- (variable-upper-bound x) (variable-lower-bound x))))
+                 (or (zerop (- (variable-upper-bound x) (variable-lower-bound x)))
+                     (roughly-= (- (variable-upper-bound x) (variable-lower-bound x)) 0.0)))
         (local (setf (variable-value x)  (variable-lower-bound x))))
       (run-noticers x))))
 	  
@@ -4067,7 +4069,7 @@ Otherwise returns the value of X."
                 (lower (variable-lower-bound x)))
             (when (or (and (numberp domain) (= domain 1))
                       (and (numberp range) 
-                           (zerop range)))
+                           (or (zerop range) (roughly-= range 0.0))))
 			  (local (setf (variable-value x)
                     (cond ((listp enumerated) (first enumerated))
                           (lower lower)
@@ -6349,31 +6351,6 @@ disunification operator available in Prolog-II."
 (defun +v-internal (xs)
   (if (null xs) 0 (+v2 (first xs) (+v-internal (rest xs)))))
 
-(defun duplicated-variables-in? (xs)
- "Returns T if the list constains duplicates variables."
- (let ((xs (mapcar #'variablize xs)))
-  (/= (length xs) (length (remove-duplicates xs :test #'equal)))))
- 
-(defun transform+v (xs)
-"This function substitutes forms containing duplicated variables,
-to avoid the propagation o wrong number types."
- (let* ((variables (mapcar #'variablize xs))
-        (unique-variables (remove-duplicates (variables-in variables) :test #'equal))
-        (results '()))
-  (let ((count 0)
-	(temp '()))
-   (dolist (unique unique-variables)
-     (dolist (variable variables)
-     (when (equal unique variable)
-	   (incf count)))
-   (push (list unique count) temp)
-   (setf count 0))
-  (dolist (var-count (nreverse temp))
-   (if (= 1 (second var-count))
-       (push (car var-count) results)
-       (push (*v (second var-count) (car var-count)) results)))
- (+v-internal (nreverse results)))))	 
-
 (defun +v (&rest xs)
   "Constrains its arguments to be numbers. Returns 0 if called with no
 arguments. If called with a single argument, returns its value. If called with
@@ -6401,9 +6378,7 @@ the remaining argument. Otherwise returns number variable V.
 
 Note: Numeric contagion rules of Common Lisp are not applied if either
 argument equals zero."
-(if (duplicated-variables-in? xs)
-    (transform+v xs)
-    (+v-internal xs)))
+(+v-internal xs))
 
 (defun -v-internal (x xs)
   (if (null xs) x (-v-internal (-v2 x (first xs)) (rest xs))))

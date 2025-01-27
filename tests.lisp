@@ -154,8 +154,7 @@
   (is (primordial::test70))
   (is (primordial::test71))
   (is (primordial::test72))
-  (is (primordial::test73))
-  (is (primordial::test74)))
+  (is (primordial::test73)))
 
 (deftest test-trail ()
   (is (equal '(t t t)

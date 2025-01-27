@@ -3301,10 +3301,30 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
 #+screamer-clos
 (defun-compile-time variable? (thing) (typep thing 'variable))
 
+(defvar-compile-time *numeric-bounds-collapse-threshold* 0.0000000000001
+  "The threshold of closeness to consider 2 numbers equivalent.
+Use this to deal with floating-point errors, if necessary.
+
+This value must be a floating point number between 0 and 1.")
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (type (float 0 1) *numeric-bounds-collapse-threshold*)))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline roughly-=)))
+(defun-compile-time roughly-= (a b)
+  ;; "Tests approximate numeric equality using `*numeric-bounds-collapse-threshold*'"
+  (declare (number a b)
+           (optimize (speed 3) (debug 0)))
+  (or (= a b)
+      ;; For floats, also allow them to be "close enough"
+      (and (floatp a) (floatp b)
+           (<= (abs (- a b))
+               *numeric-bounds-collapse-threshold*))))
+
 (cl:defun real-integerp (x)
  (and (realp x)
       (or (integerp x)
-	      (zerop (mod x 1)))))
+	  (zerop (nth-value 1 (floor x))))))
 
 (defun integers-between (low high)
   (cond ((and (typep low 'fixnum) (typep high 'fixnum))
@@ -3938,7 +3958,7 @@ Otherwise returns the value of X."
       (when (and (variable-lower-bound x)
                  (variable-upper-bound x)
                  (zerop (- (variable-upper-bound x) (variable-lower-bound x))))
-        (local (setf (variable-value x) (variable-lower-bound x))))
+        (local (setf (variable-value x)  (variable-lower-bound x))))
       (run-noticers x))))
 
 (defun restrict-upper-bound! (x upper-bound)
@@ -3977,7 +3997,7 @@ Otherwise returns the value of X."
       (when (and (variable-lower-bound x)
                  (variable-upper-bound x)
                  (zerop (- (variable-upper-bound x) (variable-lower-bound x))))
-        (local (setf (variable-value x) (variable-lower-bound x))))
+        (local (setf (variable-value x)  (variable-lower-bound x))))
       (run-noticers x))))
 	  
 (defun restrict-bounds! (x lower-bound upper-bound)
@@ -4046,9 +4066,10 @@ Otherwise returns the value of X."
                 (enumerated (variable-enumerated-domain x))
                 (lower (variable-lower-bound x)))
             (when (or (and (numberp domain) (= domain 1))
-                      (and (numberp range) (zerop range)))
-              (local (setf (variable-value x)
-                    (cond ((and enumerated (listp enumerated)) (first enumerated))
+                      (and (numberp range) 
+                           (zerop range)))
+			  (local (setf (variable-value x)
+                    (cond ((listp enumerated) (first enumerated))
                           (lower lower)
                           (t (variable-value x)))))))
           (run-noticers x)))))

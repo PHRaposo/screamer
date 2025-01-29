@@ -4659,11 +4659,14 @@ Otherwise returns the value of X."
                  (y (variablize y))
                  (z (a-numberv)))
              (attach-noticer!
-              #'(lambda () (*-rule-down x y z) (*-rule-down x z y)) x)
+              #'(lambda ()(when (and (bound? y) (zerop (value-of y))) (fail)) 
+			  (*-rule-down x y z) (*-rule-down x z y)) x)
              (attach-noticer!
-              #'(lambda () (*-rule-up x y z) (*-rule-down x z y)) y)
+              #'(lambda () (when (and (bound? y) (zerop (value-of y))) (fail)) 
+			  (*-rule-up x y z) (*-rule-down x z y)) y)
              (attach-noticer!
-              #'(lambda () (*-rule-up x y z) (*-rule-down x y z)) z)
+              #'(lambda () (when (and (bound? y) (zerop (value-of y))) (fail)) 
+			  (*-rule-up x y z) (*-rule-down x y z)) z)
              z))))
 
 (defun minv2 (x y)

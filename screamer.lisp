@@ -2692,43 +2692,6 @@ I."
                             (decf ,counter))))
          ,default))))
 
-;; FROM T2L-SCREAMER AND SMC(PWGL)
-;; Copyright (c) 2007, Kilian Sprotte. All rights reserved.
-(defmacro-compile-time n-values (n &body forms)				
-"Evaluates BODY as an implicit PROGN and returns a list N nondeterministic
-values yielded by the it.
-
-These values are produced by repeatedly evaluating the body and backtracking
-to produce the next value, until the body fails and yields no further values.
-
-Accordingly, local side effects performed by the body while producing each
-value are undone before attempting to produce subsequent values, and all local
-side effects performed by the body are undone upon exit from N-VALUES.
-
-Returns a list containing NIL if BODY is empty.
-
-An N-VALUES expression can appear in both deterministic and nondeterministic
-contexts. Irrespective of what context the N-VALUES appears in, the BODY is
-always in a nondeterministic context. An N-VALUES expression itself is always
-deterministic."
- (let ((values (gensym "VALUES-"))
-       (last-value-cons  (gensym "LAST-VALUE-CONS-"))
-       (value (gensym "VALUE-")))
-   `(let ((,values '())
-          (,last-value-cons nil)
-    (number 0))
-      (block n-values
-  (for-effects
-    (let ((,value (progn ,@forms)))
-      (global (cond ((null ,values)
- 		    (setf ,last-value-cons (list ,value))
- 		    (setf ,values ,last-value-cons))
- 		   (t (setf (rest ,last-value-cons) (list ,value))
- 		      (setf ,last-value-cons (rest ,last-value-cons))))
- 	     (incf number))
-      (when (>= number ,n) (return-from n-values)))))
-      ,values)))
-
 ;;; In classic Screamer TRAIL is unexported and UNWIND-TRAIL is exported. This
 ;;; doesn't seem very safe or sane: while users could conceivably want to use
 ;;; TRAIL to track unwinds, using UNWIND-TRAIL seems inherently dangerous
@@ -2959,45 +2922,11 @@ function."
     (continuation function argument &rest arguments)
   (let ((function (value-of function)))
     (if (nondeterministic-function? function)
-	    (apply #'apply (nondeterministic-function-function function)
-	               continuation argument arguments)
-	        (funcall continuation (apply #'apply function argument arguments)))))
-
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (declare-nondeterministic 'mapcar-nondeterministic))
-
-(cl:defun mapcar-nondeterministic (function &rest arguments)
-  "Analogous to the CL:mapcar, except FUNCTION can be either a nondeterministic
-function, or an ordinary deterministic function.
-You must use mapcar-NONDETERMINISTIC to mapcar a nondeterministic function. An
-error is signalled if a nondeterministic function object is used with
-CL:mapcar.
-You can use MAPCAR-NONDETERMINISTIC to mapcar either a deterministic or
-nondeterministic function, though even if all of the ARGUMENTS are
-deterministic and FUNCTION is a deterministic function object, the call
-expression will still be nondeterministic \(with presumably a single value),
-since it is impossible to determine at compile time that a given call to
-MAPCAR-NONDETERMINISTIC will be passed only deterministic function objects for
-function."
-  (declare (ignore function arguments))
-  (screamer-error
-   "mapcar-NONDETERMINISTIC is a nondeterministic function. As such, it must~%~
-   be called only from a nondeterministic context."))
-
-(cl:defun mapcar-nondeterministic-nondeterministic
-    (continuation function argument &rest arguments)
-  (let ((function (value-of function)))
-    (if (nondeterministic-function? function)
-        (funcall continuation
-                 (apply #'mapcar
-                        (lambda (&rest args)
-                          (let (res)
-                           (apply (nondeterministic-function-function function)
-                                  (lambda (r) (push r res))
-                                 args)
-                            (reverse res)))
-                        argument arguments))
-        (funcall continuation (apply #'mapcar function argument arguments)))))
+        ;; note: I don't know how to avoid the consing here.
+        (apply (nondeterministic-function-function function)
+               continuation
+               (apply #'list* (cons argument arguments)))
+        (funcall continuation (apply function argument arguments)))))
 
 (cl:defun multiple-value-call-nondeterministic (function-form &rest values-forms)
   "Analogous to the CL:MULTIPLE-VALUE-CALL, except FUNCTION-FORM can evaluate
@@ -3163,51 +3092,6 @@ either a list or a vector."
              (funcall continuation (aref sequence n))))))
       (t (error "SEQUENCE must be a sequence")))))
 
-(defun om-random-value (num)
-  (if (= num 0) 0
-  (if (< num 0)
-    (- (random (- num)))
-    (random num))))
-
-(defun nth-random (list)
- (nth (om-random-value (length list)) list))
- 
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (declare-nondeterministic 'a-random-member-of))
-
-(cl:defun a-random-member-of (sequence)
-  "Nondeterministically returns an random element of SEQUENCE. The SEQUENCE must be
-either a list or a vector."
-  (declare (ignore sequence))
-  (screamer-error
-   "A-RANDOM-MEMBER-OF is a nondeterministic function. As such, it must be called~%~
-   only from a nondeterministic context."))
- 
-(cl:defun a-random-member-of-nondeterministic (continuation sequence)
-(let ((sequence (value-of sequence)))
-  (cond
-    ((listp sequence)
-     (unless (null sequence)
-       (choice-point-external
-        (loop (if (null (rest sequence)) (return))
-	     (let ((random-el (nth-random sequence)))
-          (choice-point-internal (funcall continuation random-el))
-           (setf sequence (value-of (remove random-el sequence :test #'equal :count 1))))))
-       (funcall continuation (first sequence))))
-    ((vectorp sequence)
-     (let ((n (length sequence)))
-       (unless (zerop n)
-	    (let ((curr-n n)
-		       (n (1- n)))
-           (choice-point-external
-            (dotimes (i n)
-			 (decf curr-n) 
-			 (let* ((random-el (aref sequence (om-random-value curr-n))))			      
-              (choice-point-internal (funcall continuation random-el))
-			  (setf sequence (value-of (remove random-el sequence :test #'equal :count 1))))))
-           (funcall continuation (aref sequence 0))))))
-    (t (error "SEQUENCE must be a sequence")))))
-
 ;;; note: The following two functions work only when Screamer is running under
 ;;;       ILisp/GNUEmacs with iscream.el loaded.
 
@@ -3262,7 +3146,6 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
   (noticers nil)
   (enumerated-domain t)
   (enumerated-antidomain nil)
-  (backup-domain nil)
   value
   (possibly-integer? t)
   (possibly-noninteger-real? t)
@@ -3279,8 +3162,6 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
    (enumerated-domain :accessor variable-enumerated-domain :initform t)
    (enumerated-antidomain :accessor variable-enumerated-antidomain
                           :initform nil)
-   (backup-domain :accessor variable-backup-domain
-                          :initform nil) 
    (value :accessor variable-value)
    (possibly-integer? :accessor variable-possibly-integer? :initform t)
    (possibly-noninteger-real? :accessor variable-possibly-noninteger-real?
@@ -3300,31 +3181,6 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
 
 #+screamer-clos
 (defun-compile-time variable? (thing) (typep thing 'variable))
-
-(defvar-compile-time *numeric-bounds-collapse-threshold* 0.0000000000001
-  "The threshold of closeness to consider 2 numbers equivalent.
-Use this to deal with floating-point errors, if necessary.
-
-This value must be a floating point number between 0 and 1.")
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (declaim (type (float 0 1) *numeric-bounds-collapse-threshold*)))
-
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (declaim (inline roughly-=)))
-(defun-compile-time roughly-= (a b)
-  ;; "Tests approximate numeric equality using `*numeric-bounds-collapse-threshold*'"
-  (declare (number a b)
-           (optimize (speed 3) (debug 0)))
-  (or (= a b)
-      ;; For floats, also allow them to be "close enough"
-      (and (floatp a) (floatp b)
-           (<= (abs (- a b))
-               *numeric-bounds-collapse-threshold*))))
-
-(cl:defun real-integerp (x)
- (and (realp x)
-      (or (integerp x)
-	  (zerop (nth-value 1 (floor x))))))
 
 (defun integers-between (low high)
   (cond ((and (typep low 'fixnum) (typep high 'fixnum))
@@ -3549,7 +3405,6 @@ Otherwise returns the value of X."
 (defun attach-noticer!-internal (noticer x)
   ;; note: Will loop if X is circular.
   (typecase x
-    (null nil)
     (cons (attach-noticer!-internal noticer (car x))
           (attach-noticer!-internal noticer (cdr x)))
     (variable (if (eq x (variable-value x))
@@ -3568,126 +3423,8 @@ Otherwise returns the value of X."
 (defun run-noticers (x)
   (dolist (noticer (variable-noticers x)) (funcall noticer)))
 
-(defun noticer-name (x)
- (symbol-name
-  (car
-   (last
-    (third
-     (multiple-value-list
-      (function-lambda-expression x)))))))
- 
-(defun delete-noticer (x name)
- (let ((noticers (variable-noticers x))
-        res)
-  (unless (null noticers) 
-   (dolist (noticer noticers)
-   (when (not (string-equal (noticer-name noticer) name))
-         (push noticer res)))
-   (setf (variable-noticers x)
-   (if (null res) nil (nreverse res))))))
-
 ;;; Restrictions
 
-(defun restrict-integer! (x)
-  ;; NOTE: X must be a variable.
-  (unless (or (variable-possibly-integer? x)
-              (variable-possibly-noninteger-real? x))
-		  (fail))
-  (if (or (eq (variable-value x) x) (not (variable? (variable-value x))))
-      (let ((run? nil))
-	  	 (when (variable-possibly-noninteger-real? x)
-		  (if (not (eq (variable-enumerated-domain x) t))
-              (set-integer-enumerated-domain! x))
-	      (local (setf (variable-possibly-integer? x) t))
-	      (local (setf (variable-possibly-noninteger-real? x) nil))
-          (setf run? t))
-        (when (variable-possibly-nonreal-number? x)
-          (local (setf (variable-possibly-nonreal-number? x) nil))
-          (setf run? t))
-        (when (variable-possibly-boolean? x)
-          (local (setf (variable-possibly-boolean? x) nil))
-          (setf run? t))
-        (when (variable-possibly-nonboolean-nonnumber? x)
-          (local (setf (variable-possibly-nonboolean-nonnumber? x) nil))
-          (setf run? t))
-        (when (and (variable-lower-bound x)
-                   (not (integerp (variable-lower-bound x))))
-          (if (and (variable-upper-bound x)
-                   (< (variable-upper-bound x)
-                      (ceiling (variable-lower-bound x))))
-              (fail))
-          (local (setf (variable-lower-bound x)
-                       (ceiling (variable-lower-bound x))))
-          (setf run? t))
-        (when (and (variable-upper-bound x)
-                   (not (integerp (variable-upper-bound x))))
-          (if (and (variable-lower-bound x)
-                   (> (variable-lower-bound x)
-                      (floor (variable-upper-bound x))))
-              (fail))
-          (local (setf (variable-upper-bound x) (floor (variable-upper-bound x))))
-          (setf run? t))
-        (when run?
-          (cond ((eq (variable-enumerated-domain x) t)
-                 (if (and (variable-lower-bound x)
-                          (variable-upper-bound x)
-                          (or (null *maximum-discretization-range*)
-                              (<= (- (variable-upper-bound x)
-                                     (variable-lower-bound x))
-                                  *maximum-discretization-range*)))
-                     (set-enumerated-domain!
-                      x (integers-between
-                         (variable-lower-bound x)
-                         (variable-upper-bound x)))))
-                ((not (every #'integerp (variable-enumerated-domain x)))
-                 ;; NOTE: Could do less consing if had LOCAL DELETE-IF.
-                 ;;       This would also allow checking list only once.
-                 (set-enumerated-domain!
-                  x (remove-if-not #'integerp (variable-enumerated-domain x)))))
-		 (delete-noticer x "RESTRICT-NONINTEGER!")
-		 (unless (some #'(lambda (noticer) (string-equal (noticer-name noticer) "RESTRICT-INTEGER!")) (variable-noticers x))
-		  (attach-noticer!
-	           #'(lambda ()(when (and (bound? x) (not (integerp (value-of x)))) (fail))) x))
-          (run-noticers x)))))
-
-(defun restrict-noninteger! (x)
-  ;; NOTE: X must be a variable.
-  (unless (or (variable-possibly-integer? x)
-              (variable-possibly-noninteger-real? x)
-              (variable-possibly-nonreal-number? x)
-              (variable-possibly-boolean? x)
-              (variable-possibly-nonboolean-nonnumber? x))
-    (fail))
-	(when (or (eq (variable-value x) x) (not (variable? (variable-value x))))
-	  (when (or (variable-possibly-integer? x)
-	            (variable-possibly-noninteger-real? x))
-	    (local (setf (variable-possibly-integer? x) nil))
-		(local (setf (variable-possibly-noninteger-real? x) t))))
-	  (cond ((and (not (eq (variable-enumerated-domain x) t))
-                  (some #'real-integerp (variable-enumerated-domain x)))
-		     (set-noninteger-enumerated-domain! x)
-	   	     (if (variable-real? x)
-	   	         (let ((lower-bound (reduce #'min (variable-enumerated-domain x)))
-	   	               (upper-bound (reduce #'max (variable-enumerated-domain x))))
-	   	            (if (or (null (variable-lower-bound x))
-	   	                    (< lower-bound (variable-lower-bound x)))
-	   	                (setf (variable-lower-bound x) lower-bound))
-	   	            (if (or (null (variable-upper-bound x))
-	   	                 (> upper-bound (variable-upper-bound x)))
-	   	                 (setf (variable-upper-bound x) upper-bound)))))
-	        ((and (not (eq (variable-enumerated-domain x) t))
-                  (some #'integerp (variable-enumerated-domain x)))
-             ;; NOTE: Could do less consing if had LOCAL DELETE-IF.
-             ;;       This would also allow checking list only once.
-            (set-enumerated-domain!
-             x (remove-if #'integerp (variable-enumerated-domain x)))))
-	  (delete-noticer x "RESTRICT-INTEGER!")
-	   (unless (some #'(lambda (noticer)(string-equal (noticer-name noticer) "RESTRICT-NONINTEGER!")) (variable-noticers x))
-	   (attach-noticer!
-	   #'(lambda ()(when (and (bound? x) (integerp (value-of x))) (fail))) x))
-      (run-noticers x))
-
-#|
 (defun restrict-integer! (x)
   ;; note: X must be a variable.
   (unless (variable-possibly-integer? x) (fail))
@@ -3757,10 +3494,7 @@ Otherwise returns the value of X."
         ;;       This would also allow checking list only once.
         (set-enumerated-domain!
          x (remove-if #'integerp (variable-enumerated-domain x))))
-	  (local (attach-noticer!
-	   #'(lambda ()(when (and (bound? x) (integerp (value-of x))) (fail))) x))
     (run-noticers x)))
-|#
 
 (defun restrict-real! (x)
   ;; note: X must be a variable.
@@ -3924,8 +3658,8 @@ Otherwise returns the value of X."
     (run-noticers x)))
 
 (defun restrict-lower-bound! (x lower-bound)
-  ;; NOTE: X must be a variable.
-  ;; NOTE: LOWER-BOUND must be a real constant.
+  ;; note: X must be a variable.
+  ;; note: LOWER-BOUND must be a real constant.
   (if (variable-integer? x) (setf lower-bound (ceiling lower-bound)))
   (when (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
              (or (not (variable-lower-bound x))
@@ -3950,21 +3684,16 @@ Otherwise returns the value of X."
                                       (variable-upper-bound x)))))
             ((some #'(lambda (element) (< element lower-bound))
                    (variable-enumerated-domain x))
-             ;; NOTE: Could do less consing if had LOCAL DELETE-IF.
+             ;; note: Could do less consing if had LOCAL DELETE-IF.
              ;;       This would also allow checking list only once.
              (set-enumerated-domain!
               x (remove-if #'(lambda (element) (< element lower-bound))
                            (variable-enumerated-domain x)))))
-      (when (and (variable-lower-bound x)
-                 (variable-upper-bound x)
-                 (or (zerop (- (variable-upper-bound x) (variable-lower-bound x)))
-                     (roughly-= (- (variable-upper-bound x) (variable-lower-bound x)) 0.0)))
-        (local (setf (variable-value x) (variable-lower-bound x))))
       (run-noticers x))))
 
 (defun restrict-upper-bound! (x upper-bound)
-  ;; NOTE: X must be a variable.
-  ;; NOTE: UPPER-BOUND must be a real constant.
+  ;; note: X must be a variable.
+  ;; note: UPPER-BOUND must be a real constant.
   (when (variable-integer? x)
     (setf upper-bound (floor upper-bound)))
   (when (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
@@ -3990,21 +3719,16 @@ Otherwise returns the value of X."
                                     upper-bound))))
             ((some #'(lambda (element) (> element upper-bound))
                    (variable-enumerated-domain x))
-             ;; NOTE: Could do less consing if had LOCAL DELETE-IF.
+             ;; note: Could do less consing if had LOCAL DELETE-IF.
              ;;       This would also allow checking list only once.
              (set-enumerated-domain!
               x (remove-if #'(lambda (element) (> element upper-bound))
                            (variable-enumerated-domain x)))))
-      (when (and (variable-lower-bound x)
-                 (variable-upper-bound x)
-                 (or (zerop (- (variable-upper-bound x) (variable-lower-bound x)))
-                     (roughly-= (- (variable-upper-bound x) (variable-lower-bound x)) 0.0)))
-        (local (setf (variable-value x)  (variable-lower-bound x))))
       (run-noticers x))))
-	  
+
 (defun restrict-bounds! (x lower-bound upper-bound)
-  ;; NOTE: X must be a variable.
-  ;; NOTE: LOWER-BOUND and UPPER-BOUND must be real constants.
+  ;; note: X must be a variable.
+  ;; note: LOWER-BOUND and UPPER-BOUND must be real constants.
   (when (variable-integer? x)
     (if lower-bound (setf lower-bound (ceiling lower-bound)))
     (if upper-bound (setf upper-bound (floor upper-bound))))
@@ -4013,9 +3737,9 @@ Otherwise returns the value of X."
         (when (and lower-bound
                    (or (not (variable-lower-bound x))
                        (> lower-bound (variable-lower-bound x))))
-          (when (and (variable-upper-bound x)
-                     (< (variable-upper-bound x) lower-bound))
-            (fail))
+          (if (and (variable-upper-bound x)
+                   (< (variable-upper-bound x) lower-bound))
+              (fail))
           (when (or (not (variable-lower-bound x))
                     (not (variable-upper-bound x))
                     (>= (/ (- lower-bound (variable-lower-bound x))
@@ -4026,16 +3750,16 @@ Otherwise returns the value of X."
         (when (and upper-bound
                    (or (not (variable-upper-bound x))
                        (< upper-bound (variable-upper-bound x))))
-          (when (and (variable-lower-bound x)
-                     (> (variable-lower-bound x) upper-bound))
-            (fail))
+          (if (and (variable-lower-bound x)
+                   (> (variable-lower-bound x) upper-bound))
+              (fail))
           (when (or (not (variable-lower-bound x))
                     (not (variable-upper-bound x))
                     (>= (/ (- (variable-upper-bound x) upper-bound)
                            (- (variable-upper-bound x) (variable-lower-bound x)))
                         *minimum-shrink-ratio*))
             (local (setf (variable-upper-bound x) upper-bound))
-            (setf run? t)))			
+            (setf run? t)))
         (when run?
           (cond ((eq (variable-enumerated-domain x) t)
                  (if (and (variable-lower-bound x)
@@ -4055,25 +3779,13 @@ Otherwise returns the value of X."
                      (and upper-bound
                           (some #'(lambda (element) (> element upper-bound))
                                 (variable-enumerated-domain x))))
-                 ;; NOTE: Could do less consing if had LOCAL DELETE-IF.
+                 ;; note: Could do less consing if had LOCAL DELETE-IF.
                  ;;       This would also allow checking list only once.
                  (set-enumerated-domain!
                   x (remove-if #'(lambda (element)
                                    (or (and lower-bound (< element lower-bound))
                                        (and upper-bound (> element upper-bound))))
                                (variable-enumerated-domain x)))))
-          ;; When the range-size of x is 0, set (variable-value x)
-          (let ((domain (domain-size x))
-                (range (range-size x))
-                (enumerated (variable-enumerated-domain x))
-                (lower (variable-lower-bound x)))
-            (when (or (and (numberp domain) (= domain 1))
-                      (and (numberp range) 
-                           (or (zerop range) (roughly-= range 0.0))))
-			  (local (setf (variable-value x)
-                    (cond ((listp enumerated) (first enumerated))
-                          (lower lower)
-                          (t (variable-value x)))))))
           (run-noticers x)))))
 
 (defun prune-enumerated-domain (x &optional (enumerated-domain (variable-enumerated-domain x)))
@@ -4403,40 +4115,6 @@ Otherwise returns the value of X."
        t)
       (t nil))))
 
-(defun set-integer-enumerated-domain! (x)
-  ;; NOTE: X must be a variable.
- (let ((domain (remove-if-not #'realp (variable-enumerated-domain x)))
-       (backup '())
-       (new-domain '()))
-   (dolist (n domain)
-   (when (not (real-integerp n))
-	 (push n backup)))  
-   (when backup
-    (local (setf (variable-backup-domain x) (nreverse backup))))
-    (local (setf (variable-enumerated-domain x) t))
-   (dolist (n domain)
-    (if (not (integerp n))
-        (when (real-integerp n) (pushnew (round n) new-domain))
-	(pushnew n new-domain)))
-   (set-enumerated-domain! x (nreverse new-domain))))
-
-(defun set-noninteger-enumerated-domain! (x)
-  ;; NOTE: X must be a variable.   
- (let ((domain (variable-enumerated-domain x))
-       (backup (variable-backup-domain x))
-       (new-domain '()))
-  (when backup 
-    (setf new-domain backup)
-    (local (setf (variable-backup-domain x) nil)))
-  (local (setf (variable-enumerated-domain x) t))
-  (dolist (n domain)
-   (if (integerp n)
-       (pushnew (float n) new-domain)
-       (pushnew n new-domain)))
-  (when (every #'realp new-domain) 
-	(setf new-domain (sort new-domain #'>)))
-  (set-enumerated-domain! x (nreverse new-domain))))
-  
 (defun restrict-enumerated-domain! (x enumerated-domain)
   ;; note: X must be a variable such that (EQ X (VALUE-OF X)).
   ;; note: ENUMERATED-DOMAIN must not be a variable.
@@ -4513,7 +4191,7 @@ Otherwise returns the value of X."
   ;;       Gaussian integers from other complex numbers we could whenever X or
   ;;       Y was not a Gaussian integer.
   (if (and (or (variable-noninteger? x) (variable-noninteger? y))
-           (or (variable-integer? x) (variable-integer? y)))
+           (or (variable-real? x) (variable-real? y)))
       (restrict-noninteger! z))
   (if (and (variable-real? x) (variable-real? y)) (restrict-real! z))
   ;; note: Ditto.
@@ -4535,18 +4213,18 @@ Otherwise returns the value of X."
         (fail))))
 
 (defun +-rule-down (z x y)
-  ;; NOTE: We can't assert that X and Y are integers when Z is an integer since
+  ;; note: We can't assert that X and Y are integers when Z is an integer since
   ;;       Z may be an integer when X and Y are Gaussian integers. But we can
-  ;;       make such an assertion if either X or Y is an integer. If the Screamer
+  ;;       make such an assertion if either X or Y is real. If the Screamer
   ;;       type system could distinguish Gaussian integers from other complex
   ;;       numbers we could make such an assertion whenever either X or Y was
   ;;       not a Gaussian integer.
-  (when (and (variable-integer? z) (or (variable-integer? x) (variable-integer? y)))
-    (restrict-integer! x))
-  ;; NOTE: Ditto.
-  (when (and (variable-real? z) (or (variable-real? x) (variable-real? y)))
-    (restrict-real! x))
-  (when (and (variable-real? x) (variable-real? y) (variable-real? z))
+  (if (and (variable-integer? z) (or (variable-real? x) (variable-real? y)))
+      (restrict-integer! x))
+  ;; note: Ditto.
+  (if (and (variable-real? z) (or (variable-real? x) (variable-real? y)))
+      (restrict-real! x))
+  (if (and (variable-real? x) (variable-real? y) (variable-real? z))
       (restrict-bounds!
        x
        (infinity-- (variable-lower-bound z) (variable-upper-bound y))
@@ -4629,9 +4307,9 @@ Otherwise returns the value of X."
   ;;       X or Y is real. If the Screamer type system could distinguish
   ;;       Gaussian integers from other complex numbers we could whenever X or
   ;;       Y was not a Gaussian integer.
-  ;(if (and (or (variable-noninteger? x) (variable-noninteger? y))
-  ;         (or (variable-real? x) (variable-real? y)))
-  ;    (restrict-noninteger! z))
+  (if (and (or (variable-noninteger? x) (variable-noninteger? y))
+           (or (variable-real? x) (variable-real? y)))
+      (restrict-noninteger! z))
   (if (and (variable-real? x) (variable-real? y)) (restrict-real! z))
   ;; note: Ditto.
   (if (and (or (variable-nonreal? x) (variable-nonreal? y))
@@ -4664,17 +4342,17 @@ Otherwise returns the value of X."
              (not (variable? z))
              (/= z (* x y)))
         (fail))))
-		
+
 (defun *-rule-down (z x y)
-  ;; NOTE: We can't assert that X and Y are integers when Z is an integer since
+  ;; note: We can't assert that X and Y are integers when Z is an integer since
   ;;       Z may be an integer when X and Y are Gaussian integers. But we can
-  ;;       make such an assertion if either X or Y is an integer. If the Screamer
+  ;;       make such an assertion if either X or Y is real. If the Screamer
   ;;       type system could distinguish Gaussian integers from other complex
   ;;       numbers we could make such an assertion whenever either X or Y was
   ;;       not a Gaussian integer.
-  ;(if (and (variable-integer? z) (or (variable-integer? x) (variable-integer? y)))
-  ;    (restrict-integer! x))
-  ;; NOTE: Ditto.
+  (if (and (variable-integer? z) (or (variable-real? x) (variable-real? y)))
+      (restrict-integer! x))
+  ;; note: Ditto.
   (if (and (variable-real? z) (or (variable-real? x) (variable-real? y)))
       (restrict-real! x))
   (if (and (variable-real? x) (variable-real? y) (variable-real? z))
@@ -4687,22 +4365,6 @@ Otherwise returns the value of X."
              (not (variable? z))
              (/= z (* x y)))
         (fail))))
-
-(defun *zero-rule (x y)
-;; Needs work: does not support Gaussian integers. 
-(let ((x (variablize x))
-      (y (variablize y)))
- ;; Share the value of Y when X = ZERO, propagating the correct types. 
- (cond ((and (variable-integer? x) (variable-integer? y))
-        0)
-       ((and (or (variable-noninteger? x) (variable-noninteger? y))
-             (or (variable-integer? x) (variable-integer? y)))
-	    0.0)
-	   ((and (variable-real? x) (variable-real? y))
-        0.0)
-       ((and (or (variable-real? x) (variable-real? y))
-             (or (variable-nonreal? x) (variable-nonreal? y)))
-        #c(0.0 0.0)))))
 
 (defun min-rule-up (z x y)
   (if (and (variable-integer? x) (variable-integer? y)) (restrict-integer! z))
@@ -4807,51 +4469,15 @@ Otherwise returns the value of X."
         (y (value-of y)))
     (if (and (not (variable? x)) (not (variable? y)) (= x y)) (fail))))
 
-(defun share-variable-value+ (x y)
-;; Needs work: does not support Gaussian integers. 
-(let ((x (variablize x))
-      (y (variablize y)))
- ;; Share the value of Y to Z (Z = 0 + Y or Z = Y - 0),
- ;;propagating the correct types.
- (cond ((and (variable-integer? x) (variable-integer? y))
-        (restrict-integer! y) (value-of y))
-       ((and (or (variable-noninteger? x) (variable-noninteger? y))
-             (or (variable-integer? x) (variable-integer? y)))
-	     (restrict-noninteger! y) (value-of y))
-	   ((and (variable-real? x) (variable-real? y))
-        (restrict-real! y) (value-of y))
-       ((and (or (variable-real? x) (variable-real? y))
-             (or (variable-nonreal? x) (variable-nonreal? y)))
-        (restrict-nonreal! y) (value-of y))
-	   (t (value-of y)))))
-
-(defun share-variable-value* (x y)
-;; Needs work: does not support Gaussian integers. 
-(let ((x (variablize x))
-      (y (variablize y)))
-;; Share the value of Y to Z (Z =  Y * 1 or Z = Y / 1),
-;; propagating the correct types.
-(cond ((and (variable-integer? x) (variable-integer? y))
-       (restrict-integer! y) (value-of y))
-     ((and (variable-real? x) (variable-real? y))
-      (restrict-real! y) (value-of y))
-      ((and (or (variable-real? x) (variable-real? y))
-            (or (variable-nonreal? x) (variable-nonreal? y)))
-       (restrict-nonreal! y) (value-of y))
-   (t (value-of y)))))
-		   
-(defun share-number-type (x y)
- (cond ((variable-real? x) (restrict-real! y))
-       ((variable-nonreal? x) (restrict-nonreal! y))
-       (t (fail))))
-	   
 ;;; Lifted Arithmetic Functions (Two argument optimized)
 
 (defun +v2 (x y)
   (assert!-numberpv x)
   (assert!-numberpv y)
-  (cond ((and (bound? x) (zerop (value-of x))) (share-variable-value+ x y))
-        ((and (bound? y) (zerop (value-of y))) (share-variable-value+ y x))
+  ;; needs work: The first two optimizations below violate Common Lisp type
+  ;;             propagation conventions.
+  (cond ((and (bound? x) (zerop (value-of x))) (value-of y))
+        ((and (bound? y) (zerop (value-of y))) (value-of x))
         ((and (bound? x) (bound? y)) (+ (value-of x) (value-of y)))
         (t (let ((x (variablize x))
                  (y (variablize y))
@@ -4867,7 +4493,9 @@ Otherwise returns the value of X."
 (defun -v2 (x y)
   (assert!-numberpv x)
   (assert!-numberpv y)
-  (cond ((and (bound? y) (zerop (value-of y))) (share-variable-value+ y x))
+  ;; needs work: The first optimization below violates Common Lisp type
+  ;;             propagation conventions.
+  (cond ((and (bound? y) (zerop (value-of y))) (value-of x))
         ((and (bound? x) (bound? y)) (- (value-of x) (value-of y)))
         (t (let ((x (variablize x))
                  (y (variablize y))
@@ -4883,10 +4511,12 @@ Otherwise returns the value of X."
 (defun *v2 (x y)
   (assert!-numberpv x)
   (assert!-numberpv y)
-  (cond ((and (bound? x) (zerop (value-of x))) (*zero-rule x y))
-        ((and (bound? y) (zerop (value-of y))) (*zero-rule y x))
-        ((and (bound? x) (= (value-of x) 1)) (share-variable-value* x y))
-        ((and (bound? y) (= (value-of y) 1)) (share-variable-value* y x))
+  ;; needs work: The first four optimizations below violate Common Lisp type
+  ;;             propagation conventions.
+  (cond ((and (bound? x) (zerop (value-of x))) 0)
+        ((and (bound? y) (zerop (value-of y))) 0)
+        ((and (bound? x) (= (value-of x) 1)) (value-of y))
+        ((and (bound? y) (= (value-of y) 1)) (value-of x))
         ((and (bound? x) (bound? y)) (* (value-of x) (value-of y)))
         (t (let ((x (variablize x))
                  (y (variablize y))
@@ -4902,24 +4532,21 @@ Otherwise returns the value of X."
 (defun /v2 (x y)
   (assert!-numberpv x)
   (assert!-numberpv y)
-  (cond ((and (bound? x) (zerop (value-of x))) (*zero-rule x y))
-        ((and (bound? y) (= (value-of y) 1))  (share-variable-value* y x))
+  ;; needs work: The first three optimizations below violate Common Lisp type
+  ;;             propagation conventions.
+  (cond ((and (bound? x) (zerop (value-of x))) 0)
+        ((and (bound? y) (zerop (value-of y))) (fail))
+        ((and (bound? y) (= (value-of y) 1)) (value-of x))
         ((and (bound? x) (bound? y)) (/ (value-of x) (value-of y)))
         (t (let ((x (variablize x))
                  (y (variablize y))
                  (z (a-numberv)))
              (attach-noticer!
-              #'(lambda ()
-                (when (and (bound? y) (zerop (value-of y))) (fail))
-		(*-rule-down x y z) (*-rule-down x z y)) x)
+              #'(lambda () (*-rule-down x y z) (*-rule-down x z y)) x)
              (attach-noticer!
-              #'(lambda () 
-	        (when (and (bound? y) (zerop (value-of y))) (fail))
-		(*-rule-up x y z) (*-rule-down x z y)) y)
+              #'(lambda () (*-rule-up x y z) (*-rule-down x z y)) y)
              (attach-noticer!
-              #'(lambda () 
-		(when (and (bound? y) (zerop (value-of y))) (fail))
-		(*-rule-up x y z) (*-rule-down x y z)) z)
+              #'(lambda () (*-rule-up x y z) (*-rule-down x y z)) z)
              z))))
 
 (defun minv2 (x y)
@@ -5138,9 +4765,6 @@ Otherwise returns the value of X."
   (assert!-numberpv y)
   (let ((x (variablize x))
         (y (variablize y)))
-  ;;Needs work: only propagate if it is a real or non-real variable.	
-    ;;(when (and (bound? x) (not (bound? y))) (share-number-type x y))
-    ;;(when (and (bound? y) (not (bound? x))) (share-number-type y x)) 
     (attach-noticer! #'(lambda () (=-rule x y)) x)
     (attach-noticer! #'(lambda () (=-rule x y)) y)))
 
@@ -6277,18 +5901,14 @@ restricted to be consistent with other arguments."
 (defun known?-notv-equalv (x y) (one-value (progn (assert!-equalv x y) nil) t))
 
 (defun assert!-notv-equalv (x y)
- (cond
-   ((known?-equalv x y) (fail))
-   ((not (known?-notv-equalv x y))
-    (let* ((x (variablize x))
-           (y (variablize y))
-           (noticer #'(lambda ()
-                        (cond ((and (known?-numberpv x)
-                                    (known?-numberpv y))
-                               (/=-rule x y))
-                              ((known?-equalv x y) (fail))))))
-      (attach-noticer! noticer x)
-      (attach-noticer! noticer y)))))
+  ;; note: Can be made more efficient so that if you later find out that
+  ;;       X and Y are KNOWN?-NUMBERPV you can then ASSERT!-/=V2.
+  (if (known?-equalv x y) (fail))
+  (unless (known?-notv-equalv x y)
+    (let ((x (variablize x))
+          (y (variablize y)))
+      (attach-noticer! #'(lambda () (if (known?-equalv x y) (fail))) x)
+      (attach-noticer! #'(lambda () (if (known?-equalv x y) (fail))) y))))
 
 (defun equalv (x y)
   "Returns T if the aggregate object X is known to equal the aggregate object
@@ -6378,7 +5998,7 @@ the remaining argument. Otherwise returns number variable V.
 
 Note: Numeric contagion rules of Common Lisp are not applied if either
 argument equals zero."
-(+v-internal xs))
+  (+v-internal xs))
 
 (defun -v-internal (x xs)
   (if (null xs) x (-v-internal (-v2 x (first xs)) (rest xs))))

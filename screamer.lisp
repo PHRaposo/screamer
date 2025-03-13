@@ -5193,13 +5193,19 @@ Otherwise returns the value of X."
     ((hash-table-p value) (occurs-in? x (hash-table-values value)))
     (t nil)))
 
-(defun attach-dependencies!-internal (dependencies x)
-  (when (variable? x)
-    (dolist (dep dependencies)
-      (if (eql dep x)
-          (screamer-error "~A cannot depend on itself!" x)
-          (when (variable? dep)
-            (pushnew dep (variable-dependencies x)))))))
+ (defun attach-dependencies!-internal (dependencies x)
+   ;; NOTE: Will loop if X is circular.
+   (typecase x
+     (cons
+      (attach-dependencies!-internal dependencies (car x))
+      (attach-dependencies!-internal dependencies (cdr x)))
+	 (variable
+	   (dolist (dep dependencies)
+       (unless (or (not (variable? dep))
+	               (eql dep x)
+		           (member dep (variable-dependencies x) :test #'eq))
+        (setf (variable-dependencies x)
+		 (cons dep (variable-dependencies x))))))))
 
 (defun attach-noticer!-internal (noticer x)
   ;; NOTE: Will loop if X is circular.

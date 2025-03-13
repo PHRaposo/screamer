@@ -5199,13 +5199,13 @@ Otherwise returns the value of X."
      (cons
       (attach-dependencies!-internal dependencies (car x))
       (attach-dependencies!-internal dependencies (cdr x)))
-	 (variable
-	   (dolist (dep dependencies)
+     (variable
+      (dolist (dep dependencies)
        (unless (or (not (variable? dep))
-	               (eql dep x)
-		           (member dep (variable-dependencies x) :test #'eq))
+	           (eql dep x)
+	           (member dep (variable-dependencies x) :test #'eq))
         (setf (variable-dependencies x)
-		 (cons dep (variable-dependencies x))))))))
+	 (cons dep (variable-dependencies x))))))))
 
 (defun attach-noticer!-internal (noticer x)
   ;; NOTE: Will loop if X is circular.

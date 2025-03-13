@@ -29,7 +29,8 @@
   (:use :cl :alexandria)
   (:import-from :trivia #:match #:ematch #:lambda-match #:guard)
   (:import-from :serapeum #:op #:~> #:~>>)
-  (:local-nicknames (:s :serapeum))
+  (:nicknames :s) ;OM compatibility
+  ;(:local-nicknames (:s :serapeum))
   (:export #:either
            #:fail
            #:local

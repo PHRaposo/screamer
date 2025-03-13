@@ -85,7 +85,7 @@ to DEFPACKAGE, and automatically injects two additional options:
   `(eval-when (:compile-toplevel :load-toplevel :execute)
      (define-condition ,name ,parent-types ,slot-specs ,@options)))
 
-(defparameter-compile-time *screamer-version* (asdf:component-version (asdf:find-system :screamer))
+(defparameter-compile-time *screamer-version* "5.2.1" ;(asdf:component-version (asdf:find-system :screamer))
   "The version of Screamer which is loaded.")
 
 (defparameter-compile-time *screamer-max-failures* nil
@@ -310,7 +310,7 @@ Note that performance optimizations can rarely
 be generalized; use your own judgement and
 experimentation to determine the value of this
 in comparison to `cl:mapcar'"
-  (s:nest
+  (serapeum:nest
    ;; Remove the `nil' added to the front
    (rest)
    ;; Get the head of the collected list
@@ -363,7 +363,7 @@ in comparison to `cl:mapcar'"
 (defmacro-compile-time choice-point-internal (form)
   `(catch '%fail
      (let* ((toplevel (typep *nondeterministic-context* '(not null)))
-            (*nondeterministic-context* (or *nondeterministic-context* (s:dict))))
+            (*nondeterministic-context* (or *nondeterministic-context* (serapeum:dict))))
        (declare (ignorable toplevel))
        (unwind-protect ,form
          (unwind-trail-to trail-pointer)))))
@@ -2518,7 +2518,7 @@ SHOULD NOT BE INVOKED OUTSIDE OF `walk'!"
 
 (defun-compile-time cps-convert-tagbody
     (body continuation types value? environment)
-  (s:nest
+  (serapeum:nest
    (let ((segments (list (list 'header)))
          (*tagbody-tags* *tagbody-tags*)) ;cool!
      (dolist (form body)
@@ -3103,9 +3103,9 @@ gives equal probability to 1 and 2)."
                                             #'second)
                                    (compose (curry #'= 2)
                                             #'length)))
-                  (prob-provided (s:~>> alt-list
+                  (prob-provided (serapeum:~>> alt-list
                                         ;; Filter by valid probability values
-                                        (s:filter prob-pred)
+                                        (serapeum:filter prob-pred)
                                         ;; Extract probability values
                                         (mapcar #'second)))
                   (prob-provided (or prob-provided (list 1)))
@@ -3366,8 +3366,8 @@ Throws an exception if body outputs any non-numeric value.
 Returns NIL if all branches of BODY fail."
   (with-gensyms (aggregates)
     `(let ((,aggregates
-             (funcall (s:juxt (s:op (reduce #'+ _ :key (curry #'reduce #'*)))
-                              (s:op (reduce #'+ _ :key #'second)))
+             (funcall (serapeum:juxt (serapeum:op (reduce #'+ _ :key (curry #'reduce #'*)))
+                              (serapeum:op (reduce #'+ _ :key #'second)))
                       (all-values-prob ,@body))))
        (prog1
            (unless (zerop (second ,aggregates))
@@ -3375,14 +3375,14 @@ Returns NIL if all branches of BODY fail."
          ;; Release the juxt list to the cons cache
          (list ,aggregates))))
   ;; NOTE: Old version of this code
-  ;; `(s:nest
+  ;; `(serapeum:nest
   ;;   (funcall (lambda (x)
   ;;              (prog1
   ;;                  (unless (zerop (second x))
   ;;                    (/ (first x) (second x)))
   ;;                ;; Release the juxt list to the cons cache
   ;;                (list x))))
-  ;;   (funcall (s:juxt (lambda (x) (reduce #'+ x :key (curry #'reduce #'*)))
+  ;;   (funcall (serapeum:juxt (lambda (x) (reduce #'+ x :key (curry #'reduce #'*)))
   ;;                    (lambda (x) (reduce #'+ x :key #'second))))
   ;;   (all-values-prob ,@body))
   )
@@ -3641,7 +3641,7 @@ forms")
   ;; (print "ensure")
   (cdr (or (assoc location-key *pure-cache* :test 'equal)
            (progn
-             (push (cons location-key (s:dict))
+             (push (cons location-key (serapeum:dict))
                    *pure-cache*)
              (first *pure-cache*)))))
 
@@ -3889,7 +3889,7 @@ Example:
             ;; mutating the input
             (let ((new-result (copy-list result)))
               ;; Divide the probabilities by their sum to normalize
-              (s:callf (rcurry #'/ total)
+              (serapeum:callf (rcurry #'/ total)
                        (second new-result))
               new-result))
           result-list))
@@ -4463,7 +4463,7 @@ similar form."
 
 (cl:defun sample-nondeterministic (continuation source &key count (stop nil stop-supplied) (test 'eql))
   (declare (function continuation) (type (or (integer 0) null) count))
-  (s:nest
+  (serapeum:nest
    (flet ((normalize (d psum)
             (declare (number psum))
             ;; Normalize a list-distribution given the sum
@@ -4527,7 +4527,7 @@ similar form."
    (typecase count
      ;; When count is provided
      (non-negative-integer
-      (s:nest
+      (serapeum:nest
        (choice-point-external)
        (loop)
        ;; Keep sampling with every loop iteration
@@ -4543,7 +4543,7 @@ similar form."
        ret))
      ;; When count is absent
      (null
-      (s:nest
+      (serapeum:nest
        (choice-point-external)
        (loop)
        (choice-point-internal)
@@ -4593,7 +4593,7 @@ an output."
    called only from a nondeterministic context."))
 
 (cl:defun sample-optimizing-nondeterministic (continuation source &key (stop nil stop-supplied) (test 'eql))
-  (s:nest
+  (serapeum:nest
    (flet ((ensure-prob-list (e)
             (typecase e
               (list e)
@@ -4602,7 +4602,7 @@ an output."
    (flet ((sample-internal ()
             ;; (print "sample-start")
             ;; (format t "~%current results: ~A" *screamer-results*)
-            (let ((ans (s:nest
+            (let ((ans (serapeum:nest
                         (mapcar #'ensure-prob-list)
                         (funcall source *screamer-results*))))
               ;; (format t "~%output of sample: ~A" ans)
@@ -4685,7 +4685,7 @@ TIMES must be a non-negative integer."
                  (cons state (funcall machine state)))))))
    ;; For alist state-machines, fail unless all transition-probability sets sum to 1
    (if (and alist-machine
-            (some (s:nest
+            (some (serapeum:nest
                    (lambda (state-spec))
                    (let* ((transitions (rest state-spec))
                           (prob-sum (reduce (lambda (a b)
@@ -4700,7 +4700,7 @@ TIMES must be a non-negative integer."
                   state-machine))
        (fail))
 
-   (let ((recursion-check-interval (s:nest
+   (let ((recursion-check-interval (serapeum:nest
                                     (ash 16)
                                     (max 1)
                                     (integer-length)
@@ -4710,7 +4710,7 @@ TIMES must be a non-negative integer."
               (let ((state-probs (list (list start 1)))
                     ;; Track the next probability distribution
                     (new-probs nil))
-                (s:nest
+                (serapeum:nest
                  ;; Allow short-circuiting if transitions have stabilized.
                  (block short-circuit)
                  ;; Gets the probabilities in a distribution
@@ -5185,7 +5185,7 @@ Otherwise returns the value of X."
     ((and (variable? value) (not (eq value (variable-value value))))
      (occurs-in? x (variable-value value)))
     ((consp value) (or (occurs-in? x (car value)) (occurs-in? x (cdr value))))
-    ((s:sequencep value) (some (lambda (val) (occurs-in? x val)) value))
+    ((serapeum:sequencep value) (some (lambda (val) (occurs-in? x val)) value))
     ((arrayp value) (block occurs-in
                       (dotimes (idx (array-total-size value))
                         (when (occurs-in? x (row-major-aref value idx))
@@ -5203,7 +5203,7 @@ Otherwise returns the value of X."
 
 (defun attach-noticer!-internal (noticer x)
   ;; NOTE: Will loop if X is circular.
-  (s:nest
+  (serapeum:nest
    (typecase x
      (cons
       (attach-noticer!-internal noticer (car x))
@@ -6289,7 +6289,7 @@ Otherwise returns the value of X."
       ;;       not finite.
       (restrict-bounds!
        z
-       (s:nest
+       (serapeum:nest
         (infinity-min
          (infinity-* (variable-lower-bound x)
                      (variable-lower-bound y)))
@@ -6301,7 +6301,7 @@ Otherwise returns the value of X."
                      (variable-lower-bound y))
          (infinity-* (variable-upper-bound x)
                      (variable-upper-bound y))))
-       (s:nest
+       (serapeum:nest
         (infinity-max
          (infinity-* (variable-lower-bound x)
                      (variable-lower-bound y)))
@@ -8510,7 +8510,7 @@ X2."
 ;;; == for as close to proper unification as Screamer currently supports
 ;;; Effectively a Screamer analogue of equalpv
 (defun known?-==v2-variable (x y)
-  (s:nest
+  (serapeum:nest
    (or (equalp x y))
    (cond
      ((and (variable-real? x)
@@ -8524,7 +8524,7 @@ X2."
    (cond ((and (consp x) (consp y))
           (and (known?-==v2 (car x) (car y))
                (known?-==v2 (cdr x) (cdr y))))
-         ((and x y (s:sequencep x) (s:sequencep y)
+         ((and x y (serapeum:sequencep x) (serapeum:sequencep y)
                (= (length x) (length y)))
           (every #'known?-==v2 x y))
          (t (equalp x y)))))
@@ -8538,7 +8538,7 @@ X2."
           ((and (consp xv) (consp yv))
            (and (known?-/==v2 (car xv) (car yv))
                 (known?-/==v2 (cdr xv) (cdr yv))))
-          ((and (s:sequencep xv) (s:sequencep yv)
+          ((and (serapeum:sequencep xv) (serapeum:sequencep yv)
                 xv yv ;; Make sure it's not just them being nil
                 )
            (or (not (= (length xv) (length yv)))
@@ -8583,14 +8583,14 @@ X2."
     (restrict-bounds! y (variable-lower-bound x) (variable-upper-bound x)))
   (let ((xv (when (bound? x) (value-of x)))
         (yv (when (bound? y) (value-of y))))
-    (s:nest
+    (serapeum:nest
      (cond ((and (consp xv)
                  (consp yv))
             (==-rule (variablize (car xv))
                      (variablize (car yv)))
             (==-rule (variablize (cdr xv))
                      (variablize (cdr yv))))
-           ((and (s:sequencep xv) (s:sequencep yv)
+           ((and (serapeum:sequencep xv) (serapeum:sequencep yv)
                  xv yv ;; Make sure it's not just them being nil
                  )
             (map nil (lambda (a b) (==-rule (variablize a)
@@ -8661,7 +8661,7 @@ X2."
         (yv (value-of y)))
     (cond
       ((and (bound? x) (bound? y)
-            (s:sequencep xv) (s:sequencep yv))
+            (serapeum:sequencep xv) (serapeum:sequencep yv))
        (let ((known-mismatch nil)
              (a-variables nil)
              (b-variables nil))
@@ -8815,7 +8815,7 @@ Works on nested sequences which potentially contain variables, e.g. (all-differe
             ((and (consp x) (consp y))
              (known?-equalv (car x) (car y))
              (known?-equalv (cdr x) (cdr y)))
-            ((and (s:sequencep x) (s:sequencep y) (= (length x) (length y)))
+            ((and (serapeum:sequencep x) (serapeum:sequencep y) (= (length x) (length y)))
              (every #'known?-equalv x y))
             ((and (arrayp x) (arrayp y) (equal (array-dimensions x) (array-dimensions y)))
              ;; If they have the same shape, equate each element
@@ -8843,7 +8843,7 @@ Works on nested sequences which potentially contain variables, e.g. (all-differe
           ((and (consp x) (consp y))
            (assert!-equalv (car x) (car y))
            (assert!-equalv (cdr x) (cdr y)))
-          ((and (s:sequencep x) (s:sequencep y) (= (length x) (length y)))
+          ((and (serapeum:sequencep x) (serapeum:sequencep y) (= (length x) (length y)))
            (cl:map nil #'assert!-equalv x y))
           ((and (arrayp x) (arrayp y) (equal (array-dimensions x) (array-dimensions y)))
            ;; If they have the same shape, assert every element of each array to be equalv.

@@ -53,6 +53,7 @@
            #:a-boolean
            #:an-integer #:an-integer-above #:an-integer-below #:an-integer-between
            #:a-member-of
+           #:a-random-member-of ;new function from om-screamer (Openmusic)
            #:when-failing
            #:count-failures
            #:boolean

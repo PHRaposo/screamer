@@ -36,4 +36,6 @@
   :version "4.0.0"
   :depends-on (:screamer :iterate :hu.dwim.stefil)
   :components ((:file "primordial")
-               (:file "tests")))
+               (:file "tests")
+               (:file "rational-tests")
+               (:file "variable-types")))

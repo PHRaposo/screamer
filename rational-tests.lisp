@@ -847,7 +847,7 @@
     test-notv-floatpv
     test-share-equalv-rational-enum-max-denom))
 
-(defun rational-ordeal ()
+(cl:defun rational-ordeal ()
   (let ((bug? nil))
     (flet ((run-test (fn)
             (let ((result

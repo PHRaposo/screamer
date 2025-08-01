@@ -3580,7 +3580,7 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
   (pushnew :screamer-clos *features* :test #'eq))
 
 #-screamer-clos
-(defstruct-compile-time (variable (:print-function print-variable)
+(defstruct-compile-time (variable (:print-function )
                                   (:predicate variable?)
                                   (:constructor make-variable-internal))
   name
@@ -3623,7 +3623,7 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
 
 #+screamer-clos
 (defmethod print-object ((variable variable) stream)
-  (print-variable variable stream nil))
+  ( variable stream nil))
 
 #+screamer-clos
 (defun-compile-time variable? (thing) (typep thing 'variable))
@@ -3698,19 +3698,31 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
            (error "This shouldn't happen"))
        (format stream "[~S" (variable-name x))
       (format stream "~A"
-        (cond ((variable-boolean? x) " Boolean")
-              ((variable-integer? x) " integer")
-              ((variable-noninteger-rational? x) " noninteger-rational")
-              ((variable-rational? x) " rational")
-              ((variable-nonrational? x) " nonrational-real")
-              ((variable-noninteger? x) " noninteger")
-              ((variable-real? x)
-               (if (variable-nonratio? x) " nonratio-real" " real"))
-              ((variable-number? x) " number")
-              ((variable-nonnumber? x) " nonnumber")
-              ((variable-nonreal? x) " nonreal")
-              ((variable-nonboolean? x) " nonboolean")
-              (t "")))
+        (cond
+          ((variable-boolean? x) " Boolean")
+          ((variable-real? x)
+          (cond
+            ((variable-rational? x)
+              (cond
+                ((variable-integer? x) " integer")
+                ((variable-noninteger-rational? x) " noninteger-rational")
+                (t " rational")))
+            (t
+              (cond
+                ((variable-noninteger? x)
+                 (if (variable-nonrational-real? x)
+                      " nonrational-real" " noninteger-real"))
+                (t " real")))))
+                     ((variable-number? x)
+                      (cond ((variable-nonreal? x) " nonreal-number")
+                            ((variable-noninteger? x) " noninteger-number")
+                            ((variable-nonrational? x) " nonrational-number")
+                            ((variable-rational? x) " rational-number")
+                            (t " number")))
+                     ((variable-nonnumber? x) " nonnumber")
+                     ((variable-nonreal? x) " nonreal")
+                     ((variable-noninteger? x) " noninteger")
+                     (t "")))
        ;; Print bounds if present
        (when (variable-real? x)
          (cond ((and (variable-lower-bound x) (variable-upper-bound x))
@@ -7277,14 +7289,18 @@ restricted to be consistent with other arguments."
 (defun known?-notv-equalv (x y) (one-value (progn (assert!-equalv x y) nil) t))
 
 (defun assert!-notv-equalv (x y)
-  ;; note: Can be made more efficient so that if you later find out that
-  ;;       X and Y are KNOWN?-NUMBERPV you can then ASSERT!-/=V2.
-  (if (known?-equalv x y) (fail))
-  (unless (known?-notv-equalv x y)
-    (let ((x (variablize x))
-          (y (variablize y)))
-      (attach-noticer! #'(lambda () (if (known?-equalv x y) (fail))) x)
-      (attach-noticer! #'(lambda () (if (known?-equalv x y) (fail))) y))))
+ (cond
+   ((known?-equalv x y) (fail))
+   ((not (known?-notv-equalv x y))
+    (let* ((x (variablize x))
+           (y (variablize y))
+           (noticer #'(lambda ()
+                        (cond ((and (known?-numberpv x)
+                                    (known?-numberpv y))
+                               (/=-rule x y))
+                              ((known?-equalv x y) (fail))))))
+      (attach-noticer! noticer x)
+      (attach-noticer! noticer y)))))
 
 (defun equalv (x y)
   "Returns T if the aggregate object X is known to equal the aggregate object

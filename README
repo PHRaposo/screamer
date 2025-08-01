@@ -220,3 +220,84 @@ package by using the following preamble to your file:
  <optional defpackage arguments>)
 (IN-PACKAGE :MY-PACKAGE)
 
+
+9. Version 4.0.1 (by Paulo Raposo) - Rational numbers are now supported in Screamer. The
+following functions have been added:
+
+A-RANDOM-MEMBER-OF
+A-RATIONAL
+A-RATIONAL-ABOVE
+A-RATIONAL-BELOW
+A-RATIONAL-BETWEEN
+A-RATIO
+A-RATIO-ABOVE
+A-RATIO-BELOW
+A-RATIO-BETWEEN
+A-RATIONALPV
+A-RATIONAL-BETWEENV
+A-RATIONAL-ABOVEV
+A-RATIONAL-BELOWV
+A-RATIOPV
+A-RATIO-BETWEENV
+A-RATIO-ABOVEV
+A-RATIO-BELOWV
+FLOATPV
+A-FLOATV
+A-FLOAT-ABOVEV
+A-FLOAT-BELOWV
+A-FLOAT-BETWEENV
+
+The following functions have been added/modified to support rational numbers:
+LINEAR-FORCE
+DIVIDE-AND-CONQUER-FORCE
+
+The following functions have been added to support Farey sequences (unexported):
+RATIOP
+FAREY-NEXT-VALUE
+FAREY-PREV-VALUE
+MAKE-FAREY-GENERATOR-START
+CLOSEST-RATIONAL-LOWER
+CLOSEST-RATIONAL-UPPER
+CLOSEST-RATIO-LOWER
+CLOSEST-RATIO-UPPER
+RATIONALS-BETWEEN
+RATIOS-BETWEEN
+VARIABLE POSSIBLY-NONINTEGER-RATIONAL? SLOT
+VARIABLE MAX-DENOM SLOT
+
+Additions and fixes from swapneils update (see https://github.com/nikodemus/screamer/pull/34)
+SEQUENCEP (FROM ALEXANDRIA, SEE https://alexandria.common-lisp.dev/)
+MAPPEND (FROM ALEXANDRIA, IBID.)
+APPLY-NONDETERMINISTIC FIX
+MAPCAR-NONDETERMINISTIC
+ASSERT!-NOTV-EQUALV FIX
+VARIABLE DEPENDENCIES SLOT
+
+Constraint package functions modified to use the new variable generators (see initial commit ):
+ - ALL VARIABLES PREDICATES (VARIABLE-INTEGER?, VARIABLE-NONINTEGER?, etc.)
+ - ALL RESTRICTION FUNCTIONS (RESTRICT-INTEGER!, RESTRICT-NONINTEGER!, etc.)
+ - ALL VARIABLE LOWER/UPPER BOUNDS AND DOMAINS PRUNING (RESTRICT-BOUNDS!, RESTRICT-ENUMERATED-DOMAIN!, etc.)
+ - ALL ARITHMETIC FUNCTIONS AND RULES (+V, +-RULE-UP, +-RULE-DOWN, etc.)
+ - NEW RULES FOR MAXIMUM-RATIO-DENOMINATOR
+ - KNOWN?- AND ASSERT!- FUNCTIONS (KNOWN?-RATIOPV, ASSERT!-RARTIOPV, etc.)
+ - TRANSFORM-KNOWN?, TRANSFORM-ASSERT!- AND TRANSFORM-DECIDE
+
+ New tests files and tests.lisp modifications
+ - rational-tests.lisp
+ - variable-types.lisp
+ - tests.lisp (runs screamer::rational-ordeal and screamer::variable-type-tests under Stefil)
+
+ Examples (third argument of rational/ratio generators are the maximum ratio denominator): 
+> (all-values (a-rational-between 0 1 4))
+(0 1/4 1/3 1/2 2/3 3/4 1)
+
+> (all-values (a-ratio-between 0 1 4))
+(1/4 1/3 1/2 2/3 3/4)
+
+> (let ((x (a-rational-betweenv 0 1 4))) (all-values (solution x (static-ordering #'linear-force))))
+(0 1/4 1/3 1/2 2/3 3/4 1)
+
+> (let ((x (a-ratio-betweenv 0 1 4))) (all-values (solution x (static-ordering #'linear-force))))
+(1/4 1/3 1/2 2/3 3/4)
+
+SEE ADDITIONAL EXAMPLES IN RATIONAL-TESTS.LISP

@@ -26,7 +26,6 @@
 
 (defpackage :screamer
   (:shadow :defun :multiple-value-bind :y-or-n-p :variable)
-  (:nicknames :s)
   (:use :cl)
   (:export #:either
            #:fail
@@ -44,7 +43,7 @@
            #:nondeterministic-function?
            #:funcall-nondeterministic
            #:apply-nondeterministic
-		       #:mapcar-nondeterministic
+	   #:mapcar-nondeterministic
            #:unwind-trail
            #:trail
            #:purge
@@ -64,7 +63,7 @@
            #:a-ratio-below
            #:a-ratio-between
            #:a-member-of
-		       #:a-random-member-of		   
+	   #:a-random-member-of		   
            #:when-failing
            #:count-failures
            #:boolean

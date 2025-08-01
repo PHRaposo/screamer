@@ -285,7 +285,7 @@ Constraint package functions modified to use the new variable generators (see in
  New tests files and tests.lisp modifications
  - rational-tests.lisp
  - variable-types.lisp
- - tests.lisp (runs screamer::rational-ordeal and screamer::variable-type-tests under Stefil)
+ - tests.lisp (runs same tests as screamer::rational-ordeal and screamer::run-variable-type-tests under Stefil)
 
  Examples (third argument of rational/ratio generators are the maximum ratio denominator): 
 > (all-values (a-rational-between 0 1 4))

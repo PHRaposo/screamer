@@ -3236,10 +3236,21 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
            (error "This shouldn't happen"))
        (format stream "[~S" (variable-name x))
        (format stream "~A"
-               (cond ((variable-boolean? x) " Boolean")
-                     ((variable-integer? x) " integer")
-                     ((variable-real? x)
-                      (if (variable-noninteger? x) " noninteger-real" " real"))
+        (cond
+          ((variable-boolean? x) " Boolean")
+          ((variable-real? x)
+          (cond
+            ((variable-rational? x)
+              (cond
+                ((variable-integer? x) " integer")
+                ((variable-noninteger-rational? x) " noninteger-rational")
+                (t " rational")))
+            (t
+              (cond
+                ((variable-noninteger? x)
+                 (if (variable-nonrational-real? x)
+                      " nonrational-real" " noninteger-real"))
+                (t " real")))))
                      ((variable-number? x)
                       (cond ((variable-nonreal? x) " nonreal-number")
                             ((variable-noninteger? x) " noninteger-number")

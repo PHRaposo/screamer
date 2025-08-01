@@ -3710,7 +3710,7 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
             (t
               (cond
                 ((variable-noninteger? x)
-                 (if (variable-nonrational-real? x)
+                 (if (variable-nonrational? x)
                       " nonrational-real" " noninteger-real"))
                 (t " real")))))
                      ((variable-number? x)

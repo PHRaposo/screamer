@@ -26,6 +26,7 @@
 
 (defpackage :screamer
   (:shadow :defun :multiple-value-bind :y-or-n-p :variable)
+  (:nickames :s)	
   (:use :cl)
   (:export #:either
            #:fail

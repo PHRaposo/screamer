@@ -4865,10 +4865,9 @@ Otherwise returns the value of X."
                    (<= (- upper-bound lower-bound)
                        (safest-farey-range-size 33 (variable-max-denom y)))))
             (set-enumerated-domain!
-            y (rationals-between lower-bound upper-bound (variable-max-denom y))))
-            (t
+            y (rationals-between lower-bound upper-bound (variable-max-denom y)))))
             (set-enumerated-domain!
-            y (prune-enumerated-domain y (variable-enumerated-domain y))))))))
+            y (prune-enumerated-domain y (variable-enumerated-domain y))))))
           (local (let* ((enumerated-domain
                          (cond
                            ((eq (variable-enumerated-domain x) t)

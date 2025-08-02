@@ -72,7 +72,7 @@ to DEFPACKAGE, and automatically injects two additional options:
   `(eval-when (:compile-toplevel :load-toplevel :execute)
      (defmacro ,function-name ,lambda-list ,@body)))
 
-(defparameter *screamer-version* (asdf:component-version (asdf:find-system :screamer))
+(defparameter *screamer-version* "4.0.0" ;(asdf:component-version (asdf:find-system :screamer))
   "The version of Screamer which is loaded.")
 
 (defvar-compile-time *dynamic-extent?*
@@ -3580,7 +3580,7 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
   (pushnew :screamer-clos *features* :test #'eq))
 
 #-screamer-clos
-(defstruct-compile-time (variable (:print-function )
+(defstruct-compile-time (variable (:print-function print-variable)
                                   (:predicate variable?)
                                   (:constructor make-variable-internal))
   name
@@ -3623,7 +3623,7 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
 
 #+screamer-clos
 (defmethod print-object ((variable variable) stream)
-  ( variable stream nil))
+  (print-variable variable stream nil))
 
 #+screamer-clos
 (defun-compile-time variable? (thing) (typep thing 'variable))
@@ -4611,12 +4611,12 @@ Otherwise returns the value of X."
           (cond ((and (eq (variable-enumerated-domain x) t)
                       (variable-lower-bound x)
                       (variable-upper-bound x))
-                  (cond ((and (variable-integer? x)
-                        (or (null *maximum-discretization-range*)
-                            (<= (- (variable-upper-bound x)
-                                    (variable-lower-bound x))
-                              *maximum-discretization-range*)))
-                            (set-enumerated-domain!
+                  (cond ((variable-integer? x)
+                         (when (or (null *maximum-discretization-range*)
+                                 (<= (- (variable-upper-bound x)
+                                        (variable-lower-bound x))
+                                  *maximum-discretization-range*)))
+                             (set-enumerated-domain!
                               x (integers-between
                                 (variable-lower-bound x)
                                 (variable-upper-bound x))))
@@ -5085,8 +5085,7 @@ Otherwise returns the value of X."
           (setf (variable-possibly-noninteger-real? x) nil))
       (if (and (variable-possibly-noninteger-rational? x)
                (not (some #'ratiop enumerated-domain)))
-         (progn (setf (variable-possibly-noninteger-rational? x) nil)
-                (setf (variable-max-denom x) nil)))
+          (setf (variable-possibly-noninteger-rational? x) nil))
        (if (and (variable-possibly-integer? x)
                 (not (some #'integerp enumerated-domain)))
            (setf (variable-possibly-integer? x) nil))
@@ -8574,9 +8573,12 @@ domain size is odd, the halves differ in size by at most one."
                 (variable-lower-bound variable)
                 (variable-upper-bound variable))
            (cond ((zerop (-  (variable-upper-bound variable)
-			     (variable-lower-bound variable)))
+				                     (variable-lower-bound variable)))
                   (cond ((variable-rational? variable)
-                         (restrict-value! variable (variable-lower-bound variable)))
+                         (set-enumerated-domain!
+                              variable
+                          (list (variable-lower-bound variable)))
+                          (run-noticers variable))
                         (t (set-enumerated-domain!
                               variable
                           (list (variable-upper-bound variable)(variable-lower-bound variable)))

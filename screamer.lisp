@@ -72,7 +72,7 @@ to DEFPACKAGE, and automatically injects two additional options:
   `(eval-when (:compile-toplevel :load-toplevel :execute)
      (defmacro ,function-name ,lambda-list ,@body)))
 
-(defparameter *screamer-version* "4.0.0" ;(asdf:component-version (asdf:find-system :screamer))
+(defparameter *screamer-version* (asdf:component-version (asdf:find-system :screamer))
   "The version of Screamer which is loaded.")
 
 (defvar-compile-time *dynamic-extent?*

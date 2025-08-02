@@ -4839,17 +4839,17 @@ Otherwise returns the value of X."
     (when run?
       ;; Something has changed: update enumerated domain of Y.    
       (let ((lower-bound (variable-lower-bound y))
-        (upper-bound (variable-upper-bound y)))
+            (upper-bound (variable-upper-bound y)))
       (if (eq (variable-enumerated-domain y) t)
           (cond
             ((and lower-bound
               upper-bound
-              (variable-integer? y)
-              (or (null *maximum-discretization-range*)
-                (<= (- upper-bound lower-bound)
-                  *maximum-discretization-range*)))
+              (variable-integer? y))
+              (if (or (null *maximum-discretization-range*)
+                      (<= (- upper-bound lower-bound)
+                           *maximum-discretization-range*))
             (set-enumerated-domain!
-            y (integers-between lower-bound upper-bound)))
+            y (integers-between lower-bound upper-bound))))
             ((and lower-bound
               upper-bound
               (variable-noninteger-rational? y)
@@ -4857,7 +4857,7 @@ Otherwise returns the value of X."
                    (<= (- upper-bound lower-bound)
                        (safest-farey-range-size 33 (variable-max-denom y)))))
             (set-enumerated-domain!
-            y (ratios-between lower-bound upper-bound (variable-max-denom y))))          
+            y (ratios-between lower-bound upper-bound (variable-max-denom y))))       
             ((and lower-bound
               upper-bound
               (variable-rational? y)
@@ -4865,10 +4865,9 @@ Otherwise returns the value of X."
                    (<= (- upper-bound lower-bound)
                        (safest-farey-range-size 33 (variable-max-denom y)))))
             (set-enumerated-domain!
-            y (rationals-between lower-bound upper-bound (variable-max-denom y))))
-            (t
+            y (rationals-between lower-bound upper-bound (variable-max-denom y)))))
             (set-enumerated-domain!
-            y (prune-enumerated-domain y (variable-enumerated-domain y))))))))
+            y (prune-enumerated-domain y (variable-enumerated-domain y))))))
           (local (let* ((enumerated-domain
                          (cond
                            ((eq (variable-enumerated-domain x) t)

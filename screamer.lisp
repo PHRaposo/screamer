@@ -4189,12 +4189,33 @@ Otherwise returns the value of X."
         (when run?
           (cond
             ((eq (variable-enumerated-domain x) t)
-            (let ((lb (variable-lower-bound x))
-                  (ub (variable-upper-bound x)))
-              (if (and lb ub (variable-max-denom x)
-                         (<= (- ub lb) (safest-farey-range-size 33 (variable-max-denom x))))
-                (set-enumerated-domain!
-                  x (rationals-between lb ub (variable-max-denom x))))))
+             (if (and (variable-lower-bound x)
+                      (variable-upper-bound x))
+                 (cond ((variable-integer? x)
+                         (when (or (null *maximum-discretization-range*)
+                                 (<= (- (variable-upper-bound x)
+                                        (variable-lower-bound x))
+                                  *maximum-discretization-range*))
+                             (set-enumerated-domain!
+                              x (integers-between
+                                (variable-lower-bound x)
+                                (variable-upper-bound x)))))
+                        ((and (variable-noninteger-rational? x)
+                              (variable-max-denom x))
+                        (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
+                                  (safest-farey-range-size 33 (variable-max-denom x)))       
+                          (set-enumerated-domain!
+                            x (ratios-between (variable-lower-bound x)
+                                              (variable-upper-bound x)
+                                              (variable-max-denom x))))) 
+                      ((and (variable-rational? x)
+                            (variable-max-denom x))
+                        (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
+                                  (safest-farey-range-size 33 (variable-max-denom x)))      
+                          (set-enumerated-domain!
+                          x (rationals-between (variable-lower-bound x)
+                                               (variable-upper-bound x)
+                                               (variable-max-denom x))))))))
             ((not (every #'rationalp (variable-enumerated-domain x)))
              (if (variable-max-denom x)
                  (set-enumerated-domain!
@@ -4608,9 +4629,9 @@ Otherwise returns the value of X."
             (local (setf (variable-upper-bound x) upper-bound))
             (setf run? t)))
         (when run?
-          (cond ((and (eq (variable-enumerated-domain x) t)
-                      (variable-lower-bound x)
-                      (variable-upper-bound x))
+          (cond ((eq (variable-enumerated-domain x) t)
+                 (if (and (variable-lower-bound x)
+                          (variable-upper-bound x))
                   (cond ((variable-integer? x)
                          (when (or (null *maximum-discretization-range*)
                                  (<= (- (variable-upper-bound x)
@@ -4635,7 +4656,7 @@ Otherwise returns the value of X."
                           (set-enumerated-domain!
                           x (rationals-between (variable-lower-bound x)
                                                (variable-upper-bound x)
-                                               (variable-max-denom x)))))))
+                                               (variable-max-denom x))))))))
                 ((or (and lower-bound
                           (some #'(lambda (element) (< element lower-bound))
                                 (variable-enumerated-domain x)))
@@ -4839,15 +4860,15 @@ Otherwise returns the value of X."
     (when run?
       ;; Something has changed: update enumerated domain of Y.    
       (let ((lower-bound (variable-lower-bound y))
-            (upper-bound (variable-upper-bound y)))
+        (upper-bound (variable-upper-bound y)))
       (if (eq (variable-enumerated-domain y) t)
           (cond
             ((and lower-bound
               upper-bound
               (variable-integer? y))
               (if (or (null *maximum-discretization-range*)
-                      (<= (- upper-bound lower-bound)
-                           *maximum-discretization-range*))
+                (<= (- upper-bound lower-bound)
+                  *maximum-discretization-range*))
             (set-enumerated-domain!
             y (integers-between lower-bound upper-bound))))
             ((and lower-bound
@@ -4857,7 +4878,7 @@ Otherwise returns the value of X."
                    (<= (- upper-bound lower-bound)
                        (safest-farey-range-size 33 (variable-max-denom y)))))
             (set-enumerated-domain!
-            y (ratios-between lower-bound upper-bound (variable-max-denom y))))       
+            y (ratios-between lower-bound upper-bound (variable-max-denom y))))          
             ((and lower-bound
               upper-bound
               (variable-rational? y)

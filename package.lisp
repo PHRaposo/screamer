@@ -38,10 +38,12 @@
            #:necessarily?
            #:all-values
            #:ith-value
+           #:n-values
            #:print-values
            #:nondeterministic-function?
            #:funcall-nondeterministic
            #:apply-nondeterministic
+	   #:mapcar-nondeterministic
            #:unwind-trail
            #:trail
            #:purge
@@ -52,15 +54,39 @@
            #:an-integer-above
            #:an-integer-below
            #:an-integer-between
+           #:a-rational
+           #:a-rational-above
+           #:a-rational-below
+           #:a-rational-between
+           #:a-ratio
+           #:a-ratio-above
+           #:a-ratio-below
+           #:a-ratio-between
            #:a-member-of
+	   #:a-random-member-of		   
            #:when-failing
            #:count-failures
            #:boolean
            #:booleanp
            #:make-variable
            #:numberpv
+           #:ratiopv
+           #:rationalpv
+           #:floatpv
            #:realpv
            #:integerpv
+           #:a-rationalv
+           #:a-rational-abovev
+           #:a-rational-belowv
+           #:a-rational-betweenv
+           #:a-ratiov
+           #:a-ratio-abovev
+           #:a-ratio-belowv
+           #:a-ratio-betweenv
+           #:a-floatv
+           #:a-float-abovev
+           #:a-float-belowv
+           #:a-float-betweenv
            #:booleanpv
            #:memberv
            #:assert!
@@ -117,3 +143,7 @@
            #:*minimum-shrink-ratio*
            #:*maximum-discretization-range*
            #:*strategy*))
+
+(in-package :screamer)
+;;; Avoid warnings when compiling screamer.lisp in LispWorks
+#+lispworks(declaim (declaration magic))

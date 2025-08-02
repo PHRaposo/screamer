@@ -4615,11 +4615,11 @@ Otherwise returns the value of X."
                          (when (or (null *maximum-discretization-range*)
                                  (<= (- (variable-upper-bound x)
                                         (variable-lower-bound x))
-                                  *maximum-discretization-range*)))
+                                  *maximum-discretization-range*))
                              (set-enumerated-domain!
                               x (integers-between
                                 (variable-lower-bound x)
-                                (variable-upper-bound x))))
+                                (variable-upper-bound x)))))
                         ((and (variable-noninteger-rational? x)
                               (variable-max-denom x))
                         (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
@@ -5238,11 +5238,14 @@ Otherwise returns the value of X."
    (if (variable? max-denom)
        (error "The current implementation does not allow maximum denominators%~
               of RATIO/RATIONAL VARIABLES to be an unbound variable"))
-        (cond ((variable-integer? x)
-               (local (setf (variable-max-denom x) 1)))
-              ((or (not (variable-max-denom x))
-                   (< max-denom (variable-max-denom x)))
-              (local (setf (variable-max-denom x) max-denom)))))
+   (when (or (eq (variable-value x) x) (not (variable? (variable-value x))))
+         (cond ((variable-integer? x)
+                 (unless (and (variable-max-denom x)
+                              (= (variable-max-denom x) 1))
+                   (local (setf (variable-max-denom x) 1))))
+               ((or (not (variable-max-denom x))
+                    (< max-denom (variable-max-denom x)))
+               (local (setf (variable-max-denom x) max-denom))))))
 
 ;;; Rules
 

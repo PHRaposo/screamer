@@ -4,7 +4,7 @@
 
 (in-package :screamer-user)
 
-(eval-when (:compile-toplevel :load-toplevel)
+#-lispworks(eval-when (:compile-toplevel :load-toplevel)
   (require :iterate))
 
 (screamer:define-screamer-package :screams (:use :iterate))
@@ -155,6 +155,19 @@
 	     #'>
 	     #'divide-and-conquer-force)))))
 
+(defun eq4b ()
+ (for-effects
+   (print
+    (solution
+     (let ((x (a-rational-betweenv -1000000 1000000 1000000)))
+      (assert! (=v (+v x x x x) 3))
+      x)
+     (reorder #'range-size
+ 	     #'(lambda (x) (< x 1/1000000))
+ 	     #'>
+ 	     #'divide-and-conquer-force))))
+		 
+				 
 (defun eq3 () (for-effects (print (solve '((= (* 4 x) 3))))))
 
 (defun eq2 ()
@@ -163,19 +176,33 @@
 		  (= (+ x x x x x x x y y y y) 27))))))
 
 (defun eq2a ()
+  (for-effects
+   (print
+    (solution
+     (let ((x (a-real-betweenv (- *infinity*) *infinity*))
+ 	  (y (a-real-betweenv (- *infinity*) *infinity*)))
+      (assert! (andv (=v (+v x x y y y) 17.0)
+ 		    (=v (+v x x x x x x x y y y y) 27.0)))
+      (list x y))
+     (reorder #'range-size
+ 	     #'(lambda (x) (< x *fuzz*))
+ 	     #'>
+ 	     #'divide-and-conquer-force)))))
+		 
+(defun eq2b ()
  (for-effects
   (print
    (solution
-    (let ((x (a-real-betweenv (- *infinity*) *infinity*))
-	  (y (a-real-betweenv (- *infinity*) *infinity*)))
-     (assert! (andv (=v (+v x x y y y) 17.0)
-		    (=v (+v x x x x x x x y y y y) 27.0)))
+    (let ((x (a-rational-betweenv -1000000 1000000 1000000))
+	  (y (a-rational-betweenv -1000000 1000000 1000000)))
+     (assert! (andv (=v (+v x x y y y) 17)
+		    (=v (+v x x x x x x x y y y y) 27)))
      (list x y))
     (reorder #'range-size
-	     #'(lambda (x) (< x *fuzz*))
+	     #'(lambda (x) (< x 1/1000000))
 	     #'>
 	     #'divide-and-conquer-force)))))
-
+	 
 (defun eq1 ()
  (for-effects
   (print (solve '((= (+ (* 2 x) (* 3 y)) 17) (= (+ (* 7 x) (* 4 y)) 27))))))
@@ -239,6 +266,20 @@
 	     #'>
 	     #'divide-and-conquer-force)))))
 
+(defun equation1d ()
+  (for-effects
+   (print
+    (solution
+     (let ((x (a-rational-betweenv -1000000 1000000 1000000))
+ 	  (y (a-rational-betweenv -1000000 1000000 1000000)))
+      (assert! (andv (=v (+v (*v 2 x) (*v 3 y)) 17)
+ 		    (=v (+v (*v 7 x) (*v 4 y)) 27)))
+      (list x y))
+     (reorder #'range-size
+ 	     #'(lambda (x) (< x 1/1000000))
+ 	     #'>
+ 	     #'divide-and-conquer-force)))))
+				 
 (defun equation2 ()
  (for-effects
   (print
@@ -251,6 +292,18 @@
 	     #'>
 	     #'divide-and-conquer-force)))))
 
+(defun equation2a ()
+  (for-effects
+   (print
+    (solution
+     (let ((x (a-rational-betweenv -1000000 1000000 1000000)))
+      (assert! (=v (*v x x) 4))
+      x)
+     (reorder #'range-size
+ 	     #'(lambda (x) (< x 1/1000000))
+ 	     #'>
+ 	     #'divide-and-conquer-force)))))
+				 
 (defun equation3 ()
  (for-effects
   (print
@@ -311,6 +364,20 @@
 	     #'>
 	     #'divide-and-conquer-force)))))
 
+(defun equation3d ()
+  (for-effects
+   (print
+    (solution
+     (let ((x (a-rational-betweenv -1000000 1000000 1000000))
+ 	  (y (a-rational-betweenv -1000000 1000000 1000000)))
+      (assert! (andv (=v (+v x x y y y) 17)
+ 		    (=v (+v x x x x x x x y y y y) 27)))
+      (list x y))
+     (reorder #'range-size
+ 	     #'(lambda (x) (< x 1/1000000))
+ 	     #'>
+ 	     #'divide-and-conquer-force)))))
+				 
 (defun equation4 ()
  (for-effects
   (print
@@ -359,6 +426,18 @@
 	     #'>
 	     #'divide-and-conquer-force)))))
 
+(defun equation4d ()
+  (for-effects
+   (print
+    (solution
+     (let ((x (a-rational-betweenv -1000000 1000000 1000000)))
+      (assert! (=v (+v x x x x) 8))
+      x)
+     (reorder #'range-size
+ 	     #'(lambda (x) (< x 1/1000000))
+ 	     #'>
+ 	     #'divide-and-conquer-force)))))
+				 
 ;;; This doesn't appear to terminate very quickly, if at all...
 (defun nonlinear1 ()
  (for-effects
@@ -395,5 +474,24 @@
 	     #'(lambda (x) (< x *fuzz*))
 	     #'>
 	     #'divide-and-conquer-force)))))
+
+(defun nonlinear3 ()
+ (for-effects
+  (print 
+  (solution
+   (let ((x (a-rational-betweenv -5 5 10))
+         (y (a-rational-betweenv -5 5 10))
+         (z (a-rational-betweenv -5 5 10)))
+    (assert!
+      (andv
+        (orv
+          (=v (+v (*v 4 x x y) (*v 7 y z z) (*v 6 x x z z)) 2)
+          (=v (+v (*v 3 x y) (*v 2 y y) (*v 5 x y z)) -4))
+        (>=v (*v (+v x y) (+v y z)) -5)))
+    (list x y z))
+ (reorder #'range-size
+         #'(lambda (x) (< x 1/10))
+         #'>
+         #'divide-and-conquer-force)))))
 
 ;;; Tam V'Nishlam Shevah L'El Borei Olam

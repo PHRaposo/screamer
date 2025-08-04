@@ -275,7 +275,7 @@ MAPCAR-NONDETERMINISTIC
 ASSERT!-NOTV-EQUALV FIX
 VARIABLE DEPENDENCIES SLOT
 
-Constraint package functions modified to use the new variable generators (see initial commit ):
+Constraint package functions modified to use the new variable generators (see initial commit):
 
 ALL VARIABLES PREDICATES (VARIABLE-INTEGER?, VARIABLE-NONINTEGER?, etc.)
 ALL RESTRICTION FUNCTIONS (RESTRICT-INTEGER!, RESTRICT-NONINTEGER!, etc.)
@@ -284,8 +284,8 @@ ALL ARITHMETIC FUNCTIONS AND RULES (+V, +-RULE-UP, +-RULE-DOWN, etc.)
 NEW RULES FOR MAXIMUM-RATIO-DENOMINATOR
 KNOWN?- AND ASSERT!- FUNCTIONS (KNOWN?-RATIOPV, ASSERT!-RARTIOPV, etc.)
 TRANSFORM-KNOWN?, TRANSFORM-ASSERT!- AND TRANSFORM-DECIDE
-New tests files and tests.lisp modifications
 
+New tests files and tests.lisp modifications:
 rational-tests.lisp
 variable-types.lisp
 tests.lisp (runs same tests as screamer::rational-ordeal and screamer::run-variable-type-tests under Stefil)

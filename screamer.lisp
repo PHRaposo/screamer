@@ -1204,6 +1204,11 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
           (macro-function (first form) environment))
      (walk-macro-call
       map-function reduce-function screamer? partial? nested? form environment))
+    #+ccl
+    ((eq (first form) 'ccl:compiler-let)
+    (walk-let/let*
+      map-function reduce-function screamer? partial? nested? form environment
+      'ccl:compiler-let))
     ((special-operator-p (first form))
      (error "Cannot (currently) handle the special form ~S" (first form)))
     (t (walk-function-call
@@ -1273,6 +1278,21 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
          ,@(mapcar
             #'(lambda (subform) (funcall function subform environment))
             (rest form)))))
+     #+ccl       
+     ((ccl:compiler-let)
+     (cl:multiple-value-bind (body declarations)
+         (peal-off-documentation-string-and-declarations (rest (rest form)))
+       `(,(first form)
+          ,(mapcar
+            #'(lambda (binding)
+                (if (and (consp binding) (= (length binding) 2))
+                    `(,(first binding)
+                       ,(funcall function (second binding) environment))
+                    binding))
+            (second form))
+          ,@declarations
+          ,@(mapcar
+             #'(lambda (subform) (funcall function subform environment)) body))))	  
     (otherwise
      (cons (first form)
            (mapcar #'(lambda (subform) (funcall function subform environment))

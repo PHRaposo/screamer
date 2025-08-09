@@ -3666,6 +3666,23 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
   "Returns T if X is a sequence, NIL otherwise."
  (typecase x (sequence t) (otherwise nil)))
 
+(cl:defun copy-array (array &key (element-type (array-element-type array))
+                              (fill-pointer (and (array-has-fill-pointer-p array)
+                                                 (fill-pointer array)))
+                              (adjustable (adjustable-array-p array)))
+  "Returns an undisplaced copy of ARRAY, with same fill-pointer and
+adjustability (if any) as the original, unless overridden by the keyword
+arguments."
+ (let* ((dimensions (array-dimensions array))
+        (new-array (make-array dimensions
+                               :element-type element-type
+                               :adjustable adjustable
+                               :fill-pointer fill-pointer)))
+   (dotimes (i (array-total-size array))
+     (setf (row-major-aref new-array i)
+           (row-major-aref array i)))
+   new-array))
+
 ;(defun gaussian-integerp (x)
 ;  "Returns true iff X is a Gaussian integer, i.e., a complex number with both
 ;real and imaginary parts that are integers."
@@ -3927,9 +3944,11 @@ returns NIL. BOUND? is analogous to the extra-logical predicates `var' and
       (or (variable-boolean? x)
           (not (or (eq (variable-enumerated-domain x) t)
                (null (variable-enumerated-domain x))))
-          (and (variable-integer? x)
-               (variable-lower-bound x)
-               (variable-upper-bound x)))))
+          (and (variable-lower-bound x)
+               (variable-upper-bound x)
+               (or (variable-integer? x)
+                   (and (variable-rational? x)
+                        (variable-max-denom x)))))))
          
 (defun ground? (x)
   "The primitive GROUND? is an extension of the primitive BOUND? which
@@ -3942,25 +3961,72 @@ Otherwise returns nil."
     (and (not (variable? x))
          (or (not (consp x)) (and (ground? (car x)) (ground? (cdr x)))))))
 
+;(defun apply-substitution (x)
+;  "If X is a CONS, or a variable whose value is a CONS, returns
+;a freshly consed copy of the tree with all variables dereferenced.
+;Otherwise returns the value of X."
+;  (let ((x (value-of x)))
+;    (if (consp x)
+;        (cons (apply-substitution (car x)) (apply-substitution (cdr x)))
+;        x)))
+
 (defun apply-substitution (x)
-  "If X is a CONS, or a variable whose value is a CONS, returns
-a freshly consed copy of the tree with all variables dereferenced.
+  "If X is a SEQUENCE or HASH-TABLE, returns a freshly consed
+copy of the tree with all variables dereferenced.
 Otherwise returns the value of X."
   (let ((x (value-of x)))
-    (if (consp x)
-        (cons (apply-substitution (car x)) (apply-substitution (cdr x)))
-        x)))
+    (etypecase x
+      (cons (if (null (cdr (last x)))
+                ;; If terminates with nil (ie normal list)
+                ;; use mapcar to not consume stack
+                (mapcar #'apply-substitution x)
+                ;; Otherwise recurse on the car and cdr
+                (cons (apply-substitution (car x))
+                      (apply-substitution (cdr x)))))
+      (string x)
+      (simple-vector (map 'vector #'apply-substitution x))
+      (sequence (let ((copy (copy-seq x)))
+                  (dotimes (idx (length x))
+                    (setf (elt copy idx)
+                          (apply-substitution (elt x idx))))
+                  copy))
+      (array (let ((arr (copy-array x)))
+               (dotimes (idx (array-total-size arr))
+                 (setf (row-major-aref arr idx)
+                       (apply-substitution (row-major-aref arr idx))))
+               arr))
+      ;(hash-table
+      ; (let ((x (copy-hash-table x)))
+      ;   (maphash (lambda (k v) (setf (gethash k x) (apply-substitution v))) x)
+      ;   x))
+      (t x))))
 
-(defun occurs-in? (x value)
+;(defun occurs-in? (x value)
   ;; note: X must be a variable such that (EQ X (VALUE-OF X)).
   ;; note: Will loop if VALUE is circular.
+;  (cond
+;    ((eq x value) t)
+;    ((and (variable? value) (not (eq value (variable-value value))))
+;     (occurs-in? x (variable-value value)))
+;    ((consp value) (or (occurs-in? x (car value)) (occurs-in? x (cdr value))))
+;    (t nil)))
+
+(cl:defun occurs-in? (x value)
+  ;; NOTE: X must be a variable such that (EQ X (VALUE-OF X)).
+  ;; NOTE: Will loop if VALUE is circular.
   (cond
     ((eq x value) t)
     ((and (variable? value) (not (eq value (variable-value value))))
      (occurs-in? x (variable-value value)))
     ((consp value) (or (occurs-in? x (car value)) (occurs-in? x (cdr value))))
+    ((sequencep value) (some (lambda (v) (occurs-in? x v)) value))
+    ((arrayp value) (block occurs-in
+                      (dotimes (idx (array-total-size value))
+                        (when (occurs-in? x (row-major-aref value idx))
+                          (return-from occurs-in t)))))
+    ;((hash-table-p value) (occurs-in? x (hash-table-values value)))
     (t nil)))
-
+    
  (defun attach-dependencies!-internal (dependencies x)
    ;; NOTE: Will loop if X is circular.
    (typecase x
@@ -6875,9 +6941,11 @@ V and arguments are mutually constrained:
   (let ((variable (value-of variable)))
     (or (not (variable? variable))
         (not (eq (variable-enumerated-domain variable) t))
-        (and (variable-integer? variable)
-             (variable-lower-bound variable)
-             (variable-upper-bound variable)))))
+        (and (variable-lower-bound variable)
+             (variable-upper-bound variable)
+             (or (variable-integer? variable)
+                 (and (variable-rational? variable)
+                      (variable-max-denom variable)))))))
 
 ;;; note: SOLUTION, LINEAR-FORCE and STATIC-ORDERING were moved here to be
 ;;;       before KNOWN?-CONSTRAINT to avoid forward references to
@@ -8549,12 +8617,35 @@ all the result list to a single list. FUNCTION must return a list."
   ;; variables.
   ;; (sort variables (lambda (a b) (and (not (bounded? b)) (bounded? a))))
   )
-  
+
+;(defun variables-in (x)
+;  (typecase x
+;    (cons (append (variables-in (car x)) (variables-in (cdr x))))
+;    (variable (list x))
+;    (otherwise nil)))
+
 (defun variables-in (x)
-  (typecase x
-    (cons (append (variables-in (car x)) (variables-in (cdr x))))
-    (variable (list x))
-    (otherwise nil)))
+  ;; Get initial variable list from `x'
+  (the list
+       (typecase x
+         (cons (append (variables-in (car x))
+                       (variables-in (cdr x))))
+         (string nil)
+         (sequence (apply #'append (map 'list #'variables-in x)))
+         ;(array (flet ((mappend-arr (arr f)
+         ;                (let (coll)
+         ;                  (dotimes (idx (array-total-size arr))
+         ;                    (appendf coll (funcall f (row-major-aref arr idx))))
+         ;                  coll)))
+         ;         (mappend-arr x #'variables-in)))
+         ;(hash-table (let (coll)
+         ;              (maphash (lambda (k v)
+         ;                         (declare (ignore k))
+         ;                         (appendf coll (variables-in v)))
+         ;                       x)
+         ;              coll))
+         (variable (list x))
+         (otherwise nil))))
 
 ;;; note: SOLUTION and LINEAR-FORCE used to be here but was moved to be before
 ;;;       KNOWN?-CONSTRAINT to avoid forward references to nondeterministic
@@ -8763,6 +8854,7 @@ sufficient hooks for the user to define her own force functions.)"
         (order (value-of order))
         (force-function (value-of force-function)))
     #'(lambda (variables)
+        (setf variables (get-variable-dependency-closure variables))
         (reorder-internal
          variables cost-function terminate? order force-function))))
 

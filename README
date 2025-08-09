@@ -252,6 +252,7 @@ A-FLOAT-BETWEENV
 The following functions have been modified to support rational numbers:
 LINEAR-FORCE
 DIVIDE-AND-CONQUER-FORCE
+FINITE-DOMAIN?
 
 The following functions have been added to support Farey sequences (unexported):
 RATIOP
@@ -270,10 +271,16 @@ VARIABLE MAX-DENOM SLOT
 Additions and fixes from swapneils update (see nikodemus#34)
 SEQUENCEP (FROM ALEXANDRIA, SEE https://alexandria.common-lisp.dev/)
 MAPPEND (FROM ALEXANDRIA, IBID.)
+COPY-ARRAY (FROM ALEXANDRIA, IBID.)
 APPLY-NONDETERMINISTIC FIX
 MAPCAR-NONDETERMINISTIC
 ASSERT!-NOTV-EQUALV FIX
 VARIABLE DEPENDENCIES SLOT
+GET-VARIABLE-DEPENDENCY-CLOSURE (INCLUDED IN STATIC-ORDERING AND REORDER)
+LAMBDA-NONDETERMINISTIC
+APPLY-SUBSTITUTION
+OCCURS-IN?
+BOUNDED? - (modified to include rationals)
 
 Constraint package functions modified to use the new variable generators (see initial commit):
 

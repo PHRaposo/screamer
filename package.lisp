@@ -43,7 +43,8 @@
            #:nondeterministic-function?
            #:funcall-nondeterministic
            #:apply-nondeterministic
-	   #:mapcar-nondeterministic
+	       #:mapcar-nondeterministic
+		   #:lambda-nondeterministic
            #:unwind-trail
            #:trail
            #:purge
@@ -63,7 +64,7 @@
            #:a-ratio-below
            #:a-ratio-between
            #:a-member-of
-	   #:a-random-member-of		   
+	       #:a-random-member-of		   
            #:when-failing
            #:count-failures
            #:boolean

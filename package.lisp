@@ -27,6 +27,7 @@
 (defpackage :screamer
   (:shadow :defun :multiple-value-bind :y-or-n-p :variable)
   (:use :cl)
+  (:nicknames :s)
   (:export #:either
            #:fail
            #:local

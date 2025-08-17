@@ -9041,6 +9041,7 @@ Other types of objects and variables have range size NIL."
   (let ((x (value-of x)))
     (typecase x
       (integer 0)
+      (ratio 0)
       (real 0.0)
       (variable (and (variable-real? x)
                      (variable-lower-bound x)

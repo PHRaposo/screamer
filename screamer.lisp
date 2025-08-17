@@ -4236,7 +4236,8 @@ Otherwise returns the value of X."
               (if (and lb ub (variable-max-denom x)
                          (<= (- ub lb) (safest-farey-range-size 33 (variable-max-denom x))))
                 (set-enumerated-domain!
-                  x (ratios-between lb ub (variable-max-denom x))))))
+                  x (all-values
+                     (a-ratio-between lb ub (variable-max-denom x)))))))
             ((not (every #'ratiop (variable-enumerated-domain x)))
              (if (variable-max-denom x)
                  (set-enumerated-domain!
@@ -4323,17 +4324,19 @@ Otherwise returns the value of X."
                         (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
                                   (safest-farey-range-size 33 (variable-max-denom x)))       
                           (set-enumerated-domain!
-                            x (ratios-between (variable-lower-bound x)
-                                              (variable-upper-bound x)
-                                              (variable-max-denom x))))) 
+                            x (all-values
+                               (a-ratio-between (variable-lower-bound x)
+                                                (variable-upper-bound x)
+                                                (variable-max-denom x))))))
                       ((and (variable-rational? x)
                             (variable-max-denom x))
                         (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
                                   (safest-farey-range-size 33 (variable-max-denom x)))      
                           (set-enumerated-domain!
-                          x (rationals-between (variable-lower-bound x)
-                                               (variable-upper-bound x)
-                                               (variable-max-denom x))))))))
+                          x (all-values
+                             (a-rational-between (variable-lower-bound x)
+                                                 (variable-upper-bound x)
+                                                 (variable-max-denom x)))))))))
             ((not (every #'rationalp (variable-enumerated-domain x)))
              (if (variable-max-denom x)
                  (set-enumerated-domain!
@@ -4593,14 +4596,8 @@ Otherwise returns the value of X."
   ;; note: LOWER-BOUND must be a real constant.
   (cond
     ((variable-integer? x) (setf lower-bound (ceiling lower-bound)))
-    ((variable-noninteger-rational? x)
-     (if (variable-max-denom x)
-         (setf lower-bound (closest-ratio-lower lower-bound (variable-max-denom x)))
-         (setf lower-bound (rationalize lower-bound))))
-    ((variable-rational? x)
-     (if (variable-max-denom x)
-         (setf lower-bound (closest-rational-lower lower-bound (variable-max-denom x)))
-         (setf lower-bound (rationalize lower-bound)))))
+    ((or (variable-noninteger-rational? x) (variable-rational? x))
+     (setf lower-bound (rationalize lower-bound)))) 
   (when (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
              (or (not (variable-lower-bound x))
                  (> lower-bound (variable-lower-bound x))))
@@ -4622,18 +4619,20 @@ Otherwise returns the value of X."
               *maximum-discretization-range*))
           (set-enumerated-domain!
            x (integers-between lower-bound (variable-upper-bound x)))))
+           ((and (variable-noninteger-rational? x)
+                    (variable-max-denom x))
+                (when (<= (- (variable-upper-bound x) lower-bound)
+                          (safest-farey-range-size 33 (variable-max-denom x)))
+                  (set-enumerated-domain!
+                    x (all-values
+                       (a-ratio-between lower-bound (variable-upper-bound x) (variable-max-denom x))))))
            ((and (variable-rational? x)
                  (variable-max-denom x))
              (if (<= (- (variable-upper-bound x) lower-bound)
                      (safest-farey-range-size 33 (variable-max-denom x)))
               (set-enumerated-domain!
-               x (rationals-between lower-bound (variable-upper-bound x) (variable-max-denom x)))))
-              ((and (variable-noninteger-rational? x)
-                    (variable-max-denom x))
-                (when (<= (- (variable-upper-bound x) lower-bound)
-                          (safest-farey-range-size 33 (variable-max-denom x)))
-                  (set-enumerated-domain!
-                    x (ratios-between lower-bound (variable-upper-bound x) (variable-max-denom x))))))))
+               x (all-values
+                  (a-rational-between lower-bound (variable-upper-bound x) (variable-max-denom x)))))))))            
          ((some #'(lambda (element) (< element lower-bound))
                    (variable-enumerated-domain x))
              ;; note: Could do less consing if had LOCAL DELETE-IF.
@@ -4649,14 +4648,8 @@ Otherwise returns the value of X."
 (cond
   ((variable-integer? x)
     (setf upper-bound (floor upper-bound)))
-  ((variable-noninteger-rational? x)
-   (if (variable-max-denom x)
-       (setf upper-bound (closest-ratio-upper upper-bound (variable-max-denom x)))
-       (setf upper-bound (rationalize upper-bound))))
-  ((variable-rational? x)
-   (if (variable-max-denom x)
-       (setf upper-bound (closest-rational-upper upper-bound (variable-max-denom x)))
-       (setf upper-bound (rationalize upper-bound)))))
+  ((or (variable-noninteger-rational? x) (variable-rational? x))
+    (setf upper-bound (rationalize upper-bound))))
 (when (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
             (or (not (variable-upper-bound x))
                 (< upper-bound (variable-upper-bound x))))
@@ -4683,13 +4676,15 @@ Otherwise returns the value of X."
                 (if (<= (- upper-bound (variable-lower-bound x))
                           (safest-farey-range-size 33 (variable-max-denom x)))
                   (set-enumerated-domain!
-                    x (ratios-between (variable-lower-bound x) upper-bound (variable-max-denom x)))))
+                    x (all-values
+                       (a-ratio-between (variable-lower-bound x) upper-bound (variable-max-denom x))))))
               ((and (variable-rational? x)
                     (variable-max-denom x))
                 (if (<= (- upper-bound (variable-lower-bound x))
                           (safest-farey-range-size 33 (variable-max-denom x)))
                   (set-enumerated-domain!
-                    x (rationals-between (variable-lower-bound x) upper-bound (variable-max-denom x))))))))
+                    x (all-values 
+                       (a-rational-between (variable-lower-bound x) upper-bound (variable-max-denom x)))))))))
       ((some #'(lambda (element) (> element upper-bound))
               (variable-enumerated-domain x))
         ;; note: Could do less consing if had LOCAL DELETE-IF.
@@ -4706,18 +4701,9 @@ Otherwise returns the value of X."
     ((variable-integer? x)
      (when lower-bound (setf lower-bound (ceiling lower-bound)))
      (when upper-bound (setf upper-bound (floor upper-bound))))
-    ((variable-noninteger-rational? x)
-     (cond ((variable-max-denom x)
-            (when lower-bound (setf lower-bound (closest-ratio-lower lower-bound (variable-max-denom x))))
-            (when upper-bound (setf upper-bound (closest-ratio-upper upper-bound (variable-max-denom x)))))
-           (t (when lower-bound (setf lower-bound (rationalize lower-bound)))
-              (when upper-bound (setf upper-bound (rationalize upper-bound))))))
-    ((variable-rational? x)
-     (cond ((variable-max-denom x)
-            (when lower-bound (setf lower-bound (closest-rational-lower lower-bound (variable-max-denom x))))
-            (when upper-bound (setf upper-bound (closest-rational-upper upper-bound (variable-max-denom x)))))
-          (t (when lower-bound (setf lower-bound (rationalize lower-bound)))
-             (when upper-bound (setf upper-bound (rationalize upper-bound)))))))
+  ((or (variable-noninteger-rational? x) (variable-rational? x))     
+   (when lower-bound (setf lower-bound (rationalize lower-bound)))
+   (when upper-bound (setf upper-bound (rationalize upper-bound)))))
   (if (or (eq (variable-value x) x) (not (variable? (variable-value x))))
       (let ((run? nil))
         (when (and lower-bound
@@ -4764,17 +4750,19 @@ Otherwise returns the value of X."
                         (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
                                   (safest-farey-range-size 33 (variable-max-denom x)))       
                           (set-enumerated-domain!
-                            x (ratios-between (variable-lower-bound x)
-                                              (variable-upper-bound x)
-                                              (variable-max-denom x))))) 
+                            x (all-values
+                               (a-ratio-between (variable-lower-bound x)
+                                                (variable-upper-bound x)
+                                                (variable-max-denom x)))))) 
                       ((and (variable-rational? x)
                             (variable-max-denom x))
                         (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
                                   (safest-farey-range-size 33 (variable-max-denom x)))      
                           (set-enumerated-domain!
-                          x (rationals-between (variable-lower-bound x)
-                                               (variable-upper-bound x)
-                                               (variable-max-denom x))))))))
+                          x (all-values
+                             (a-rational-between (variable-lower-bound x)
+                                                 (variable-upper-bound x)
+                                                 (variable-max-denom x)))))))))
                 ((or (and lower-bound
                           (some #'(lambda (element) (< element lower-bound))
                                 (variable-enumerated-domain x)))
@@ -4996,7 +4984,7 @@ Otherwise returns the value of X."
                    (<= (- upper-bound lower-bound)
                        (safest-farey-range-size 33 (variable-max-denom y)))))
             (set-enumerated-domain!
-            y (ratios-between lower-bound upper-bound (variable-max-denom y))))          
+            y (all-values (a-ratio-between lower-bound upper-bound (variable-max-denom y)))))
             ((and lower-bound
               upper-bound
               (variable-rational? y)
@@ -5004,7 +4992,7 @@ Otherwise returns the value of X."
                    (<= (- upper-bound lower-bound)
                        (safest-farey-range-size 33 (variable-max-denom y)))))
             (set-enumerated-domain!
-            y (rationals-between lower-bound upper-bound (variable-max-denom y)))))
+            y (all-values (a-rational-between lower-bound upper-bound (variable-max-denom y))))))
             (set-enumerated-domain!
             y (prune-enumerated-domain y (variable-enumerated-domain y))))))
           (local (let* ((enumerated-domain
@@ -5400,7 +5388,7 @@ Otherwise returns the value of X."
                                     (abs (variable-lower-bound y))))
                               ((variable-upper-bound y)
                                (abs (variable-upper-bound y))))))
-        (when (and max-y-num (> max-y-num 0))             
+        (when (and max-y-num (> max-y-num 0))       
          (restrict-max-denom! z max-y-num))))
       (t (let* ((y-low (variable-lower-bound y))
                 (y-high (variable-upper-bound y))

@@ -5387,6 +5387,10 @@ Otherwise returns the value of X."
 
 ;;; Rules
 
+(defun non-zero-rule (y)
+ (when (and (ground? y) (zerop (value-of y)))
+  (fail)))
+
 (defun max-denominator-/-rule (z x y)
  (cond ((and (variable-integer? x) (variable-integer? y))
         (let ((max-y-num (cond ((variable-lower-bound y)
@@ -5915,11 +5919,11 @@ Otherwise returns the value of X."
                  (y (variablize y))
                  (z (a-numberv)))    
              (attach-noticer!
-              #'(lambda () (*-rule-down x y z) (*-rule-down x z y)) x)
+              #'(lambda () (*-rule-down x y z) (*-rule-down x z y) (non-zero-rule y)) x)
              (attach-noticer!
-              #'(lambda () (*-rule-up x y z) (*-rule-down x z y)) y)
+              #'(lambda () (*-rule-up x y z) (*-rule-down x z y) (non-zero-rule y)) y)
              (attach-noticer!
-              #'(lambda () (*-rule-up x y z) (*-rule-down x y z)) z
+              #'(lambda () (*-rule-up x y z) (*-rule-down x y z) (non-zero-rule y)) z
         :dependencies (list x y))
              z))))
 

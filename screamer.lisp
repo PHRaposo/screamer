@@ -5388,8 +5388,16 @@ Otherwise returns the value of X."
 ;;; Rules
 
 (defun max-denominator-/-rule (z x y)
-(cond ((and (variable-integer? x) (variable-integer? y))
-       (restrict-max-denom! z 1))
+ (cond ((and (variable-integer? x) (variable-integer? y))
+        (let ((max-y-num (cond ((variable-lower-bound y)
+                                (if (variable-upper-bound y)
+                                    (max (abs (variable-lower-bound y))
+                                         (abs (variable-upper-bound y)))
+                                    (abs (variable-lower-bound y))))
+                              ((variable-upper-bound y)
+                               (abs (variable-upper-bound y))))))
+        (when (and max-y-num (> max-y-num 0))             
+         (restrict-max-denom! z max-y-num))))
       (t (let* ((y-low (variable-lower-bound y))
                 (y-high (variable-upper-bound y))
                 (y-den (variable-max-denom y))

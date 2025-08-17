@@ -38,4 +38,5 @@
   :components ((:file "primordial")
                (:file "tests")
                (:file "rational-tests")
-               (:file "variable-types")))
+               (:file "variable-types")
+               (:file "funcallv-tests")))

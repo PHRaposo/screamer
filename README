@@ -220,8 +220,7 @@ package by using the following preamble to your file:
  <optional defpackage arguments>)
 (IN-PACKAGE :MY-PACKAGE)
 
-
-9. Version 4.0.1 (by Paulo Raposo) Rational numbers are now supported in Screamer. The
+9. Version 4.0.1 (by Paulo Raposo) - Rational numbers are now supported in Screamer. The
 following functions have been added:
 
 A-RANDOM-MEMBER-OF
@@ -233,13 +232,11 @@ A-RATIO
 A-RATIO-ABOVE
 A-RATIO-BELOW
 A-RATIO-BETWEEN
-RATIONALPV
-A-RATIONALV
+A-RATIONALPV
 A-RATIONAL-BETWEENV
 A-RATIONAL-ABOVEV
 A-RATIONAL-BELOWV
-RATIOPV
-A-RATIOV
+A-RATIOPV
 A-RATIO-BETWEENV
 A-RATIO-ABOVEV
 A-RATIO-BELOWV
@@ -248,17 +245,24 @@ A-FLOATV
 A-FLOAT-ABOVEV
 A-FLOAT-BELOWV
 A-FLOAT-BETWEENV
+A-RANDOM-MEMBER-OFV
 
-The following functions have been modified to support rational numbers:
+The following functions have been added/modified to support rational numbers:
 LINEAR-FORCE
 DIVIDE-AND-CONQUER-FORCE
 FINITE-DOMAIN?
+=-RULE (use enumerated-domains)
+/=-RULE (use enumerated-domains)
+DOMAIN-SIZE
 
 The following functions have been added to support Farey sequences (unexported):
 RATIOP
 FAREY-NEXT-VALUE
 FAREY-PREV-VALUE
 MAKE-FAREY-GENERATOR-START
+SAFEST-FAREY-RANGE-SIZE
+ESTIMATE-FAREY-DOMAIN-SIZE
+FAREY-DOMAIN-SIZE
 CLOSEST-RATIONAL-LOWER
 CLOSEST-RATIONAL-UPPER
 CLOSEST-RATIO-LOWER
@@ -268,47 +272,129 @@ RATIOS-BETWEEN
 VARIABLE POSSIBLY-NONINTEGER-RATIONAL? SLOT
 VARIABLE MAX-DENOM SLOT
 
-Additions and fixes from swapneils update (see nikodemus#34)
+Additions and fixes from swapneils update (see https://github.com/nikodemus/screamer/pull/34)
 SEQUENCEP (FROM ALEXANDRIA, SEE https://alexandria.common-lisp.dev/)
 MAPPEND (FROM ALEXANDRIA, IBID.)
 COPY-ARRAY (FROM ALEXANDRIA, IBID.)
+COPY-HASH-TABLE (FROM ALEXANDRIA, IBID.)
+HASH-TABLE-VALUES (FROM ALEXANDRIA, IBID.)
+MAPHASH-VALUES (FROM ALEXANDRIA, IBID.)
+APPENDF (FROM ALEXANDRIA, IBID.)
 APPLY-NONDETERMINISTIC FIX
 MAPCAR-NONDETERMINISTIC
 ASSERT!-NOTV-EQUALV FIX
 VARIABLE DEPENDENCIES SLOT
-GET-VARIABLE-DEPENDENCY-CLOSURE (INCLUDED IN STATIC-ORDERING AND REORDER)
+MODIFIED VERSION OF ATTACH-DEPENDENCIES!-INTERNAL
+MODIFIED VERSION OF GET-VARIABLE-DEPENDENCY-CLOSURE (INCLUDED IN STATIC-ORDERING AND REORDER)
+BEST-VARIABLE-COST (NEW FUNCTION FOR GET-VARIABLE-DEPENDENCY-CLOSURE - not in swapneils version)
 LAMBDA-NONDETERMINISTIC
 APPLY-SUBSTITUTION
 OCCURS-IN?
 BOUNDED? - (modified to include rationals)
 
-Constraint package functions modified to use the new variable generators (see initial commit):
+Constraint package functions modified to use the new variable generators (see initial commit ):
+ - ALL VARIABLES PREDICATES (VARIABLE-INTEGER?, VARIABLE-NONINTEGER?, etc.)
+ - ALL RESTRICTION FUNCTIONS (RESTRICT-INTEGER!, RESTRICT-NONINTEGER!, etc.)
+ - ALL VARIABLE LOWER/UPPER BOUNDS AND DOMAINS PRUNING (RESTRICT-BOUNDS!, RESTRICT-ENUMERATED-DOMAIN!, etc.)
+ - ALL ARITHMETIC FUNCTIONS AND RULES (+V, +-RULE-UP, +-RULE-DOWN, etc.)
+ - NEW RULES FOR MAXIMUM-RATIO-DENOMINATOR
+ - KNOWN?- AND ASSERT!- FUNCTIONS (KNOWN?-RATIOPV, ASSERT!-RARTIOPV, etc.)
+ - TRANSFORM-KNOWN?, TRANSFORM-ASSERT!- AND TRANSFORM-DECIDE
 
-ALL VARIABLES PREDICATES (VARIABLE-INTEGER?, VARIABLE-NONINTEGER?, etc.)
-ALL RESTRICTION FUNCTIONS (RESTRICT-INTEGER!, RESTRICT-NONINTEGER!, etc.)
-ALL VARIABLE LOWER/UPPER BOUNDS AND DOMAINS PRUNING (RESTRICT-BOUNDS!, RESTRICT-ENUMERATED-DOMAIN!, etc.)
-ALL ARITHMETIC FUNCTIONS AND RULES (+V, +-RULE-UP, +-RULE-DOWN, etc.)
-NEW RULES FOR MAXIMUM-RATIO-DENOMINATOR
-KNOWN?- AND ASSERT!- FUNCTIONS (KNOWN?-RATIOPV, ASSERT!-RARTIOPV, etc.)
-TRANSFORM-KNOWN?, TRANSFORM-ASSERT!- AND TRANSFORM-DECIDE
-
-New tests files and tests.lisp modifications:
-rational-tests.lisp
-variable-types.lisp
-tests.lisp (runs same tests as screamer::rational-ordeal and screamer::run-variable-type-tests under Stefil)
-
-Examples (third argument of rational/ratio generators are the maximum ratio denominator):
-
-(all-values (a-rational-between 0 1 4))
+ New tests files and tests.lisp modifications
+ - rational-tests.lisp
+ - variable-types.lisp
+ - tests.lisp
+   - runs screamer::rational-ordeal, screamer::variable-type-tests and screamer::test-funcallv under Stefil)
+   - TODO: APPLYV tests
+   
+Additional changes:
+ - Primordial.lisp (Lispworks and Allegro Common LISP compatibility)  
+ - Clozure Common LISP support (SCREAMER::WALK)
+  
+ Examples (third argument of rational/ratio generators are the maximum ratio denominator): 
+> (all-values (a-rational-between 0 1 4))
 (0 1/4 1/3 1/2 2/3 3/4 1)
 
-(all-values (a-ratio-between 0 1 4))
+> (all-values (a-ratio-between 0 1 4))
 (1/4 1/3 1/2 2/3 3/4)
 
-(let ((x (a-rational-betweenv 0 1 4))) (all-values (solution x (static-ordering #'linear-force))))
+> (let ((x (a-rational-betweenv 0 1 4))) (all-values (solution x (static-ordering #'linear-force))))
 (0 1/4 1/3 1/2 2/3 3/4 1)
 
-(let ((x (a-ratio-betweenv 0 1 4))) (all-values (solution x (static-ordering #'linear-force))))
+> (let ((x (a-ratio-betweenv 0 1 4))) (all-values (solution x (static-ordering #'linear-force))))
 (1/4 1/3 1/2 2/3 3/4)
 
 SEE ADDITIONAL EXAMPLES IN RATIONAL-TESTS.LISP
+
+Enhancements: 
+  - FUNCALLV and APPLYV
+  
+ This update introduces a new version of the APPLYV and FUNCALLV functions
+ in Screamer, extending their capabilities while (hopefully) maintaining
+ full backward compatibility with existing codebases.
+
+ Backward Compatibility
+ The updated functions preserve the original behavior of APPLYV and FUNCALLV,
+ ensuring seamless integration with legacy Screamer code.
+
+ Extended Constraint Application
+ The new implementation expands the scope of constraint propagation beyond
+ atomic variables. It now supports:
+   - Lists of variables
+   - Trees (lists of lists)
+   - TODO: other types (vectors, arrays, hash-tables, etc.) 
+ This allows constraints to be applied recursively across structured data,
+ enabling more expressive and flexible constraint modeling.
+
+ Domain Propagation Strategies
+ To support efficient constraint satisfaction, the enhanced functions integrate
+ Screamer's classical domain propagation strategies:
+   - :GFC - Generalized Forward Checking
+   - :AC  - Arc Consistency
+
+ These strategies are automatically applied to propagate domain restrictions
+ across complex variable structures.
+
+ Automatic Domain Generation
+ A new feature enables automatic domain generation when a constraint is applied,
+ provided the domain size remains within a configurable limit. This is controlled
+ by the global variable:
+
+   *maximum-list-domain-size* Default: 1000
+
+ - If the estimated domain size exceeds this threshold, automatic generation is skipped.
+ - Users can override the default value to accommodate larger domains as needed.
+
+Modified functions:
+KNOWN?-CONSTRAINT
+PROPAGATE-GFC
+PROPAGATE-AC
+ASSERT!-CONSTRAINT-GFC
+ASSERT!-CONSTRAINT-AC
+ASSERT!-CONSTRAINT
+KNOWN?-FUNCALLV
+KNOWN?-NOTV-FUNCALLV
+ASSERT!-FUNCALLV
+ASSERT!-NOTV-FUNCALLV
+FUNCALLV
+ARGUMENTS-FOR-APPLYV
+KNOWN?-APPLYV
+KNOWN?-NOTV-APPLYV
+ASSERT!-APPLYV
+ASSERT!-NOTV-APPLYV
+APPLYV
+
+New functions:
+DEEP-VALUE-OF
+DEEP-BOUND?
+DEEP-GROUND?
+DEEP-FINITE-DOMAIN?
+FLATTEN
+SUBSTITUTE-VARIABLE
+SET-CONSTRAINT-ENUMERATED-DOMAIN!
+
+New global variable: 
+*maximum-list-domain-size*
+
+SEE EXAMPLES IN FUNCALLV-TESTS.LISP

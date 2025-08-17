@@ -3346,51 +3346,30 @@ either a list or a vector."
      (let* ((step (/ 1 max-denom)))
       (* (ceiling (/ (rationalize x) step)) step)))))
 
- (cl:defun rationals-between (low high &optional max-denominator)
- "Computes a Farey sequence between [LOW] and [HIGH] with maximum denominator
-  [MAX-DENOMINATOR]. If LOW or HIGH are not rationals, they are rounded to the
-  closest rational with denominator <= MAX-DENOMINATOR. The result is a list of
-  all reduced rationals in the closed interval [LOW, HIGH] with denominators <=
-  MAX-DENOMINATOR, in ascending order."
-  (let ((low (closest-rational-lower low max-denominator))
-        (high (closest-rational-upper high max-denominator)))
-    (cond
-      ((> low high) nil)
-      ((= low high) (list low))
-      (t 
-       (labels ((helper (begin end)
-               (declare (type rational begin end))
-           (let ((med (/ (+ (numerator begin) (numerator end))
-             (+ (denominator begin) (denominator end)))))
-           (declare (type rational med)) 
-             (if (<= (denominator med) max-denominator)
-           (append (helper begin med)
-             (list med)
-             (helper med end))))))
-       (declare (type rational low high))
-           (append (list low) (helper low high) (list high)))))))
+(cl:defun rationals-between (low high &optional max-denominator)
+  "Return all reduced rationals in [low, high] with denominator <= max-denominator."
+  (let* ((max-denom (or max-denominator 10))
+         (low (closest-rational-lower low max-denom))
+         (high (closest-rational-upper high max-denom))
+         (gen (make-farey-generator-start max-denom low))
+         (result '()))
+    (do ((cur (funcall gen) (funcall gen)))
+        ((> cur high))
+      (push cur result))
+    (nreverse result)))
 
 (cl:defun ratios-between (low high &optional max-denominator)
-  "Returns a list of all reduced ratios (noninteger rationals) in [low, high] with
- denominator <= max-denominator, in ascending order."
-  (let ((low (closest-ratio-lower low max-denominator))
-        (high (closest-ratio-upper high max-denominator)))
-    (cond
-      ((> low high) nil)
-      ((= low high) (list low))
-      (t 
-        (labels ((helper (begin end)
-                  (let ((med (/ (+ (numerator begin) (numerator end))
-                                (+ (denominator begin) (denominator end)))))
-                    (if (<= (denominator med) max-denominator)
-                        (append (helper begin med)
-                                (if (> (denominator med) 1) (list med) nil) ; skip integers
-                                (helper med end))
-                        nil))))
-          (append
-            (if (> (denominator low) 1) (list low) nil)
-            (helper low high)
-            (if (> (denominator high) 1) (list high) nil)))))))
+  "Return all reduced ratios (noninteger rationals) in [low, high] with denominator <= max-denominator."
+  (let* ((max-denom (or max-denominator 10))
+         (low (closest-ratio-lower low max-denom))
+         (high (closest-ratio-upper high max-denom))
+         (gen (make-farey-generator-start max-denom low))
+         (result '()))
+    (do ((cur (funcall gen) (funcall gen)))
+        ((> cur high))
+      (when (> (denominator cur) 1)
+        (push cur result)))
+    (nreverse result)))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (declare-nondeterministic 'a-rational-between))
@@ -4236,8 +4215,7 @@ Otherwise returns the value of X."
               (if (and lb ub (variable-max-denom x)
                          (<= (- ub lb) (safest-farey-range-size 33 (variable-max-denom x))))
                 (set-enumerated-domain!
-                  x (all-values
-                     (a-ratio-between lb ub (variable-max-denom x)))))))
+                  x (ratios-between lb ub (variable-max-denom x))))))
             ((not (every #'ratiop (variable-enumerated-domain x)))
              (if (variable-max-denom x)
                  (set-enumerated-domain!
@@ -4324,19 +4302,17 @@ Otherwise returns the value of X."
                         (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
                                   (safest-farey-range-size 33 (variable-max-denom x)))       
                           (set-enumerated-domain!
-                            x (all-values
-                               (a-ratio-between (variable-lower-bound x)
-                                                (variable-upper-bound x)
-                                                (variable-max-denom x))))))
+                            x (ratios-between (variable-lower-bound x)
+                                              (variable-upper-bound x)
+                                              (variable-max-denom x)))))
                       ((and (variable-rational? x)
                             (variable-max-denom x))
                         (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
                                   (safest-farey-range-size 33 (variable-max-denom x)))      
                           (set-enumerated-domain!
-                          x (all-values
-                             (a-rational-between (variable-lower-bound x)
-                                                 (variable-upper-bound x)
-                                                 (variable-max-denom x)))))))))
+                          x (rationals-between (variable-lower-bound x)
+                                               (variable-upper-bound x)
+                                               (variable-max-denom x))))))))
             ((not (every #'rationalp (variable-enumerated-domain x)))
              (if (variable-max-denom x)
                  (set-enumerated-domain!
@@ -4624,15 +4600,13 @@ Otherwise returns the value of X."
                 (when (<= (- (variable-upper-bound x) lower-bound)
                           (safest-farey-range-size 33 (variable-max-denom x)))
                   (set-enumerated-domain!
-                    x (all-values
-                       (a-ratio-between lower-bound (variable-upper-bound x) (variable-max-denom x))))))
+                    x (ratios-between lower-bound (variable-upper-bound x) (variable-max-denom x)))))
            ((and (variable-rational? x)
                  (variable-max-denom x))
              (if (<= (- (variable-upper-bound x) lower-bound)
                      (safest-farey-range-size 33 (variable-max-denom x)))
               (set-enumerated-domain!
-               x (all-values
-                  (a-rational-between lower-bound (variable-upper-bound x) (variable-max-denom x)))))))))            
+               x (rationals-between lower-bound (variable-upper-bound x) (variable-max-denom x))))))))          
          ((some #'(lambda (element) (< element lower-bound))
                    (variable-enumerated-domain x))
              ;; note: Could do less consing if had LOCAL DELETE-IF.
@@ -4676,15 +4650,13 @@ Otherwise returns the value of X."
                 (if (<= (- upper-bound (variable-lower-bound x))
                           (safest-farey-range-size 33 (variable-max-denom x)))
                   (set-enumerated-domain!
-                    x (all-values
-                       (a-ratio-between (variable-lower-bound x) upper-bound (variable-max-denom x))))))
+                    x (ratios-between (variable-lower-bound x) upper-bound (variable-max-denom x)))))
               ((and (variable-rational? x)
                     (variable-max-denom x))
                 (if (<= (- upper-bound (variable-lower-bound x))
                           (safest-farey-range-size 33 (variable-max-denom x)))
                   (set-enumerated-domain!
-                    x (all-values 
-                       (a-rational-between (variable-lower-bound x) upper-bound (variable-max-denom x)))))))))
+                    x (rationals-between (variable-lower-bound x) upper-bound (variable-max-denom x))))))))
       ((some #'(lambda (element) (> element upper-bound))
               (variable-enumerated-domain x))
         ;; note: Could do less consing if had LOCAL DELETE-IF.
@@ -4750,19 +4722,17 @@ Otherwise returns the value of X."
                         (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
                                   (safest-farey-range-size 33 (variable-max-denom x)))       
                           (set-enumerated-domain!
-                            x (all-values
-                               (a-ratio-between (variable-lower-bound x)
-                                                (variable-upper-bound x)
-                                                (variable-max-denom x)))))) 
+                            x (ratios-between (variable-lower-bound x)
+                                              (variable-upper-bound x)
+                                              (variable-max-denom x)))))
                       ((and (variable-rational? x)
                             (variable-max-denom x))
                         (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
                                   (safest-farey-range-size 33 (variable-max-denom x)))      
                           (set-enumerated-domain!
-                          x (all-values
-                             (a-rational-between (variable-lower-bound x)
-                                                 (variable-upper-bound x)
-                                                 (variable-max-denom x)))))))))
+                          x (rationals-between (variable-lower-bound x)
+                                               (variable-upper-bound x)
+                                               (variable-max-denom x))))))))
                 ((or (and lower-bound
                           (some #'(lambda (element) (< element lower-bound))
                                 (variable-enumerated-domain x)))
@@ -4984,7 +4954,7 @@ Otherwise returns the value of X."
                    (<= (- upper-bound lower-bound)
                        (safest-farey-range-size 33 (variable-max-denom y)))))
             (set-enumerated-domain!
-            y (all-values (a-ratio-between lower-bound upper-bound (variable-max-denom y)))))
+            y (ratios-between lower-bound upper-bound (variable-max-denom y))))
             ((and lower-bound
               upper-bound
               (variable-rational? y)
@@ -4992,7 +4962,7 @@ Otherwise returns the value of X."
                    (<= (- upper-bound lower-bound)
                        (safest-farey-range-size 33 (variable-max-denom y)))))
             (set-enumerated-domain!
-            y (all-values (a-rational-between lower-bound upper-bound (variable-max-denom y))))))
+            y (rationals-between lower-bound upper-bound (variable-max-denom y)))))
             (set-enumerated-domain!
             y (prune-enumerated-domain y (variable-enumerated-domain y))))))
           (local (let* ((enumerated-domain

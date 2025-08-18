@@ -6,7 +6,8 @@
 ;;; release. Run the function (PRIME-ORDEAL). If it returns T and doesn't
 ;;; produce any error messages then Screamer is probably OK.
 
-#-lispworks(eval-when (:compile-toplevel :load-toplevel)
+#-(or lispworks allegro)
+ (eval-when (:compile-toplevel :load-toplevel)
   (require :iterate))
   
 #+lispworks(setf sys::*stack-overflow-behaviour* :warn)

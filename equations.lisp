@@ -4,7 +4,8 @@
 
 (in-package :screamer-user)
 
-#-lispworks(eval-when (:compile-toplevel :load-toplevel)
+#-(or lispworks allegro)
+ (eval-when (:compile-toplevel :load-toplevel)
   (require :iterate))
 
 (screamer:define-screamer-package :screams (:use :iterate))

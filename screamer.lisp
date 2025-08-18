@@ -9109,6 +9109,58 @@ nikodemus@random-state.net."
                    (setf ,best value))))
        (if ,bound (list ,best ,bound) ,(if form2? form2 '(fail))))))
 
+(defmacro-compile-time optimize-value (bound-type form1 objective-form &optional (form2 nil form2?))
+  "Generalized optimization macro for Screamer.
+Evaluates OBJECTIVE-FORM, which should yield a Screamer constraint variable.
+
+BOUND-TYPE should be the symbol 'max or 'min, determining whether to maximize or minimize.
+
+Repeatedly evaluates FORM1 in a nondeterministic context until failure.
+After each round, applies the appropriate bound function (max or min) to the lower and
+upper bounds of the objective variable.
+
+If an improved bound is found (according to the correct comparison), the next round
+requires a strictly better bound; otherwise, the search fails.
+
+If the last successful evaluation produced a bound for the objective variable,
+returns a list of two elements: the primary value of FORM1 from that round,
+and the best bound found.
+
+If FORM2 is provided, returns its value on failure; otherwise, calls fail."
+  (let ((bound (gensym "BOUND-"))
+        (best (gensym "BEST-"))
+        (objective (gensym "OBJECTIVE-"))
+        (bound-fn (gensym "BOUNDFN-"))
+        (compare-fn (gensym "COMPAREFN-")))
+    `(let* ((,bound nil)
+            (,best nil)
+            (,objective (variablize ,objective-form))
+            (,bound-fn (ecase ,bound-type
+                         (max #'max)
+                         (min #'min)))
+            (,compare-fn (ecase ,bound-type
+                           (max #'<=)
+                           (min #'>=))))
+       (attach-noticer!
+        (lambda ()
+          (let* ((lower (variable-lower-bound ,objective))
+                 (upper (variable-upper-bound ,objective))
+                 (best-bound (cond (lower (if upper (funcall ,bound-fn lower upper) lower))
+                                   (upper upper))))
+            (when (and best-bound ,bound (funcall ,compare-fn best-bound ,bound))
+              (fail))))
+        ,objective)
+       (for-effects
+         (let ((value ,form1))
+           (global (setf ,bound
+                         (let* ((lower (variable-lower-bound ,objective))
+                                (upper (variable-upper-bound ,objective))
+                                (best-bound (cond (lower (if upper (funcall ,bound-fn lower upper) lower))
+                                                  (upper upper))))
+                           best-bound))
+                   (setf ,best value))))
+       (if ,bound (list ,best ,bound) ,(if form2? form2 '(fail))))))
+
 (defun template-internal (template variables)
   (cond
     ((and (symbolp template) (char= #\? (aref (string template) 0)))

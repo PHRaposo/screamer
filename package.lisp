@@ -77,18 +77,6 @@
            #:floatpv
            #:realpv
            #:integerpv
-           #:a-rationalv
-           #:a-rational-abovev
-           #:a-rational-belowv
-           #:a-rational-betweenv
-           #:a-ratiov
-           #:a-ratio-abovev
-           #:a-ratio-belowv
-           #:a-ratio-betweenv
-           #:a-floatv
-           #:a-float-abovev
-           #:a-float-belowv
-           #:a-float-betweenv
            #:booleanpv
            #:memberv
            #:assert!
@@ -105,12 +93,25 @@
            #:an-integer-abovev
            #:an-integer-belowv
            #:an-integer-betweenv
+           #:a-rationalv
+           #:a-rational-abovev
+           #:a-rational-belowv
+           #:a-rational-betweenv
+           #:a-ratiov
+           #:a-ratio-abovev
+           #:a-ratio-belowv
+           #:a-ratio-betweenv
+           #:a-floatv
+           #:a-float-abovev
+           #:a-float-belowv
+           #:a-float-betweenv
            #:a-realv
            #:a-real-abovev
            #:a-real-belowv
            #:a-real-betweenv
            #:a-numberv
            #:a-member-ofv
+           #:a-random-member-ofv
            #:notv
            #:andv
            #:orv
@@ -137,6 +138,7 @@
            #:reorder
            #:solution
            #:best-value
+           #:optimize-value
            #:template
            #:define-screamer-package
            #:*screamer-version*

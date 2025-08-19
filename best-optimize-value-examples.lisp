@@ -232,5 +232,5 @@
                 (setf bug? t)))))
       (mapcar #'run-test *best-value-tests* expected)
       (if bug?
-          (progn (format t "Screamer best-value tests have a bug.~%") nil)
+          (progn (format t "Screamer best-value and optimize-value tests have a bug.~%") nil)
           (progn (format t "All best-value and optimize-value tests passed.~%") t)))))

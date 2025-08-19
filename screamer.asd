@@ -34,6 +34,7 @@
   :author "Jeffrey Mark Siskind & David Allen McAllester"
   :maintainer "Nikodemus Siivola <nikodemus@random-state.net> - Rational numbers support: Paulo Raposo"
   :version "4.0.1"
+  :depends-on (:alexandria)
   :components
   ((:file "package")
    (:file "screamer")))

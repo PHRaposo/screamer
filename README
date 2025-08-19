@@ -272,13 +272,6 @@ VARIABLE POSSIBLY-NONINTEGER-RATIONAL? SLOT
 VARIABLE MAX-DENOM SLOT
 
 Additions and fixes from swapneils update (see https://github.com/nikodemus/screamer/pull/34)
-SEQUENCEP (FROM ALEXANDRIA, SEE https://alexandria.common-lisp.dev/)
-MAPPEND (FROM ALEXANDRIA, IBID.)
-COPY-ARRAY (FROM ALEXANDRIA, IBID.)
-COPY-HASH-TABLE (FROM ALEXANDRIA, IBID.)
-HASH-TABLE-VALUES (FROM ALEXANDRIA, IBID.)
-MAPHASH-VALUES (FROM ALEXANDRIA, IBID.)
-APPENDF (FROM ALEXANDRIA, IBID.)
 APPLY-NONDETERMINISTIC FIX
 MAPCAR-NONDETERMINISTIC
 ASSERT!-NOTV-EQUALV FIX
@@ -310,6 +303,7 @@ Constraint package functions modified to use the new variable generators (see in
 Additional changes:
  - Primordial.lisp (Lispworks and Allegro Common LISP compatibility)  
  - Clozure Common LISP support (SCREAMER::WALK)
+ - Added Alexandria as a dependency in ASDF system definition.
   
  Examples (third argument of rational/ratio generators are the maximum ratio denominator): 
 > (all-values (a-rational-between 0 1 4))

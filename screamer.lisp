@@ -3008,10 +3008,10 @@ function."
             (map-nondeterministic-internal function rest)))))
 
 (defun map-nondeterministic (result-type function sequence &rest sequences)
-  (unless (member result-type '(list vector string bit-vector array))
-    (error "RESULT-TYPE ~A is not a valid Common Lisp sequence type." result-type))
-  (unless (every #'(lambda (seq) (and seq (sequencep seq))) (cons sequence sequences))
-    (error "SEQUENCE must be a sequence"))
+ (unless (subtypep result-type 'sequence)
+  (error "~A is a bad result type specifier for sequences." result-type))
+ (unless (every #'(lambda (seq) (and seq (sequencep seq))) (cons sequence sequences))
+  (error "SEQUENCE must be a sequence"))
   (cond
     ((not (nondeterministic-function? function))
      (apply #'map result-type function sequence sequences))
@@ -8844,9 +8844,9 @@ or REORDER."
   ;; Get initial variable list from `x'
   (the list
    (let ((x (value-of x)))
-        ;; Note: (value-of x) is required to dereference the value of a variable
-        ;;       whose value has been unified (using EQUALV) with other types,
-        ;;       such as cons cells, lists, etc.
+       ;; Note: (value-of x) is required to dereference a variable 
+       ;; whose value has been unified (using EQUALV) with other 
+       ;; data types, such as cons cells, lists, and so on.
        (typecase x
          (cons (append (variables-in (car x))
                        (variables-in (cdr x))))
@@ -8867,7 +8867,7 @@ or REORDER."
                        coll))
          (variable (list x))
          (otherwise nil)))))
-         
+
 ;;; note: SOLUTION and LINEAR-FORCE used to be here but was moved to be before
 ;;;       KNOWN?-CONSTRAINT to avoid forward references to nondeterministic
 ;;;       functions.

@@ -2988,6 +2988,37 @@ function."
     ;; generate a result
     (t (mapcar-nondeterministic-internal function (cons arg args)))))
 
+(defun map-nondeterministic-internal (function sequences)
+  (unless (some (lambda (seq)
+                  (typecase seq
+                    (list (null seq))
+                    (t (zerop (length seq)))))
+                sequences)
+    (let ((current (mapcar (lambda (seq)
+                            (typecase seq
+                              (list (car seq))
+                              (t (aref seq 0))))
+                           sequences))
+          (rest (mapcar (lambda (seq)
+                          (typecase seq
+                            (list (cdr seq))
+                            (t (subseq seq 1))))
+                        sequences)))
+      (cons (apply-nondeterministic function current)
+            (map-nondeterministic-internal function rest)))))
+
+(defun map-nondeterministic (result-type function sequence &rest sequences)
+  (unless (member result-type '(list vector string bit-vector array))
+    (error "RESULT-TYPE ~A is not a valid Common Lisp sequence type." result-type))
+  (unless (every #'(lambda (seq) (and seq (sequencep seq))) (cons sequence sequences))
+    (error "SEQUENCE must be a sequence"))
+  (cond
+    ((not (nondeterministic-function? function))
+     (apply #'map result-type function sequence sequences))
+    (t
+     (let ((result (map-nondeterministic-internal function (cons sequence sequences))))
+       (coerce result result-type)))))
+
 (defmacro-compile-time lambda-nondeterministic (args &body body)
   "Defines an unnamed Screamer function-object, e.g. to reuse
 between multiple Screamer forms.
@@ -3562,6 +3593,9 @@ Discretize all integer variables if NIL. Must be an integer or NIL.")
   "Strategy to use for FUNCALLV and APPLYV. Either :GFC for Generalized
 Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
 
+(defvar *maximum-random-domain-size* 88
+  "The maximum size allowed for a random domain.")
+
 ;;; note: Enable this to use CLOS instead of DEFSTRUCT for variables.
 #+(or)
 (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -3641,76 +3675,9 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
   "Returns true iff X is a ratio."
  (typep x 'ratio))
 
-;; From Alexandria
 (defun sequencep (x)
   "Returns T if X is a sequence, NIL otherwise."
- (typecase x (sequence t) (otherwise nil)))
-
-(cl:defun copy-array (array &key (element-type (array-element-type array))
-                              (fill-pointer (and (array-has-fill-pointer-p array)
-                                                 (fill-pointer array)))
-                              (adjustable (adjustable-array-p array)))
-  "Returns an undisplaced copy of ARRAY, with same fill-pointer and
-adjustability (if any) as the original, unless overridden by the keyword
-arguments."
- (let* ((dimensions (array-dimensions array))
-        (new-array (make-array dimensions
-                               :element-type element-type
-                               :adjustable adjustable
-                               :fill-pointer fill-pointer)))
-   (dotimes (i (array-total-size array))
-     (setf (row-major-aref new-array i)
-           (row-major-aref array i)))
-   new-array))
-
-(cl:defun copy-hash-table (table &key key test size
-                                   rehash-size rehash-threshold)
-  "Returns a copy of hash table TABLE, with the same keys and values
-as the TABLE. The copy has the same properties as the original, unless
-overridden by the keyword arguments.
-
-Before each of the original values is set into the new hash-table, KEY
-is invoked on the value. As KEY defaults to CL:IDENTITY, a shallow
-copy is returned by default."
-  (setf key (or key 'identity))
-  (setf test (or test (hash-table-test table)))
-  (setf size (or size (hash-table-size table)))
-  (setf rehash-size (or rehash-size (hash-table-rehash-size table)))
-  (setf rehash-threshold (or rehash-threshold (hash-table-rehash-threshold table)))
-  (let ((copy (make-hash-table :test test :size size
-                               :rehash-size rehash-size
-                               :rehash-threshold rehash-threshold)))
-    (maphash (lambda (k v)
-               (setf (gethash k copy) (funcall key v)))
-             table)
-    copy))
-
-(declaim (inline maphash-values))
-(cl:defun maphash-values (function table)
-  "Like MAPHASH, but calls FUNCTION with each value in the hash table TABLE."
-  (maphash (lambda (k v)
-             (declare (ignore k))
-             (funcall function v))
-           table))
-           
-(cl:defun hash-table-values (table)
-  "Returns a list containing the values of hash table TABLE."
-  (let ((values nil))
-    (maphash-values (lambda (v)
-                      (push v values))
-                    table)
-    values))
-    
-(cl:defun mappend (function &rest lists)
-  "Applies FUNCTION to respective element(s) of each LIST, appending all the
-all the result list to a single list. FUNCTION must return a list."
-  (loop for results in (apply #'mapcar function lists)
-        append results))
-
-(defmacro appendf (place &rest lists)
-"Appends LISTS to the place designated by the first argument."
-  `(setf ,place (append ,place ,@lists)))
-        
+ (typep x 'sequence))
 
 ;(defun gaussian-integerp (x)
 ;  "Returns true iff X is a Gaussian integer, i.e., a complex number with both
@@ -4010,13 +3977,13 @@ Otherwise returns the value of X."
                     (setf (elt copy idx)
                           (apply-substitution (elt x idx))))
                   copy))
-      (array (let ((arr (copy-array x)))
+      (array (let ((arr (alexandria::copy-array x)))
                (dotimes (idx (array-total-size arr))
                  (setf (row-major-aref arr idx)
                        (apply-substitution (row-major-aref arr idx))))
                arr))
       (hash-table
-       (let ((x (copy-hash-table x)))
+       (let ((x (alexandria::copy-hash-table x)))
          (maphash (lambda (k v) (setf (gethash k x) (apply-substitution v))) x)
          x))
       (t x))))
@@ -4034,7 +4001,7 @@ Otherwise returns the value of X."
                       (dotimes (idx (array-total-size value))
                         (when (occurs-in? x (row-major-aref value idx))
                           (return-from occurs-in t)))))
-    ((hash-table-p value) (occurs-in? x (hash-table-values value)))
+    ((hash-table-p value) (occurs-in? x (alexandria::hash-table-values value)))
     (t nil)))
 
  (defun attach-dependencies!-internal (dependencies x)
@@ -7143,6 +7110,64 @@ in the process of determining a good search order."
                         has a countable domain")))))
     (value-of variable)))
 
+(defun random-force (x)
+  "Returns X if it is not a variable. If X is a bound variable then returns
+  its value.
+
+  If X is an unbound variable then it must be known to have a countable set of 
+  potential values and a finite range. In this case, X is nondeterministically
+  restricted to be equal to a value in a random permutation of this countable
+  set, thus forcing X to be bound. The dereferenced value of X is then returned.
+
+  An unbound variable is known to have a countable set of potential values
+  if it is known to have a finite domain, if it is known to be integer
+  valued with a finite range or a rational valued with a maximum denominator
+  and a finite range.
+
+  An error is signalled if X is not known to have a finite domain and is not
+  known to be integer or rational valued with finite range and a maximum
+  denominator.
+
+  Upon backtracking X will be bound to each potential value in turn, failing
+  when there remain no untried alternatives."
+  (let ((variable (value-of x)))
+    (if (variable? variable)
+        (restrict-value!
+         variable
+         (cond
+           ((not (eq (variable-enumerated-domain variable) t))
+            (a-random-member-of (variable-enumerated-domain variable)))
+           ((and (variable-lower-bound variable)
+                 (variable-upper-bound variable))
+            (cond
+              ((and (variable-integer? variable)
+                    (<= (- (variable-upper-bound variable)
+                           (variable-lower-bound variable))
+                        *maximum-random-domain-size*))
+               (a-random-member-of
+                (integers-between (variable-lower-bound variable)
+                                  (variable-upper-bound variable))))
+              ((and (variable-max-denom variable)
+                    (<= (estimate-farey-domain-size (variable-max-denom)
+                                                    (variable-lower-bound variable)
+                                                    (variable-upper-bound variable))
+                         *maximum-random-domain-size*))
+               (cond ((variable-noninteger-rational? variable)
+                      (a-random-member-of
+                      (ratios-between (variable-lower-bound variable)
+                                      (variable-upper-bound variable)
+                                      (variable-max-denom variable))))
+                     ((variable-rational? variable)
+                     (a-random-member-of
+                         (rationals-between (variable-lower-bound variable)
+                                            (variable-upper-bound variable)
+                                            (variable-max-denom variable))))
+                    (t (error "It is only possible to random force a rational variable with~%~
+                                a maximum denominator and a small finite range."))))))
+           (t (error "It is only possible to random force a variable that~%~
+                      has a finite range.")))))
+    (value-of variable)))
+
 (defun static-ordering-internal (variables force-function)
   (if variables
       (let ((variable (value-of (first variables))))
@@ -7197,13 +7222,13 @@ sufficient hooks for the user to define her own force functions.)"
       (array (flet ((mappend-arr (arr f)
                       (let (coll)
                         (dotimes (idx (array-total-size arr))
-                          (appendf coll (funcall f (row-major-aref arr idx))))
+                          (alexandria::appendf coll (funcall f (row-major-aref arr idx))))
                         coll)))
                (mappend-arr x #'deep-value-of)))
       (hash-table (let (coll)
                     (maphash (lambda (k v)
                                (declare (ignore k))
-                               (appendf coll (deep-value-of v)))
+                               (alexandria::appendf coll (deep-value-of v)))
                              x)
                     coll))
       (otherwise x))))
@@ -7218,13 +7243,13 @@ sufficient hooks for the user to define her own force functions.)"
       (array (flet ((mappend-arr (arr f)
                       (let (coll)
                         (dotimes (idx (array-total-size arr))
-                          (appendf coll (funcall f (row-major-aref arr idx))))
+                          (alexandria::appendf coll (funcall f (row-major-aref arr idx))))
                         coll)))
                (every #'identity (mappend-arr x #'deep-bound?))))
       (hash-table (let (coll)
                     (maphash (lambda (k v)
                                (declare (ignore k))
-                               (appendf coll (deep-bound? v)))
+                               (alexandria::appendf coll (deep-bound? v)))
                              x)
                     (every #'identity coll)))
       (otherwise t))))
@@ -7239,13 +7264,13 @@ sufficient hooks for the user to define her own force functions.)"
       (array (flet ((mappend-arr (arr f)
                       (let (coll)
                         (dotimes (idx (array-total-size arr))
-                          (appendf coll (funcall f (row-major-aref arr idx))))
+                          (alexandria::appendf coll (funcall f (row-major-aref arr idx))))
                         coll)))
                (every #'identity (mappend-arr x #'deep-ground?))))
       (hash-table (let (coll)
                     (maphash (lambda (k v)
                                (declare (ignore k))
-                               (appendf coll (deep-ground? v)))
+                               (alexandria::appendf coll (deep-ground? v)))
                              x)
                     (every #'identity coll)))
       (otherwise t))))
@@ -7260,13 +7285,13 @@ sufficient hooks for the user to define her own force functions.)"
       (array (flet ((mappend-arr (arr f)
                       (let (coll)
                         (dotimes (idx (array-total-size arr))
-                          (appendf coll (funcall f (row-major-aref arr idx))))
+                          (alexandria::appendf coll (funcall f (row-major-aref arr idx))))
                         coll)))
                (every #'identity (mappend-arr x #'deep-finite-domain?))))
       (hash-table (let (coll)
                     (maphash (lambda (k v)
                                (declare (ignore k))
-                               (appendf coll (deep-finite-domain? v)))
+                               (alexandria::appendf coll (deep-finite-domain? v)))
                              x)
               (every #'identity coll)))
       (otherwise t))))
@@ -7282,13 +7307,13 @@ sufficient hooks for the user to define her own force functions.)"
       (array (flet ((mappend-arr (arr f)
                       (let (coll)
                         (dotimes (idx (array-total-size arr))
-                          (appendf coll (funcall f (row-major-aref arr idx))))
+                          (alexandria::appendf coll (funcall f (row-major-aref arr idx))))
                         coll)))
                (apply #'append (mappend-arr x #'flatten))))
       (hash-table (let (coll)
                     (maphash (lambda (k v)
                                (declare (ignore k))
-                               (appendf coll (flatten v)))
+                               (alexandria::appendf coll (flatten v)))
                              x)
                     coll))
       (otherwise (list x))))))
@@ -7323,13 +7348,13 @@ sufficient hooks for the user to define her own force functions.)"
       (array (flet ((mappend-arr (arr f)
                       (let (coll)
                         (dotimes (idx (array-total-size arr))
-                          (appendf coll (funcall f (row-major-aref arr idx))))
+                          (alexandria::appendf coll (funcall f (row-major-aref arr idx))))
                         coll)))
                (mappend-arr structure #'(lambda (elem) (substitute-variable elem target value)))))
       (hash-table (let (coll)
                     (maphash (lambda (k v)
                                (declare (ignore k))
-                               (appendf coll (substitute-variable v target value)))
+                               (alexandria::appendf coll (substitute-variable v target value)))
                              structure)
                     coll))
       (otherwise structure))))
@@ -7370,20 +7395,20 @@ sufficient hooks for the user to define her own force functions.)"
     (typecase structure
       (variable (a-member-of (variable-enumerated-domain structure)))
       (cons (cons (a-tuple (car structure) variable value)
-                  (a-tuple (cdr structure) variable value)))
-      ;; note: needs map-nondeterministic, mappend-arr-nondeterministic, etc.             
-      ;(string structure)
-      ;(sequence (map 'list #'(lambda (elem) (a-tuple elem variable value)) structure))
+                  (a-tuple (cdr structure) variable value)))           
+      (string structure)
+      (sequence (map-nondeterministic 'list (lambda-nondeterministic (elem) (a-tuple elem variable value)) structure))
+      ;; note: mappend-arr-nondeterministic, maphash-nondeterministic, etc.  
       ;(array (flet ((mappend-arr (arr f)
       ;                (let (coll)
       ;                  (dotimes (idx (array-total-size arr))
-      ;                    (appendf coll (funcall f (row-major-aref arr idx))))
+      ;                    (alexandria::appendf coll (funcall f (row-major-aref arr idx))))
       ;                  coll)))
       ;         (mappend-arr structure #'(lambda (elem) (a-tuple elem variable value)))))
       ;(hash-table (let (coll)
       ;              (maphash (lambda (k v)
       ;                         (declare (ignore k))
-      ;                         (appendf coll (a-tuple v variable value)))
+      ;                         (alexandria::appendf coll (a-tuple v variable value)))
       ;                       structure)
       ;              coll))
       (otherwise structure))))
@@ -8831,13 +8856,13 @@ or REORDER."
          (array (flet ((mappend-arr (arr f)
                          (let (coll)
                            (dotimes (idx (array-total-size arr))
-                             (appendf coll (funcall f (row-major-aref arr idx))))
+                             (alexandria::appendf coll (funcall f (row-major-aref arr idx))))
                            coll)))
                   (mappend-arr x #'variables-in)))
          (hash-table (let (coll)
                        (maphash (lambda (k v)
                                   (declare (ignore k))
-                                  (appendf coll (variables-in v)))
+                                  (alexandria::appendf coll (variables-in v)))
                                 x)
                        coll))
          (variable (list x))

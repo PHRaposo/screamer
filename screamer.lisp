@@ -3725,7 +3725,6 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
                      ((variable-nonreal? x) " nonreal")
                      ((variable-noninteger? x) " noninteger")
                      (t "")))
-       ;; Print bounds if present
        (when (variable-real? x)
          (cond ((and (variable-lower-bound x) (variable-upper-bound x))
                 (format stream " ~D:~D"
@@ -3734,12 +3733,10 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
                 (format stream " ~D:" (variable-lower-bound x)))
                ((variable-upper-bound x)
                 (format stream " :~D" (variable-upper-bound x)))))
-       ;; Print max-denom if present and variable is rational
        (when (and (variable-rational? x)
                   (variable-possibly-noninteger-rational? x)
                   (integerp (variable-max-denom x)))
          (format stream " max-denom:~D" (variable-max-denom x)))
-       ;; Print enumerated domains
        (when (and (not (eq (variable-enumerated-domain x) t))
                   (not (variable-boolean? x)))
          (format stream " enumerated-domain:~S"
@@ -4935,19 +4932,19 @@ Otherwise returns the value of X."
                                 t
                                 (set-difference (variable-enumerated-domain y)
                                                 (variable-enumerated-antidomain x)
-                                                :test #'equal)))
+                                                :test #'generic-equal)))
                            ((eq (variable-enumerated-domain y) t)
                             (set-difference (variable-enumerated-domain x)
                                             (variable-enumerated-antidomain y)
-                                            :test #'equal))
+                                            :test #'generic-equal))
                            (t (intersection (variable-enumerated-domain x)
                                             (variable-enumerated-domain y)
-                                            :test #'equal))))
+                                            :test #'generic-equal))))
                         (enumerated-antidomain
                          (if (eq enumerated-domain t)
                              (union (variable-enumerated-antidomain x)
                                     (variable-enumerated-antidomain y)
-                                    :test #'equal)
+                                    :test #'generic-equal)
                              '())))
                  (if (null enumerated-domain) (fail))
                  (if (and (not (eq enumerated-domain t))
@@ -4980,9 +4977,9 @@ Otherwise returns the value of X."
     (otherwise (unless (variable-possibly-nonboolean-nonnumber? x) (fail))))
   ;; needs work: This is sound only if VALUE does not contain any variables.
   (if (eq (variable-enumerated-domain x) t)
-      (if (member value (variable-enumerated-antidomain x) :test #'equal)
+      (if (member value (variable-enumerated-antidomain x) :test #'generic-equal)
           (fail))
-      (unless (member value (variable-enumerated-domain x) :test #'equal)
+      (unless (member value (variable-enumerated-domain x) :test #'generic-equal)
         (fail)))
   (if (and (realp value)
            (or (and (variable-lower-bound x)
@@ -5220,7 +5217,7 @@ Otherwise returns the value of X."
   (when (every #'ground? enumerated-domain)
   (setf enumerated-domain
           (remove-duplicates (map 'list #'eliminate-variables enumerated-domain)
-                             :test #'equal))
+                             :test #'generic-equal))
     (unless (variable-possibly-boolean? x)
       (setf enumerated-domain (remove-if #'booleanp enumerated-domain)))
     (unless (variable-possibly-nonboolean-nonnumber? x)
@@ -5260,9 +5257,9 @@ Otherwise returns the value of X."
           (if (eq (variable-enumerated-domain x) t)
               (set-difference enumerated-domain
                               (variable-enumerated-antidomain x)
-                              :test #'equal)
+                              :test #'generic-equal)
               (intersection (variable-enumerated-domain x) enumerated-domain
-                            :test #'equal)))
+                            :test #'generic-equal)))
     (if (set-enumerated-domain! x enumerated-domain) (run-noticers x))))
 
 (defun restrict-enumerated-antidomain! (x enumerated-antidomain)
@@ -5273,19 +5270,19 @@ Otherwise returns the value of X."
     (setf enumerated-antidomain
           (remove-duplicates
            (map 'list #'eliminate-variables enumerated-antidomain)
-           :test #'equal))
+           :test #'generic-equal))
     (cond
       ((eq (variable-enumerated-domain x) t)
        (setf enumerated-antidomain
              (union (variable-enumerated-antidomain x) enumerated-antidomain
-                    :test #'equal))
+                    :test #'generic-equal))
        (when (> (length enumerated-antidomain)
                 (length (variable-enumerated-antidomain x)))
          (local (setf (variable-enumerated-antidomain x) enumerated-antidomain))
          (run-noticers x)))
       ((set-enumerated-domain!
         x (set-difference (variable-enumerated-domain x) enumerated-antidomain
-                          :test #'equal))
+                          :test #'generic-equal))
        (run-noticers x)))))
 
 (defun restrict-max-denom! (x max-denom)
@@ -7226,7 +7223,8 @@ sufficient hooks for the user to define her own force functions.)"
       (variable (value-of x))
       (cons (mapcar #'deep-value-of x))
       (string x)
-      (sequence (map 'list #'deep-value-of x))
+      (simple-vector (map 'vector #'deep-value-of x))
+      (sequence (map (type-of x) #'deep-value-of x))
       (array (flet ((mappend-arr (arr f)
                       (let (coll)
                         (dotimes (idx (array-total-size arr))
@@ -7310,22 +7308,20 @@ sufficient hooks for the user to define her own force functions.)"
     (typecase x
       (null nil)
       (cons (append (flatten (car x)) (flatten (cdr x))))
-      (string (list x))
-      (sequence (apply #'append (map 'list #'flatten x)))
-      (array (flet ((mappend-arr (arr f)
-                      (let (coll)
-                        (dotimes (idx (array-total-size arr))
-                          (alexandria::appendf coll (funcall f (row-major-aref arr idx))))
-                        coll)))
-               (apply #'append (mappend-arr x #'flatten))))
-      (hash-table (let (coll)
-                    (maphash (lambda (k v)
-                               (declare (ignore k))
-                               (alexandria::appendf coll (flatten v)))
-                             x)
-                    coll))
       (otherwise (list x))))))
 
+(defun generic-equal (x y)
+;; note: Should find a better name for this.
+  "Compares two objects for equality considering their types and structures."
+  (typecase x
+    (vector      (and (vectorp y) (equalp x y)))
+    (array       (and (arrayp y) (equalp x y)))
+    (cons        (and (consp y) (equal x y)))
+    (string      (and (stringp y) (string= x y)))
+    (hash-table  (and (hash-table-p y) (equalp x y)))
+    (number      (and (numberp y) (eql x y)))
+    (symbol      (and (symbolp y) (eq x y)))
+    (t           (eql x y))))
 
 (defun known?-constraint (f polarity? x)
   (let ((f (value-of f)))
@@ -7352,7 +7348,8 @@ sufficient hooks for the user to define her own force functions.)"
       (cons (cons (substitute-variable (car structure) target value)
                   (substitute-variable (cdr structure) target value)))
       (string structure)
-      (sequence (map 'list #'(lambda (elem) (substitute-variable elem target value)) structure))
+      (simple-vector (map 'vector #'(lambda (elem) (substitute-variable elem target value)) structure))
+      (sequence (map (type-of structure) #'(lambda (elem) (substitute-variable elem target value)) structure))
       (array (flet ((mappend-arr (arr f)
                       (let (coll)
                         (dotimes (idx (array-total-size arr))
@@ -7403,22 +7400,7 @@ sufficient hooks for the user to define her own force functions.)"
     (typecase structure
       (variable (a-member-of (variable-enumerated-domain structure)))
       (cons (cons (a-tuple (car structure) variable value)
-                  (a-tuple (cdr structure) variable value)))  
-      ;; needs work: does not support other variable types - vectors, arrays, hash-tables,etc.       
-      ;(string structure)
-      ;(sequence (map-nondeterministic 'list (lambda-nondeterministic (elem) (a-tuple elem variable value)) structure))
-      ;(array (flet ((mappend-arr (arr f)
-      ;                (let (coll)
-      ;                  (dotimes (idx (array-total-size arr))
-      ;                    (alexandria::appendf coll (funcall f (row-major-aref arr idx))))
-      ;                  coll)))
-      ;         (mappend-arr structure #'(lambda (elem) (a-tuple elem variable value)))))
-      ;(hash-table (let (coll)
-      ;              (maphash (lambda (k v)
-      ;                         (declare (ignore k))
-      ;                         (alexandria::appendf coll (a-tuple v variable value)))
-      ;                       structure)
-      ;              coll))
+                  (a-tuple (cdr structure) variable value)))      
       (otherwise structure))))
 
 (defun propagate-ac (predicate polarity? variables)
@@ -7542,7 +7524,7 @@ sufficient hooks for the user to define her own force functions.)"
             (let ((z (make-variable)))
               (attach-noticer! nil z :dependencies (variables-in x))
               (assert!-constraint
-                #'(lambda (&rest x) (equal (first x) (apply f (rest x))))
+                #'(lambda (&rest x) (generic-equal (first x) (apply f (rest x))))
                 t (cons z x))
               (dolist (argument (flatten x))
                 (attach-noticer!
@@ -7584,7 +7566,7 @@ sufficient hooks for the user to define her own force functions.)"
               (let ((z (make-variable)))
                 (attach-noticer! nil z :dependencies (variables-in arguments))
                 (assert!-constraint
-                  #'(lambda (&rest x) (equal (first x) (apply f (rest x))))
+                  #'(lambda (&rest x) (generic-equal (first x) (apply f (rest x))))
                   t
                   (cons z arguments))
                 (dolist (argument (flatten arguments))
@@ -7600,7 +7582,7 @@ sufficient hooks for the user to define her own force functions.)"
 ;;; Lifted EQUALV
 
 (defun known?-equalv (x y)
-  (or (eql x y)
+  (or (generic-equal x y)
       (cond ((variable? x)
              (and (not (eq (variable-value x) x))
                   (known?-equalv (variable-value x) y)))
@@ -7613,7 +7595,7 @@ sufficient hooks for the user to define her own force functions.)"
                     (known?-equalv (cdr x) (cdr y)))))))
 
 (defun assert!-equalv (x y)
-  (unless (eql x y)
+  (unless (generic-equal x y)
     (cond ((variable? x)
            (cond ((not (eq (variable-value x) x))
                   (assert!-equalv (variable-value x) y))

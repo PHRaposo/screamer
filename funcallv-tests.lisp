@@ -29,7 +29,34 @@
     (assert! (=v z 11))
     (and (equal-set? (variable-enumerated-domain x) '(1 4))
          (equal-set? (variable-enumerated-domain y) '(1 3)))))
+         
+(defun test-funcallv-ac-3 ()
+ (let* ((*strategy* :ac)
+        (x (a-member-ofv '(0 1 2)))
+        (y (a-member-ofv '(3 4 5)))
+        (z (funcallv #'vector x y)))
+  (assert! (memberv z '(#(1 4) #(1 5))))
+  (known?-true (andv (=v x 1)
+                     (known?-memberv y '(4 5))))))
+                     
+(defun test-funcallv-ac-4 ()
+ (let* ((*strategy* :ac)
+        (x (a-member-ofv '(0 1 2)))
+        (y (a-member-ofv '(3 4 5)))
+        (z (funcallv #'vector x y)))
+  (assert! (equalv z #(1 4)))
+  (known?-true (andv (=v x 1)
+                     (=v y 4)))))
 
+ (defun test-funcallv-ac-5 ()
+ (let* ((*strategy* :ac)
+        (x (a-member-ofv '(0 1 2)))
+        (y (a-member-ofv '(3 4 5)))
+        (z (funcallv #'vector x y)))
+   (assert! (=v x 1))
+   (assert! (=v y 5))
+   (known?-equalv z #(1 5))))
+  
 (defun test-funcallv-bidirectional-propagation ()
   (let* ((x (an-integer-betweenv 0 2))
          (y (an-integer-betweenv 0 2))
@@ -110,6 +137,9 @@
   test-funcallv-domain-2
   test-funcallv-ac-1
   test-funcallv-ac-2
+  test-funcallv-ac-3
+  test-funcallv-ac-4
+  test-funcallv-ac-5  
   test-funcallv-bidirectional-propagation
   test-funcallv-bidirectional-propagation-2
   test-funcallv-bidirectional-propagation-3

@@ -3190,15 +3190,6 @@ either a list or a vector."
              (funcall continuation (aref sequence n))))))
       (t (error "SEQUENCE must be a sequence")))))
 
-(defun om-random-value (num)
-  (if (= num 0) 0
-  (if (< num 0)
-    (- (random (- num)))
-    (random num))))
-
-(defun nth-random (list)
- (nth (om-random-value (length list)) list))
- 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (declare-nondeterministic 'a-random-member-of))
 
@@ -3209,31 +3200,20 @@ either a list or a vector."
   (screamer-error
    "A-RANDOM-MEMBER-OF is a nondeterministic function. As such, it must be called~%~
    only from a nondeterministic context."))
- 
+
 (cl:defun a-random-member-of-nondeterministic (continuation sequence)
-(let ((sequence (value-of sequence)))
-  (cond
-    ((listp sequence)
-     (unless (null sequence)
-       (choice-point-external
-        (loop (if (null (rest sequence)) (return))
-       (let ((random-el (nth-random sequence)))
-          (choice-point-internal (funcall continuation random-el))
-           (setf sequence (value-of (remove random-el sequence :test #'equal :count 1))))))
-       (funcall continuation (first sequence))))
-    ((vectorp sequence)
-     (let ((n (length sequence)))
-       (unless (zerop n)
-      (let ((curr-n n)
-           (n (1- n)))
-           (choice-point-external
-            (dotimes (i n)
-       (decf curr-n) 
-       (let* ((random-el (aref sequence (om-random-value curr-n))))			      
+ (unless (sequencep sequence)
+  (error "SEQUENCE must be a sequence, got ~A" (type-of sequence)))
+  (let ((sequence (value-of sequence)))
+    (unless (alexandria:emptyp sequence)
+      (choice-point-external
+        (loop
+         (when (alexandria:emptyp sequence) (return))
+         (if (= (length sequence) 1)
+             (return (funcall continuation (alexandria:first-elt sequence))))
+             (let ((random-el (alexandria:random-elt sequence)))
               (choice-point-internal (funcall continuation random-el))
-        (setf sequence (value-of (remove random-el sequence :test #'equal :count 1))))))
-           (funcall continuation (aref sequence 0))))))
-    (t (error "SEQUENCE must be a sequence")))))
+               (setf sequence (value-of (remove random-el sequence :test #'equal :count 1)))))))))
 
 ;;; NONDETERMINISTIC RATIONAL NUMBERS
 
@@ -7423,10 +7403,10 @@ sufficient hooks for the user to define her own force functions.)"
     (typecase structure
       (variable (a-member-of (variable-enumerated-domain structure)))
       (cons (cons (a-tuple (car structure) variable value)
-                  (a-tuple (cdr structure) variable value)))           
-      (string structure)
-      (sequence (map-nondeterministic 'list (lambda-nondeterministic (elem) (a-tuple elem variable value)) structure))
-      ;; note: mappend-arr-nondeterministic, maphash-nondeterministic, etc.  
+                  (a-tuple (cdr structure) variable value)))  
+      ;; needs work: does not support other variable types - vectors, arrays, hash-tables,etc.       
+      ;(string structure)
+      ;(sequence (map-nondeterministic 'list (lambda-nondeterministic (elem) (a-tuple elem variable value)) structure))
       ;(array (flet ((mappend-arr (arr f)
       ;                (let (coll)
       ;                  (dotimes (idx (array-total-size arr))
@@ -8823,11 +8803,11 @@ VALUES can be either a vector or a list designator."
     (value-of v)))
 
 (defun a-random-member-ofv (values &optional (name nil name?))
-  "Returns a variable whose value is constrained to be one of VALUES.
+  "Returns a variable whose value is constrained to be one of a
+random permutation of VALUES.
 VALUES can be either a vector or a list designator."
   (let ((v (if name? (make-variable name) (make-variable))))
-    (setf values (all-values (a-random-member-of values)))
-    (assert! (memberv v values))
+    (assert! (memberv v (alexandria::shuffle values)))
     (value-of v)))
     
 ;;; Search Control

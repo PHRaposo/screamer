@@ -3213,7 +3213,7 @@ either a list or a vector."
              (return (funcall continuation (alexandria:first-elt sequence))))
              (let ((random-el (alexandria:random-elt sequence)))
               (choice-point-internal (funcall continuation random-el))
-               (setf sequence (value-of (remove random-el sequence :test #'equal :count 1)))))))))
+               (setf sequence (value-of (remove random-el sequence :test #'generic-equal :count 1)))))))))
 
 ;;; NONDETERMINISTIC RATIONAL NUMBERS
 
@@ -7302,14 +7302,6 @@ sufficient hooks for the user to define her own force functions.)"
               (every #'identity coll)))
       (otherwise t))))
 
-(defun flatten (x)
- (the list
-  (let ((x (value-of x)))
-    (typecase x
-      (null nil)
-      (cons (append (flatten (car x)) (flatten (cdr x))))
-      (otherwise (list x))))))
-
 (defun generic-equal (x y)
 ;; note: Should find a better name for this.
   "Compares two objects for equality considering their types and structures."
@@ -7347,21 +7339,6 @@ sufficient hooks for the user to define her own force functions.)"
     (typecase structure
       (cons (cons (substitute-variable (car structure) target value)
                   (substitute-variable (cdr structure) target value)))
-      (string structure)
-      (simple-vector (map 'vector #'(lambda (elem) (substitute-variable elem target value)) structure))
-      (sequence (map (type-of structure) #'(lambda (elem) (substitute-variable elem target value)) structure))
-      (array (flet ((mappend-arr (arr f)
-                      (let (coll)
-                        (dotimes (idx (array-total-size arr))
-                          (alexandria::appendf coll (funcall f (row-major-aref arr idx))))
-                        coll)))
-               (mappend-arr structure #'(lambda (elem) (substitute-variable elem target value)))))
-      (hash-table (let (coll)
-                    (maphash (lambda (k v)
-                               (declare (ignore k))
-                               (alexandria::appendf coll (substitute-variable v target value)))
-                             structure)
-                    coll))
       (otherwise structure))))
 
 (defun propagate-gfc (predicate polarity? variables unassigned-variable)
@@ -7407,8 +7384,8 @@ sufficient hooks for the user to define her own force functions.)"
   (unless (some #'(lambda (variable)
                         (and (variable? variable)
                              (eq (variable-enumerated-domain variable) t)))
-                (flatten variables))
-    (dolist (variable (flatten variables))
+                (variables-in variables))
+    (dolist (variable (variables-in variables))
       ;; note: Could do less consing if had LOCAL DELETE-IF-NOT.
       (if (not (deep-bound? variable))
           (let ((new-enumerated-domain
@@ -7438,7 +7415,7 @@ sufficient hooks for the user to define her own force functions.)"
     (unless (functionp predicate)
       (error "The first argument to FUNCALLV or APPLYV must be a deterministic~%~
            function"))
-    (dolist (variable (flatten (copy-list variables)))
+    (dolist (variable (variables-in (copy-list variables)))
       (unless (deep-bound? variable)
         (if unassigned-variable (setf multiple-unassigned-variables? t))
         (setf unassigned-variable variable)))
@@ -7446,7 +7423,7 @@ sufficient hooks for the user to define her own force functions.)"
       (multiple-unassigned-variables?
        ;; The case where two or more variables are unbound
        (let ((variables (copy-list variables)))
-         (dolist (variable (flatten variables))
+         (dolist (variable (variables-in variables))
            (unless (deep-bound? variable)
              (let ((variable variable))
                (attach-noticer!
@@ -7454,7 +7431,7 @@ sufficient hooks for the user to define her own force functions.)"
                     (global
                       (block exit
                         (let ((unassigned-variable nil))
-                          (dolist (variable (flatten variables))
+                          (dolist (variable (variables-in variables))
                             (unless (deep-bound? variable)
                               (if unassigned-variable (return-from exit))
                               (setf unassigned-variable variable)))
@@ -7485,7 +7462,7 @@ sufficient hooks for the user to define her own force functions.)"
     (unless (functionp predicate)
       (error "The first argument to FUNCALLV or APPLYV must be a deterministic~%~
            function"))
-    (dolist (variable (flatten variables))
+    (dolist (variable (variables-in variables))
       (attach-noticer!
        #'(lambda () (propagate-ac predicate polarity? variables))
        variable))
@@ -7526,7 +7503,7 @@ sufficient hooks for the user to define her own force functions.)"
               (assert!-constraint
                 #'(lambda (&rest x) (generic-equal (first x) (apply f (rest x))))
                 t (cons z x))
-              (dolist (argument (flatten x))
+              (dolist (argument (variables-in x))
                 (attach-noticer!
                   #'(lambda ()
                       (if (every #'deep-bound? x)
@@ -7569,7 +7546,7 @@ sufficient hooks for the user to define her own force functions.)"
                   #'(lambda (&rest x) (generic-equal (first x) (apply f (rest x))))
                   t
                   (cons z arguments))
-                (dolist (argument (flatten arguments))
+                (dolist (argument (variables-in arguments))
                   (attach-noticer!
                     #'(lambda ()
                         (if (every #'deep-bound? arguments)

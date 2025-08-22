@@ -293,7 +293,11 @@ Constraint package functions modified to use the new variable generators (see in
  - KNOWN?- AND ASSERT!- FUNCTIONS (KNOWN?-RATIOPV, ASSERT!-RARTIOPV, etc.)
  - TRANSFORM-KNOWN?, TRANSFORM-ASSERT!- AND TRANSFORM-DECIDE
 
- New tests files and tests.lisp modifications
+New macros:
+OPTIMIZE-VALUE (based on BEST-VALUE)
+N-VALUES (by Killian Sprotte, from PWGL Community Library Repository: https://github.com/JulienVincenot/PWGL-community-library/blob/main/User-library/smc-0.2.7/screamer-additions.lisp)
+
+New tests files and tests.lisp modifications
  - rational-tests.lisp
  - variable-types.lisp
  - tests.lisp

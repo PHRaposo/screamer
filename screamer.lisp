@@ -2713,29 +2713,49 @@ I."
                             (decf ,counter))))
          ,default))))
 
-(defmacro-compile-time n-values (n &body forms)				
-"FROM T2L-SCREAMER AND SMC(PWGL):
+(defmacro-compile-time n-values (n &body forms)
+"FROM SMC(PWGL):
  Copyright (c) 2007, Kilian Sprotte. All rights reserved.
- TODO - DOC	 
-"
- (let ((values (gensym "VALUES-"))
-       (last-value-cons  (gensym "LAST-VALUE-CONS-"))
-       (value (gensym "VALUE-")))
-   `(let ((,values '())
-          (,last-value-cons nil)
-    (number 0))
-      (block n-values
-  (for-effects
-    (let ((,value (progn ,@forms)))
-      (global (cond ((null ,values)
-        (setf ,last-value-cons (list ,value))
-        (setf ,values ,last-value-cons))
-       (t (setf (rest ,last-value-cons) (list ,value))
-          (setf ,last-value-cons (rest ,last-value-cons))))
-       (incf number))
-      (when (>= number ,n) (return-from n-values)))))
-      ,values)))
-      
+
+Evaluates FORMS as an implicit PROGN and returns a list of the first N
+nondeterministic values yielded by it.
+
+These values are produced by repeatedly evaluating the body and backtracking to
+produce the next value, until either N values have been collected or the body
+fails and yields no further values.
+
+Accordingly, local side effects performed by the body while producing each value
+are undone before attempting to produce subsequent values, and all local side
+effects performed by the body are undone upon exit from N-VALUES.
+
+Returns a list containing fewer than N elements if the body fails before N values
+are produced.
+
+An N-VALUES expression can appear in both deterministic and nondeterministic
+contexts. Irrespective of what context the N-VALUES appears in, the body is
+always in a nondeterministic context. An N-VALUES expression itself is always
+deterministic.
+
+N-VALUES is analogous to ALL-VALUES, but collects only the first N solutions."
+  (let ((values (gensym "VALUES-"))
+        (last-value-cons  (gensym "LAST-VALUE-CONS-"))
+        (value (gensym "VALUE-"))
+        (number (gensym "NUMBER-")))
+    `(let ((,values '())
+           (,last-value-cons nil)
+           (,number 0))
+       (block n-values
+         (for-effects
+           (let ((,value (progn ,@forms)))
+             (global (cond ((null ,values)
+                            (setf ,last-value-cons (list ,value))
+                            (setf ,values ,last-value-cons))
+                           (t (setf (rest ,last-value-cons) (list ,value))
+                              (setf ,last-value-cons (rest ,last-value-cons))))
+                     (incf ,number))
+             (when (>= ,number ,n) (return-from n-values ,values)))))
+       ,values)))
+
 ;;; In classic Screamer TRAIL is unexported and UNWIND-TRAIL is exported. This
 ;;; doesn't seem very safe or sane: while users could conceivably want to use
 ;;; TRAIL to track unwinds, using UNWIND-TRAIL seems inherently dangerous
@@ -8973,6 +8993,10 @@ domain size is odd, the halves differ in size by at most one."
 If X is an integer variable with an upper and lower bound, its domain size
 is the one greater than the difference of its bounds. Eg. [integer 1:2] has
 domain size 2.
+
+If X is a rational variable with a maximum denominator and both an upper and
+lower bound, its domain-size is an estimation of the number of all possible
+reduced rational numbers between those bounds.
 
 If X is a variable with an enumerated domain, its domain size is the size of
 that domain.

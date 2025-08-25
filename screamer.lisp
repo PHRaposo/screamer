@@ -7241,7 +7241,8 @@ sufficient hooks for the user to define her own force functions.)"
   (let ((x (value-of x)))
     (typecase x
       (variable (value-of x))
-      (cons (mapcar #'deep-value-of x))
+      (cons (cons (value-of (car x))
+                  (deep-value-of (cdr x))))
       (string x)
       (simple-vector (map 'vector #'deep-value-of x))
       (sequence (map (type-of x) #'deep-value-of x))
@@ -7263,7 +7264,8 @@ sufficient hooks for the user to define her own force functions.)"
   (let ((x (value-of x)))
     (typecase x
       (variable (bound? x))
-      (cons (every #'deep-bound? x))
+      (cons (and (bound? (car x))
+                  (deep-bound? (cdr x))))
       (string t)
       (sequence (every #'deep-bound? x))
       (array (flet ((mappend-arr (arr f)
@@ -7284,7 +7286,8 @@ sufficient hooks for the user to define her own force functions.)"
   (let ((x (value-of x)))
     (typecase x
       (variable (ground? x))
-      (cons (every #'deep-ground? x))
+      (cons (and (ground? (car x))
+                 (deep-ground? (cdr x))))
       (string t)
       (sequence (every #'deep-ground? x))
       (array (flet ((mappend-arr (arr f)
@@ -7305,7 +7308,8 @@ sufficient hooks for the user to define her own force functions.)"
   (let ((x (value-of x)))
     (typecase x
       (variable (finite-domain? x))
-      (cons (every #'deep-finite-domain? x))
+      (cons (and (finite-domain? (car x))
+                 (deep-finite-domain? (cdr x))))
       (string t)
       (sequence (every #'deep-finite-domain? x))
       (array (flet ((mappend-arr (arr f)
@@ -7343,7 +7347,7 @@ sufficient hooks for the user to define her own force functions.)"
     (unless (functionp f)
       (error "The first argument to FUNCALLV or APPLYV must be a deterministic~%~
            function"))
-        (and (every #'deep-finite-domain? x)
+        (and (deep-finite-domain? x)
              (block exit
                (for-effects
                  (if (if polarity?
@@ -7495,7 +7499,7 @@ sufficient hooks for the user to define her own force functions.)"
 
 (defun set-constraint-enumerated-domain! (x args)
   "Set the domain of variable z to all possible values if domain size is small and finite."
-  (when (and (every #'deep-finite-domain? args)
+  (when (and (deep-finite-domain? args)
              (and (domain-size args)
                   (<= (domain-size args) *maximum-list-domain-size*)))
      (restrict-enumerated-domain!
@@ -7516,7 +7520,7 @@ sufficient hooks for the user to define her own force functions.)"
               of FUNCALLV to be an unbound variable"))
     (unless (functionp f)
       (error "The first argument to FUNCALLV must be a deterministic function"))
-        (if (every #'deep-bound? x)
+        (if (deep-bound? x)
             (apply f (mapcar #'deep-value-of x))
             (let ((z (make-variable)))
               (attach-noticer! nil z :dependencies (variables-in x))
@@ -7526,7 +7530,7 @@ sufficient hooks for the user to define her own force functions.)"
               (dolist (argument (variables-in x))
                 (attach-noticer!
                   #'(lambda ()
-                      (if (every #'deep-bound? x)
+                      (if (deep-bound? x)
                           (assert!-equalv z (apply f (mapcar #'deep-value-of x)))))
                   argument))
                (set-constraint-enumerated-domain! z x)
@@ -7558,7 +7562,7 @@ sufficient hooks for the user to define her own force functions.)"
     (unless (functionp f)
       (error "The first argument to APPLYV must be a deterministic function"))
     (let ((arguments (apply #'list* (mapcar #'value-of (cons x xs)))))
-          (if (every #'deep-bound? arguments)
+          (if (deep-bound? arguments)
               (apply f (mapcar #'deep-value-of arguments))
               (let ((z (make-variable)))
                 (attach-noticer! nil z :dependencies (variables-in arguments))
@@ -7569,7 +7573,7 @@ sufficient hooks for the user to define her own force functions.)"
                 (dolist (argument (variables-in arguments))
                   (attach-noticer!
                     #'(lambda ()
-                        (if (every #'deep-bound? arguments)
+                        (if (deep-bound? arguments)
                             (assert!-equalv z (apply f (mapcar #'deep-value-of arguments)))))
                     argument))
                  (set-constraint-enumerated-domain! z x)

@@ -7241,7 +7241,7 @@ sufficient hooks for the user to define her own force functions.)"
   (let ((x (value-of x)))
     (typecase x
       (variable (value-of x))
-      (cons (cons (value-of (car x))
+      (cons (cons (deep-value-of (car x))
                   (deep-value-of (cdr x))))
       (string x)
       (simple-vector (map 'vector #'deep-value-of x))
@@ -7264,7 +7264,7 @@ sufficient hooks for the user to define her own force functions.)"
   (let ((x (value-of x)))
     (typecase x
       (variable (bound? x))
-      (cons (and (bound? (car x))
+      (cons (and (deep-bound? (car x))
                   (deep-bound? (cdr x))))
       (string t)
       (sequence (every #'deep-bound? x))
@@ -7286,7 +7286,7 @@ sufficient hooks for the user to define her own force functions.)"
   (let ((x (value-of x)))
     (typecase x
       (variable (ground? x))
-      (cons (and (ground? (car x))
+      (cons (and (deep-ground? (car x))
                  (deep-ground? (cdr x))))
       (string t)
       (sequence (every #'deep-ground? x))
@@ -7308,7 +7308,7 @@ sufficient hooks for the user to define her own force functions.)"
   (let ((x (value-of x)))
     (typecase x
       (variable (finite-domain? x))
-      (cons (and (finite-domain? (car x))
+      (cons (and (deep-finite-domain? (car x))
                  (deep-finite-domain? (cdr x))))
       (string t)
       (sequence (every #'deep-finite-domain? x))

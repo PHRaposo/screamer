@@ -3581,7 +3581,7 @@ output to Emacs, which will be deleted when the current choice is unwound."
 
 (defvar *name* 0 "The counter for anonymous names.")
 
-(defvar *minimum-shrink-ratio* 1e-2
+(defvar *minimum-shrink-ratio* 1e-8
   "Ignore propagations which reduce the range of a variable by less than this
 ratio.")
 
@@ -3621,7 +3621,8 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
   (possibly-boolean? t)
   (possibly-nonboolean-nonnumber? t)
   (lower-bound nil)
-  (upper-bound nil))
+  (upper-bound nil)
+  (nonnumber-type t))
 
 #+screamer-clos
 (defclass variable ()
@@ -3641,7 +3642,8 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
    (possibly-boolean? :accessor variable-possibly-boolean? :initform t)
    (possibly-nonboolean-nonnumber? :accessor variable-possibly-nonboolean-nonnumber? :initform t)
    (lower-bound :accessor variable-lower-bound :initform nil)
-   (upper-bound :accessor variable-upper-bound :initform nil)))
+   (upper-bound :accessor variable-upper-bound :initform nil)
+   (nonnumber-type :accessor variable-nonnumber-type :initform t)))
 
 #+screamer-clos
 (defmethod print-object ((variable variable) stream)
@@ -3697,13 +3699,15 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
 
 (defun infinity-* (x y) (and x y (* x y)))
 
-(defun contains-variables? (x)
+(cl:defun contains-variables? (x)
+  (declare (optimize (speed 3) (space 3)))
   (typecase x
     (cons (or (contains-variables? (car x)) (contains-variables? (cdr x))))
     (variable t)
     (otherwise nil)))
 
-(defun eliminate-variables (x)
+(cl:defun eliminate-variables (x)
+  (declare (optimize (speed 3) (space 3)))
   (if (contains-variables? x)
       (if (consp x)
           (cons (eliminate-variables (car x)) (eliminate-variables (cdr x)))
@@ -3711,7 +3715,7 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
       x))
 
 (defun print-variable (x stream print-level)
-  (declare (ignore print-level))
+   (declare (ignore print-level))
   (let ((x (value-of x)))
     (cond
       ((variable? x)
@@ -3820,6 +3824,9 @@ be any Lisp object."
        (not (variable-possibly-noninteger-rational? x))
        (not (variable-possibly-integer? x))
        (variable-possibly-noninteger-real? x)))
+
+(defun variable-float? (x)
+ (variable-noninteger-real? x))
 
 (defun variable-nonfloat? (x)
   (and (or (variable-possibly-integer? x)
@@ -4532,8 +4539,6 @@ Otherwise returns the value of X."
      (if (variable-max-denom x)
          (setf lower-bound (closest-rational-lower lower-bound (variable-max-denom x)))
          (setf lower-bound (rationalize lower-bound)))))
-    ;((or (variable-noninteger-rational? x) (variable-rational? x))
-    ; (setf lower-bound (rationalize lower-bound)))) 
   (when (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
              (or (not (variable-lower-bound x))
                  (> lower-bound (variable-lower-bound x))))
@@ -4541,6 +4546,8 @@ Otherwise returns the value of X."
         (fail))
     (when (or (not (variable-lower-bound x))
               (not (variable-upper-bound x))
+              ;; Note: shrink ratio heuristic only for float variables
+              (variable-nonfloat? x)
               (>= (/ (- lower-bound (variable-lower-bound x))
                      (- (variable-upper-bound x) (variable-lower-bound x)))
                   *minimum-shrink-ratio*))
@@ -4590,8 +4597,6 @@ Otherwise returns the value of X."
     (if (variable-max-denom x)
         (setf upper-bound (closest-rational-upper upper-bound (variable-max-denom x)))
         (setf upper-bound (rationalize upper-bound)))))
-  ;((or (variable-noninteger-rational? x) (variable-rational? x))
-  ;  (setf upper-bound (rationalize upper-bound))))
 (when (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
             (or (not (variable-upper-bound x))
                 (< upper-bound (variable-upper-bound x))))
@@ -4599,6 +4604,8 @@ Otherwise returns the value of X."
     (fail))
   (when (or (not (variable-lower-bound x))
             (not (variable-upper-bound x))
+            ;; Note: shrink ratio heuristic only for float variables
+            (variable-nonfloat? x)
             (>= (/ (- (variable-upper-bound x) upper-bound)
                    (- (variable-upper-bound x) (variable-lower-bound x)))
                 *minimum-shrink-ratio*))
@@ -4653,9 +4660,6 @@ Otherwise returns the value of X."
             (when upper-bound (setf upper-bound (closest-rational-upper upper-bound (variable-max-denom x)))))
           (t (when lower-bound (setf lower-bound (rationalize lower-bound)))
               (when upper-bound (setf upper-bound (rationalize upper-bound)))))))
-    ;((or (variable-noninteger-rational? x) (variable-rational? x))     
-    ;(when lower-bound (setf lower-bound (rationalize lower-bound)))
-    ;(when upper-bound (setf upper-bound (rationalize upper-bound)))))
   (if (or (eq (variable-value x) x) (not (variable? (variable-value x))))
       (let ((run? nil))
         (when (and lower-bound
@@ -4666,9 +4670,11 @@ Otherwise returns the value of X."
               (fail))
           (when (or (not (variable-lower-bound x))
                     (not (variable-upper-bound x))
+                    ;; Note: shrink ratio heuristic only for float variables
+                    (variable-nonfloat? x)
                     (>= (/ (- lower-bound (variable-lower-bound x))
                            (- (variable-upper-bound x) (variable-lower-bound x)))
-                        *minimum-shrink-ratio*))
+                    *minimum-shrink-ratio*))
             (local (setf (variable-lower-bound x) lower-bound))
             (setf run? t)))
         (when (and upper-bound
@@ -4679,9 +4685,11 @@ Otherwise returns the value of X."
               (fail))
           (when (or (not (variable-lower-bound x))
                     (not (variable-upper-bound x))
+                    ;; Note: shrink ratio heuristic only for float variables
+                    (variable-nonfloat? x) 
                     (>= (/ (- (variable-upper-bound x) upper-bound)
                            (- (variable-upper-bound x) (variable-lower-bound x)))
-                        *minimum-shrink-ratio*))
+                    *minimum-shrink-ratio*))
             (local (setf (variable-upper-bound x) upper-bound))
             (setf run? t)))
         (when run?
@@ -5718,30 +5726,30 @@ Otherwise returns the value of X."
                         (cond ((variable-lower-bound y)
                                 (if (variable-upper-bound y)
                                       (restrict-enumerated-domain! y
-                                        (remove-if-not (lambda (v) (and (>= v (variable-lower-bound y))
-                                                                        (<= v (variable-upper-bound y))))
+                                        (remove-if (lambda (v) (or (< v (variable-lower-bound y))
+                                                                   (> v (variable-upper-bound y))))
                                                         x-domain))
                                     (restrict-enumerated-domain! y
-                                      (remove-if-not (lambda (v) (>= v (variable-lower-bound y)))
+                                      (remove-if (lambda (v) (< v (variable-lower-bound y)))
                                                       x-domain))))
                                 ((variable-upper-bound y)
                                 (restrict-enumerated-domain! y
-                                  (remove-if-not (lambda (v) (<= v (variable-upper-bound y)))
+                                  (remove-if (lambda (v) (> v (variable-upper-bound y)))
                                             x-domain)))))))
                 ((not (eq (variable-enumerated-domain y) t))
                       (let ((y-domain (variable-enumerated-domain y)))
                         (cond ((variable-lower-bound x)
                                 (if (variable-upper-bound x)
                                       (restrict-enumerated-domain! x
-                                        (remove-if-not (lambda (v) (and (>= v (variable-lower-bound X))
-                                                                        (<= v (variable-upper-bound y))))
+                                        (remove-if (lambda (v) (or (< v (variable-lower-bound X))
+                                                                   (> v (variable-upper-bound x))))
                                                         y-domain))
                                     (restrict-enumerated-domain! x
-                                      (remove-if-not (lambda (v) (>= v (variable-lower-bound x)))
+                                      (remove-if (lambda (v) (< v (variable-lower-bound x)))
                                                       y-domain))))
                                 ((variable-upper-bound x)
                                 (restrict-enumerated-domain! x
-                                  (remove-if-not (lambda (v) (<= v (variable-upper-bound x)))
+                                  (remove-if (lambda (v) (> v (variable-upper-bound x)))
                                             y-domain)))))))))))
 
 (defun <=-rule (x y)
@@ -7002,18 +7010,6 @@ V and arguments are mutually constrained:
    to be T, all arguments not known to be T are constrained to be NIL."
   (count-truesv-internal xs))
 
-;;; Lifted FUNCALLV and APPLYV
-
-(defun finite-domain? (variable)
-  (let ((variable (value-of variable)))
-    (or (not (variable? variable))
-        (not (eq (variable-enumerated-domain variable) t))
-        (and (variable-lower-bound variable)
-             (variable-upper-bound variable)
-             (or (variable-integer? variable)
-                 (and (variable-rational? variable)
-                      (variable-max-denom variable)))))))
-
 ;;; note: SOLUTION, LINEAR-FORCE and STATIC-ORDERING were moved here to be
 ;;;       before KNOWN?-CONSTRAINT to avoid forward references to
 ;;;       nondeterministic functions.
@@ -7194,10 +7190,15 @@ in the process of determining a good search order."
     (value-of variable)))
 
 (defun static-ordering-internal (variables force-function)
+  (declare (type list variables)
+           (optimize (speed 3) (safety 0) (space 0) (debug 0)))
   (if variables
       (let ((variable (value-of (first variables))))
         (cond ((variable? variable)
-               (funcall-nondeterministic force-function variable)
+               (cond ((and (variable-dependencies variable)
+                           (not (deep-bound? (variable-dependencies variable))))
+                     (static-ordering-internal (variable-dependencies variable) force-function))
+                    (t (funcall-nondeterministic force-function variable)))
                (static-ordering-internal variables force-function))
               (t (static-ordering-internal (rest variables) force-function))))))
 
@@ -7224,22 +7225,28 @@ sufficient hooks for the user to define her own force functions.)"
   ;; note: This closure will heap cons.
   (let ((force-function (value-of force-function)))
     #'(lambda (variables)
-        ;; Force the dependencies and then the target variables
-        (static-ordering-internal (get-variable-dependency-closure variables) force-function))))
-  
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; -------------------------------------- ;;
-;; Enhanced APPLYV and FUNCALLV Functions ;;
-;; -------------------------------------- ;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+     (static-ordering-internal variables force-function))))
 
-(defvar *maximum-list-domain-size* 1000
+;;; Lifted FUNCALLV and APPLYV
+
+(defun finite-domain? (variable)
+  (let ((variable (value-of variable)))
+    (or (not (variable? variable))
+        (not (eq (variable-enumerated-domain variable) t))
+        (and (variable-lower-bound variable)
+             (variable-upper-bound variable)
+             (or (variable-integer? variable)
+                 (and (variable-rational? variable)
+                      (variable-max-denom variable)))))))
+
+(defvar *maximum-list-domain-size* 100
  "Specifies the maximum number of elements permitted in a list domain
  when using the APPLYV or FUNCALLV functions for enumeration.")
   
 (defun deep-value-of (x)
   (let ((x (value-of x)))
     (typecase x
+      (null nil)
       (variable (value-of x))
       (cons (cons (deep-value-of (car x))
                   (deep-value-of (cdr x))))
@@ -7263,9 +7270,10 @@ sufficient hooks for the user to define her own force functions.)"
 (defun deep-bound? (x)
   (let ((x (value-of x)))
     (typecase x
+      (null t)
       (variable (bound? x))
       (cons (and (deep-bound? (car x))
-                  (deep-bound? (cdr x))))
+                 (deep-bound? (cdr x))))
       (string t)
       (sequence (every #'deep-bound? x))
       (array (flet ((mappend-arr (arr f)
@@ -7282,9 +7290,33 @@ sufficient hooks for the user to define her own force functions.)"
                     (every #'identity coll)))
       (otherwise t))))
 
+(defun deep-bounded? (x)
+  (let ((x (value-of x)))
+    (typecase x
+      (null t)
+      (variable (bounded? x))
+      (cons (and (deep-bounded? (car x))
+                  (deep-bounded? (cdr x))))
+      (string t)
+      (sequence (every #'deep-bounded? x))
+      (array (flet ((mappend-arr (arr f)
+                      (let (coll)
+                        (dotimes (idx (array-total-size arr))
+                          (alexandria::appendf coll (funcall f (row-major-aref arr idx))))
+                        coll)))
+               (every #'identity (mappend-arr x #'deep-bounded?))))
+      (hash-table (let (coll)
+                    (maphash (lambda (k v)
+                               (declare (ignore k))
+                               (alexandria::appendf coll (deep-bounded? v)))
+                             x)
+                    (every #'identity coll)))
+      (otherwise t))))
+
 (defun deep-ground? (x)
   (let ((x (value-of x)))
     (typecase x
+      (null t)
       (variable (ground? x))
       (cons (and (deep-ground? (car x))
                  (deep-ground? (cdr x))))
@@ -7307,6 +7339,7 @@ sufficient hooks for the user to define her own force functions.)"
 (defun deep-finite-domain? (x)
   (let ((x (value-of x)))
     (typecase x
+      (null t)
       (variable (finite-domain? x))
       (cons (and (deep-finite-domain? (car x))
                  (deep-finite-domain? (cdr x))))
@@ -7325,6 +7358,18 @@ sufficient hooks for the user to define her own force functions.)"
                              x)
               (every #'identity coll)))
       (otherwise t))))
+
+(defun enumerated-domain-p (x)
+ (and (not (eq (variable-enumerated-domain x) t))
+      (listp (variable-enumerated-domain x))))
+
+(defun deep-enumerated-domain-p (x)
+ (typecase x
+   (null t)
+   (variable (enumerated-domain-p x))
+   (cons (and (deep-enumerated-domain-p (car x))
+              (deep-enumerated-domain-p (cdr x))))
+   (otherwise t)))
 
 (defun generic-equal (x y)
 ;; note: Should find a better name for this.
@@ -7361,6 +7406,7 @@ sufficient hooks for the user to define her own force functions.)"
   (if (eq structure target)
       value
     (typecase structure
+      (null nil)
       (cons (cons (substitute-variable (car structure) target value)
                   (substitute-variable (cdr structure) target value)))
       (otherwise structure))))
@@ -7376,7 +7422,7 @@ sufficient hooks for the user to define her own force functions.)"
                                unassigned-variable)))))
         ;; note: Could do less consing if had LOCAL DELETE-IF-NOT.
         ;; note: Consing.
-        (let* ((variable-values (mapcar #'deep-value-of variables))
+        (let* ((variable-values (deep-value-of variables))
                (new-enumerated-domain
                 (if polarity?
                     (remove-if-not
@@ -7399,6 +7445,7 @@ sufficient hooks for the user to define her own force functions.)"
   (if (eq structure variable)
       value
     (typecase structure
+      (null nil)
       (variable (a-member-of (variable-enumerated-domain structure)))
       (cons (cons (a-tuple (car structure) variable value)
                   (a-tuple (cdr structure) variable value)))      
@@ -7463,9 +7510,9 @@ sufficient hooks for the user to define her own force functions.)"
                               (propagate-gfc
                                predicate polarity? variables unassigned-variable)
                               (unless (if polarity?
-                                          (apply predicate (mapcar #'deep-value-of variables))
+                                          (apply predicate (deep-value-of variables))
                                           (not (apply predicate
-                                                      (mapcar #'deep-value-of variables))))
+                                                      (deep-value-of variables))))
                                 (fail)))))))
                 variable))))))
       (unassigned-variable
@@ -7474,8 +7521,8 @@ sufficient hooks for the user to define her own force functions.)"
       ;; The case where all variables are bound
       ;; note: Consing.
       (t (unless (if polarity?
-                     (apply predicate (mapcar #'deep-value-of variables))
-                     (not (apply predicate (mapcar #'deep-value-of variables))))
+                     (apply predicate (deep-value-of variables))
+                     (not (apply predicate (deep-value-of variables))))
            (fail))))))
 
 (defun assert!-constraint-ac (predicate polarity? variables)
@@ -7497,13 +7544,61 @@ sufficient hooks for the user to define her own force functions.)"
     (:gfc (assert!-constraint-gfc predicate polarity? variables))
     (:ac (assert!-constraint-ac predicate polarity? variables))))
 
-(defun set-constraint-enumerated-domain! (x args)
-  "Set the domain of variable z to all possible values if domain size is small and finite."
-  (when (and (deep-finite-domain? args)
-             (and (domain-size args)
-                  (<= (domain-size args) *maximum-list-domain-size*)))
-     (restrict-enumerated-domain!
-      x (all-values (second (solution (list args x) (static-ordering #'linear-force)))))))
+(defun propagate-domain (variables nondomain-variable)
+  ;; note: NONDOMAIN-VARIABLE must be a variable which does not have an
+  ;;       enumerated domain.
+  ;;       All of the VARIABLES except the NONDOMAIN-VARIABLE must have
+  ;;       enumerated domains.
+(unless (deep-bound? (remove nondomain-variable (copy-list variables) :test #'eq))
+  ;; note: This avoids unnecessary updates when All of VARIABLES are ground
+  ;;       except for NONDOMAIN-VARIABLE.
+  (let ((domain-size-variables (if (and (variable-integer? nondomain-variable)
+                                        (variable-lower-bound nondomain-variable)
+                                        (variable-upper-bound nondomain-variable))
+                                   (domain-size variables)
+                                   (domain-size (remove nondomain-variable (copy-list variables) :test #'eq)))))
+   (if (and domain-size-variables
+            (<= domain-size-variables *maximum-list-domain-size*))
+      (let* ((variables (copy-list variables))
+             (nondomain-variable-position (position nondomain-variable variables :test #'eq))
+             (new-enumerated-domain
+              (all-values
+               (nth nondomain-variable-position
+                (solution variables
+                 (static-ordering #'linear-force))))))
+        (restrict-enumerated-domain! nondomain-variable new-enumerated-domain))))))
+              
+(defun set-constraint-enumerated-domain! (variables)
+ ;; Set the domain of all variables in VARIABLES to all possible values if their
+ ;; domain size is small and finite."
+  (let ((multiple-nondomain-variables? nil)
+        (nondomain-variable nil))
+    (dolist (variable (variables-in (copy-list variables)))
+      (unless (enumerated-domain-p variable)
+        (if nondomain-variable (setf multiple-nondomain-variables? t))
+        (setf nondomain-variable variable)))
+    (cond
+      (multiple-nondomain-variables?
+      ;; The case where two or more variables lacks a enumerated domain
+       (let ((variables (copy-list variables)))
+         (dolist (variable (variables-in variables))
+           (unless (enumerated-domain-p variable)
+             (attach-noticer!
+            #'(lambda ()
+               (unless (deep-bound? variables)
+                (global
+                 (block exit
+                  (let ((nondomain-variable nil))
+                   (dolist (v (variables-in variables))
+                    (unless (enumerated-domain-p v)
+                     (if nondomain-variable (return-from exit))
+                     (setf nondomain-variable v)))
+                  (if nondomain-variable
+                    (propagate-domain variables nondomain-variable)))))))
+            variable)))))
+      (nondomain-variable
+       ;; The case where one variable lacks a enumerated domain
+       (propagate-domain variables nondomain-variable)))))
 
 (defun known?-funcallv (f &rest x) (known?-constraint f t x))
 
@@ -7521,7 +7616,7 @@ sufficient hooks for the user to define her own force functions.)"
     (unless (functionp f)
       (error "The first argument to FUNCALLV must be a deterministic function"))
         (if (deep-bound? x)
-            (apply f (mapcar #'deep-value-of x))
+            (apply f (deep-value-of x))
             (let ((z (make-variable)))
               (attach-noticer! nil z :dependencies (variables-in x))
               (assert!-constraint
@@ -7531,9 +7626,9 @@ sufficient hooks for the user to define her own force functions.)"
                 (attach-noticer!
                   #'(lambda ()
                       (if (deep-bound? x)
-                          (assert!-equalv z (apply f (mapcar #'deep-value-of x)))))
+                          (assert!-equalv z (apply f (deep-value-of x)))))
                   argument))
-               (set-constraint-enumerated-domain! z x)
+                (set-constraint-enumerated-domain! (cons z x))
               z))))
 
 (defun arguments-for-applyv (x xs)
@@ -7563,7 +7658,7 @@ sufficient hooks for the user to define her own force functions.)"
       (error "The first argument to APPLYV must be a deterministic function"))
     (let ((arguments (apply #'list* (mapcar #'value-of (cons x xs)))))
           (if (deep-bound? arguments)
-              (apply f (mapcar #'deep-value-of arguments))
+              (apply f (deep-value-of arguments))
               (let ((z (make-variable)))
                 (attach-noticer! nil z :dependencies (variables-in arguments))
                 (assert!-constraint
@@ -7574,9 +7669,9 @@ sufficient hooks for the user to define her own force functions.)"
                   (attach-noticer!
                     #'(lambda ()
                         (if (deep-bound? arguments)
-                            (assert!-equalv z (apply f (mapcar #'deep-value-of arguments)))))
+                            (assert!-equalv z (apply f (deep-value-of arguments)))))
                     argument))
-                 (set-constraint-enumerated-domain! z x)
+                (set-constraint-enumerated-domain! (cons z arguments))
                 z)))))
 
 
@@ -8795,42 +8890,6 @@ VALUES can be either a vector or a list designator."
     
 ;;; Search Control
 
-(cl:defun best-variable-cost (x order)
-"If X is BOUNDED?, return the smaller of the domain-size and range-size.
-Otherwise return NIL."
- (declare
-   (optimize (speed 3) (space 3))
-   (variable x))
-  (when (bounded? x)
-    (let ((ds (domain-size x))
-          (rs (range-size x)))
-      (cond ((and ds rs)
-             (if (funcall order ds rs)
-                  ds
-                  rs))
-             (ds ds)
-             (rs rs)))))
-
-(cl:defun get-variable-dependency-closure (variables &key (complete t))
-"Modifies the given variables in place, reordering them according to minimal
-cost (either range-size or domain-size). Dependencies are placed first when
-they are bounded. This function is intended for internal use by STATIC-ORDERING
-or REORDER."
-(declare (list variables))
-(let ((result nil))
-(dolist (variable variables)
-(when (variable? variable)
-    (dolist (dep (variable-dependencies variable))
-    (when (and dep complete)
-            (let ((dep-cost (best-variable-cost dep #'<))
-                (var-cost (best-variable-cost variable #'<)))
-            (if (and dep-cost var-cost (funcall #'< dep-cost var-cost))
-                (pushnew dep result :test #'eq)
-                (unless (member dep result :test #'eq)
-                    (setf result (append result (list dep))))))))
-    (pushnew variable result :test #'eq)))
-(setf variables (nreverse result))))
- 
  (defun variables-in (x)
   ;; Get initial variable list from `x'
   (the list
@@ -8907,8 +8966,8 @@ domain size is odd, the halves differ in size by at most one."
           ((and (variable-real? variable)
                 (variable-lower-bound variable)
                 (variable-upper-bound variable))
-           (cond ((zerop (-  (variable-upper-bound variable)
-				                     (variable-lower-bound variable)))
+           (cond ((zerop (- (variable-upper-bound variable)
+                            (variable-lower-bound variable)))
                   (cond ((variable-rational? variable)
                          (set-enumerated-domain!
                               variable
@@ -8978,7 +9037,7 @@ domain size is odd, the halves differ in size by at most one."
                                (fail))))))))
           (t (error "It is only possible to divide and conquer force a~%~
                   variable that has a countable domain or a finite range")))))
-  (value-of variable))  
+  (value-of variable))
 
 ;;; note: STATIC-ORDERING used to be here but was moved to be before
 ;;;       KNOWN?-CONSTRAINT to avoid a forward reference to a nondeterministic
@@ -9074,10 +9133,16 @@ Other types of objects and variables have range size NIL."
 
 (defun reorder-internal
     (variables cost-function terminate? order force-function)
+  (declare (type list variables)
+           (optimize (speed 3) (safety 0) (space 0) (debug 0)))
   (let ((variable (find-best cost-function order variables)))
     (when (and variable
                (not (funcall terminate? (funcall cost-function variable))))
-      (funcall-nondeterministic force-function (value-of variable))
+     (cond ((and (variable-dependencies variable)
+                 (not (deep-bound? (variable-dependencies variable))))
+            (reorder-internal (variable-dependencies variable)
+             cost-function terminate? order force-function))
+           (t (funcall-nondeterministic force-function (value-of variable))))
       (reorder-internal
        variables cost-function terminate? order force-function))))
 
@@ -9116,7 +9181,6 @@ sufficient hooks for the user to define her own force functions.)"
         (order (value-of order))
         (force-function (value-of force-function)))
     #'(lambda (variables)
-        (setf variables (get-variable-dependency-closure variables))
         (reorder-internal
          variables cost-function terminate? order force-function))))
 

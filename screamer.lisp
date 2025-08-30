@@ -3681,13 +3681,13 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
   "Returns T if X is a sequence, NIL otherwise."
  (typep x 'sequence))
 
-;(defun gaussian-integerp (x)
-;  "Returns true iff X is a Gaussian integer, i.e., a complex number with both
-;real and imaginary parts that are integers."
-;  (typecase x
-;    (complex (and (integerp (realpart x))
-;                  (integerp (imagpart x))))
-;    (otherwise nil)))
+(defun gaussian-integerp (x)
+  "Returns true iff X is a Gaussian integer, i.e., a complex number with both
+ real and imaginary parts that are integers."
+  (typecase x
+    (complex (and (integerp (realpart x))
+                  (integerp (imagpart x))))
+    (otherwise nil)))
 
 (defun infinity-min (x y) (and x y (min x y)))
 
@@ -3825,16 +3825,9 @@ be any Lisp object."
        (not (variable-possibly-integer? x))
        (variable-possibly-noninteger-real? x)))
 
-(defun variable-float? (x)
- (variable-noninteger-real? x))
-
-(defun variable-nonfloat? (x)
-  (and (or (variable-possibly-integer? x)
-           (variable-possibly-noninteger-rational? x)
-           (variable-possibly-nonreal-number? x)
-           (variable-possibly-boolean? x)
-           (variable-possibly-nonboolean-nonnumber? x))
-           (not (variable-possibly-noninteger-real? x))))
+(defun variable-possibly-rational? (x)
+ (or (variable-possibly-integer? x)
+     (variable-possibly-noninteger-rational? x)))
 
 (defun variable-rational? (x)
   (and (not (variable-possibly-boolean? x))
@@ -3851,6 +3844,17 @@ be any Lisp object."
            (variable-possibly-nonboolean-nonnumber? x))
            (not (variable-possibly-noninteger-rational? x))
            (not (variable-possibly-integer? x))))
+
+(defun variable-float? (x)
+ (variable-noninteger-real? x))
+
+(defun variable-nonfloat? (x)
+  (and (or (variable-possibly-integer? x)
+           (variable-possibly-noninteger-rational? x)
+           (variable-possibly-nonreal-number? x)
+           (variable-possibly-boolean? x)
+           (variable-possibly-nonboolean-nonnumber? x))
+           (not (variable-possibly-noninteger-real? x))))
 
 (defun variable-real? (x)
   (and (not (variable-possibly-boolean? x))
@@ -4291,7 +4295,8 @@ Otherwise returns the value of X."
               (variable-possibly-boolean? x)
               (variable-possibly-nonboolean-nonnumber? x))
     (fail))
-  (if (or (eq (variable-value x) x) (not (variable? (variable-value x))))
+  (if (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
+           (variable-possibly-rational? x))
       (let ((run? nil))
     (when (variable-possibly-integer? x)
     (local (setf (variable-possibly-integer? x) nil))
@@ -5741,7 +5746,7 @@ Otherwise returns the value of X."
                         (cond ((variable-lower-bound x)
                                 (if (variable-upper-bound x)
                                       (restrict-enumerated-domain! x
-                                        (remove-if (lambda (v) (or (< v (variable-lower-bound X))
+                                        (remove-if (lambda (v) (or (< v (variable-lower-bound x))
                                                                    (> v (variable-upper-bound x))))
                                                         y-domain))
                                     (restrict-enumerated-domain! x
@@ -7359,10 +7364,16 @@ sufficient hooks for the user to define her own force functions.)"
               (every #'identity coll)))
       (otherwise t))))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline enumerated-domain-p)))
+
 (defun enumerated-domain-p (x)
  (and (not (eq (variable-enumerated-domain x) t))
       (listp (variable-enumerated-domain x))))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline deep-enumerated-domain-p)))
+  
 (defun deep-enumerated-domain-p (x)
  (typecase x
    (null t)
@@ -8355,8 +8366,8 @@ X2."
                (mapcar #'(lambda (form) (transform-known? form polarity?))
                        (rest form))))
         ((member (first form)
-                 '(integerpv realpv numberpv memberv booleanpv
-                   =v <v <=v >v >=v /=v funcallv applyv equalv)
+                 '(integerpv rationalpv ratiopv floatpv realpv numberpv
+                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv)
                  :test #'eq)
          (cons (cdr (assoc (first form)
                            (if polarity?
@@ -8455,8 +8466,8 @@ nested in a call to KNOWN?, are similarly transformed."
                         #'(lambda (form) (transform-assert! form polarity?))
                         (rest form)))))
         ((member (first form)
-                 '(integerpv realpv numberpv memberv booleanpv
-                   =v <v <=v >v >=v /=v funcallv applyv equalv)
+                 '(integerpv rationalpv ratiopv floatpv realpv numberpv
+                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv)
                  :test #'eq)
          (cons (cdr (assoc (first form)
                            (if polarity?
@@ -8552,8 +8563,8 @@ directly nested in a call to ASSERT!, are similarly transformed."
                    (cons (if polarity? 'progn 'either)
                          (mapcar #'third result)))))
         ((member (first form)
-                 '(integerpv realpv numberpv memberv booleanpv
-                   =v <v <=v >v >=v /=v funcallv applyv equalv)
+                 '(integerpv rationalpv ratiopv floatpv realpv numberpv
+                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv)
                  :test #'eq)
          (let ((arguments (mapcar #'(lambda (argument)
                                       (declare (ignore argument))

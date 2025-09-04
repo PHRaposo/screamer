@@ -112,6 +112,8 @@
            #:a-numberv
            #:a-member-ofv
            #:a-random-member-ofv
+           #:n-variables
+           #:n-lists-of-variables
            #:notv
            #:andv
            #:orv
@@ -147,7 +149,12 @@
            #:*iscream?*
            #:*minimum-shrink-ratio*
            #:*maximum-discretization-range*
-           #:*strategy*))
+           #:*strategy*
+           #:*maximum-random-domain-size*
+           #:*maximum-list-domain-size*
+           #:define-screamer-type
+           #:define-screamer-generator-function
+           #:*nonboolean-nonnumber-types*))
 
 (in-package :screamer)
 ;;; Avoid warnings when compiling screamer.lisp in LispWorks

@@ -8672,10 +8672,14 @@ X2."
 
 
 ;;; note: Enable this to use EXTENSIBLE TYPES.
-#+(or)
+;; #+(or)
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (pushnew :screamer-extensible-types *features* :test #'eq))
 
+;#+(and ccl screamer-extensible-types)
+;(eval-when (:compile-toplevel :load-toplevel :execute)
+;  (error "Currently Screamer's extensible types are not supported on Clozure CL (CCL)."))
+  
 #+screamer-extensible-types
 (defparameter-compile-time *nonboolean-nonnumber-types*
   '(list cons vector array string)
@@ -8687,8 +8691,8 @@ X2."
  
 #+screamer-extensible-types
 (defparameter-compile-time *screamer-lifted-functions*
-'(integerpv ratiopv rationalpv floatpv realpv gaussian-integerpv complexpv numberpv
-  memberv booleanpv symbolpv typepv =v <v <=v >v >=v /=v funcallv applyv equalv)
+'(integerpv ratiopv rationalpv floatpv realpv numberpv memberv
+  booleanpv symbolpv typepv =v <v <=v >v >=v /=v funcallv applyv equalv)
   "The list of all lifted functions.")
 
 #+screamer-extensible-types
@@ -8698,8 +8702,6 @@ X2."
   (rationalpv . known?-rationalpv)
   (floatpv . known?-floatpv)
   (realpv . known?-realpv)
-  (gaussian-integerpv . known?-gaussian-integerpv)
-  (complexpv . known?-complexpv)
   (numberpv . known?-numberpv)
   (memberv . known?-memberv)
   (booleanpv . known?-booleanpv)
@@ -8722,8 +8724,6 @@ X2."
   (rationalpv . known?-notv-rationalpv)
   (floatpv . known?-notv-floatpv)
   (realpv . known?-notv-realpv)
-  (gaussian-integerpv . known?-notv-gaussian-integerpv)
-  (complexpv . known?-notv-complexpv)
   (numberpv . known?-notv-numberpv)
   (memberv . known?-notv-memberv)
   (booleanpv . known?-notv-booleanpv)
@@ -8746,8 +8746,6 @@ X2."
   (rationalpv . assert!-rationalpv)
   (floatpv . assert!-floatpv)
   (realpv . assert!-realpv)
-  (gaussian-integerpv . assert!-gaussian-integerpv)
-  (complexpv . assert!-complexpv)
   (numberpv . assert!-numberpv)
   (memberv . assert!-memberv)
   (booleanpv . assert!-booleanpv)
@@ -8770,8 +8768,6 @@ X2."
   (rationalpv . assert!-notv-rationalpv)
   (floatpv . assert!-notv-floatpv)
   (realpv . assert!-notv-realpv)
-  (gaussian-integerpv . assert!-notv-gaussian-integerpv)
-  (complexpv . assert!-notv-complexpv)
   (numberpv . assert!-notv-numberpv)
   (memberv . assert!-notv-memberv)
   (booleanpv . assert!-notv-booleanpv)
@@ -9416,7 +9412,7 @@ directly nested in a call to ASSERT!, are similarly transformed."
                    (cons (if polarity? 'progn 'either)
                          (mapcar #'third result)))))
         ((member (first form)
-                 '*screamer-lifted-functions*
+                 *screamer-lifted-functions*
                  :test #'eq)
          (let ((arguments (mapcar #'(lambda (argument)
                                       (declare (ignore argument))

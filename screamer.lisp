@@ -8672,14 +8672,10 @@ X2."
 
 
 ;;; note: Enable this to use EXTENSIBLE TYPES.
-;; #+(or)
+#+(or)
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (pushnew :screamer-extensible-types *features* :test #'eq))
 
-;#+(and ccl screamer-extensible-types)
-;(eval-when (:compile-toplevel :load-toplevel :execute)
-;  (error "Currently Screamer's extensible types are not supported on Clozure CL (CCL)."))
-  
 #+screamer-extensible-types
 (defparameter-compile-time *nonboolean-nonnumber-types*
   '(list cons vector array string)

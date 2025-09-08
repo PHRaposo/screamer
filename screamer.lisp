@@ -8900,30 +8900,33 @@ then a noticer attached to V restricts X to be not ~A ~A."
 
            (defun ,variable-possibly-type? (x)
             (declare (type variable x))
+            (the boolean
             (and (variable-possibly-nonboolean-nonnumber? x)
                  (or (null (variable-type x))
-                     (eq (variable-type x) ',type))))
+                     (eq (variable-type x) ',type)))))
 
            (defun ,variable-type? (x)
             (declare (type variable x))
+            (the boolean
             (and (not (variable-possibly-boolean? x))
                  (not (variable-possibly-nonreal-number? x))
                  (not (variable-possibly-noninteger-real? x))
                  (not (variable-possibly-integer? x))
                  (not (variable-possibly-noninteger-rational? x))
                  (variable-possibly-nonboolean-nonnumber? x)
-                 (eq (variable-type x) ',type)))
+                 (eq (variable-type x) ',type))))
 
            (defun ,variable-non-type? (x)
             (declare (type variable x))
-            (and (not (eq (variable-type x) ',type))
-                 (or (variable-possibly-nonboolean-nonnumber? x)
-                     (null (variable-type x))
-                     (variable-possibly-boolean? x)
+            (the boolean
+            (and (or (variable-possibly-boolean? x)
                      (variable-possibly-nonreal-number? x)
                      (variable-possibly-noninteger-real? x)
                      (variable-possibly-integer? x)
-                     (variable-possibly-noninteger-rational? x))))
+                     (variable-possibly-noninteger-rational? x))      
+                 (not (and (variable-possibly-nonboolean-nonnumber? x)
+                           (or (null (variable-type x))
+                               (eq (variable-type x) ',type)))))))
 
            (defun ,known?-typepv (x)
              (let ((x (value-of x)))
@@ -9753,6 +9756,7 @@ VAR-FN and ARGS are used to construct each variable.
        ;; whose value has been unified (using EQUALV) with other 
        ;; data types, such as cons cells, lists, and so on.
        (typecase x
+         (variable (list x))
          (cons (append (variables-in (car x))
                        (variables-in (cdr x))))
          (string nil)
@@ -9770,7 +9774,6 @@ VAR-FN and ARGS are used to construct each variable.
                                   (alexandria::appendf coll (variables-in v)))
                                 x)
                        coll))
-         (variable (list x))
          (otherwise nil)))))
 
 ;;; note: SOLUTION and LINEAR-FORCE used to be here but was moved to be before

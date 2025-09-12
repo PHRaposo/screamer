@@ -6982,7 +6982,7 @@ vector."
                (append (mapcar (lambda (y)
                                 (equalv (car lst) y)) (cdr lst))
                         (pairs (cdr lst))))))
-   (assert!-orv (pairs x))))
+   (apply #'assert!-orv (pairs x))))
 
 (defun all-differentv (x)
   "Returns T if the elements of the list X are known to be all different,

@@ -3734,7 +3734,8 @@ Return NIL if any element is a number, boolean, or types differ."
                                         ((atom type)
                                          (not (member type result :test #'eq))))))
                   (return-from collect-type nil)
-                  (if (listp type) result type))))
+                  (cond (result (if (listp type) result type))
+                        (t type)))))
           seq
           :initial-value nil))
 
@@ -3783,7 +3784,9 @@ Return NIL if any element is a number, boolean, or types differ."
        (format stream "[~S" name x)
       (format stream "~A"
         (cond
-          ((variable-type x) (format nil " ~A" (variable-type x)))
+          ((and (variable-possibly-nonboolean-nonnumber? x)
+                (variable-type x))
+           (format nil " ~A" (variable-type x)))
           ((variable-boolean? x) " Boolean")
           ((variable-real? x)
           (cond
@@ -4941,12 +4944,6 @@ Otherwise returns the value of X."
                                          (<= elt high))
                                         (t t))))
                               (variable-possibly-nonreal-number? x)))
-                          #+screamer-extensible-types
-                          ((null elt)
-                           (or (variable-possibly-boolean? x)
-                               (and (variable-possibly-nonboolean-nonnumber? x)
-                                    (variable-type x)
-                                    (typep nil (variable-type x)))))
                          ((booleanp elt)
                           (variable-possibly-boolean? x))
                          (t
@@ -5205,12 +5202,6 @@ Otherwise returns the value of X."
     (ratio (unless (variable-possibly-noninteger-rational? x) (fail)))
     (float (unless (variable-possibly-noninteger-real? x) (fail)))
     (number (unless (variable-possibly-nonreal-number? x) (fail)))
-    #+screamer-extensible-types
-    (null (unless (or (variable-possibly-boolean? x)
-                      (and (variable-possibly-nonboolean-nonnumber? x)
-                           (variable-type x)
-                           (typep nil (variable-type x))))
-                  (fail)))
     (boolean (unless (variable-possibly-boolean? x) (fail)))
     (otherwise (unless (and (variable-possibly-nonboolean-nonnumber? x)
                             (or (not (variable-type x))
@@ -5391,10 +5382,9 @@ Otherwise returns the value of X."
            (setf (variable-possibly-boolean? x) nil))
        (if (variable-possibly-nonboolean-nonnumber? x)             
            (cond ((and (variable-type x)
-                       (not (some #'(lambda (element)
-                                    (and (not (numberp element))
-                                         (typep element (variable-type x))))
-                              enumerated-domain)))
+                       (notany #'(lambda (element)
+                                  (typep element (variable-type x)))
+                              enumerated-domain))
                   (setf (variable-type x) nil)
                   (setf (variable-possibly-nonboolean-nonnumber? x) nil))
                  ((not (some #'(lambda (x)
@@ -5450,10 +5440,9 @@ Otherwise returns the value of X."
            (setf (variable-possibly-boolean? x) nil))
        (if (variable-possibly-nonboolean-nonnumber? x)             
            (cond ((and (variable-type x)
-                       (not (some #'(lambda (element)
-                                    (and (not (numberp element))
-                                         (typep element (variable-type x))))
-                              enumerated-domain)))
+                       (notany #'(lambda (element)
+                                  (typep element (variable-type x)))
+                              enumerated-domain))
                   (setf (variable-type x) nil)
                   (setf (variable-possibly-nonboolean-nonnumber? x) nil))
                  ((not (some #'(lambda (x)
@@ -8956,8 +8945,7 @@ then a noticer attached to V restricts X to be not ~A ~A."
         (unless (string-equal (package-name *package*) "SCREAMER")
          (error "Cannot define an SCREAMER VARIABLE type outside of SCREAMER package."))
 
-           (cond ((or (string= "SYMBOL" ,type-string)
-                      (string= "LIST" ,type-string))
+           (cond ((string= "SYMBOL" ,type-string)
                  ;; note: this handles the type SYMBOL and LIST as special cases since
                  ;; they are the only non-number types that can be also booleans (NIL).
                   (defun ,variable-possibly-type? (x)
@@ -8987,6 +8975,49 @@ then a noticer attached to V restricts X to be not ~A ~A."
                               (variable-possibly-integer? x)
                               (variable-possibly-noninteger-rational? x))
                               (not (or (variable-possibly-boolean? x)
+                                       (and (variable-possibly-nonboolean-nonnumber? x)
+                                            (or (null (variable-type x))
+                                                 (eq (variable-type x) ',type)))))))))
+                ((string= "LIST" ,type-string)
+                 (defun ,variable-possibly-type? (x)
+                   (declare (type variable x))
+                   (the boolean
+                   (or (and (variable-possibly-boolean? x)
+                            (or (eq (variable-enumerated-domain x) t)
+                                ;; KLUDGE: find a better solution for this case.
+                                ;; if the enumerated domain contains NIL, then it could be a list.
+                                (if (member nil (variable-enumerated-domain x) :test #'eq) t)))
+                       (and (variable-possibly-nonboolean-nonnumber? x)
+                            (or (null (variable-type x))
+                                (eq (variable-type x) ',type))))))
+
+                  (defun ,variable-type? (x)
+                    (declare (type variable x))
+                    (the boolean
+                    (and (not (variable-possibly-nonreal-number? x))
+                         (not (variable-possibly-noninteger-real? x))
+                         (not (variable-possibly-integer? x))
+                         (not (variable-possibly-noninteger-rational? x))
+                         (or (and (variable-possibly-boolean? x)
+                                  (or (eq (variable-enumerated-domain x) t)
+                                   ;; KLUDGE: find a better solution for this case.
+                                   ;; if the enumerated domain contains NIL, then it could be a list.
+                                      (if (member nil (variable-enumerated-domain x) :test #'eq) t)))
+                             (and (variable-possibly-nonboolean-nonnumber? x)
+                                  (eq (variable-type x) ',type))))))
+
+                   (defun ,variable-non-type? (x)
+                     (declare (type variable x))
+                     (the boolean
+                     (and (or (variable-possibly-nonreal-number? x)
+                              (variable-possibly-noninteger-real? x)
+                              (variable-possibly-integer? x)
+                              (variable-possibly-noninteger-rational? x))
+                              (not (or (and (variable-possibly-boolean? x)
+                                            (or (eq (variable-enumerated-domain x) t)
+                                             ;; KLUDGE: find a better solution for this case.
+                                             ;; if the enumerated domain contains NIL, then it could be a list.
+                                                (not (member nil (variable-enumerated-domain x) :test #'eq))))
                                        (and (variable-possibly-nonboolean-nonnumber? x)
                                             (or (null (variable-type x))
                                                  (eq (variable-type x) ',type)))))))))
@@ -9049,22 +9080,40 @@ then a noticer attached to V restricts X to be not ~A ~A."
                     (local (setf (variable-possibly-boolean? x) nil)))
                     (setf run? t))
                   (when run?
-                    (when (and (not (eq (variable-enumerated-domain x) t))
-                               (not (every (function ,predicate-p) (variable-enumerated-domain x))))
-                      (set-enumerated-domain!
-                        x (remove-if-not (function ,predicate-p) (variable-enumerated-domain x))))
+                    (cond ((eq (variable-enumerated-domain x) t)
+                           (if (and (eq (variable-type x) 'list)
+                                    (variable-possibly-boolean? x))
+                               (local (setf (variable-enumerated-antidomain x)
+                                            (adjoin t (variable-enumerated-antidomain x)
+                                                   :test #'eq)))))
+                          ((not (every (function ,predicate-p) (variable-enumerated-domain x)))
+                           (set-enumerated-domain!
+                            x (remove-if-not (function ,predicate-p) (variable-enumerated-domain x)))))
                     (run-noticers x)))))
 
            (defun ,restrict-nontype! (x)
            (declare (type variable x))
             (when (and (variable-type x) (eq (variable-type x) ',type))
-              (fail)) 
+              (fail))
+            (when (and (variable-possibly-boolean? x)
+                       (eq ',type 'symbol))
+              (local (setf (variable-possibly-boolean? x) nil)))
             (when (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
                        (,variable-possibly-type? x))
-              (if (and (not (eq (variable-enumerated-domain x) t))
-                        (some (function ,predicate-p) (variable-enumerated-domain x)))
-                  (set-enumerated-domain!
-                    x (remove-if (function ,predicate-p) (variable-enumerated-domain x))))
+              (cond ((eq (variable-enumerated-domain x) t)
+                     (cond ((eq ',type 'list)
+                            (local (setf (variable-enumerated-antidomain x)
+                                         (adjoin nil (variable-enumerated-antidomain x)
+                                                  :test #'eq))))
+                           ((eq ',type 'symbol)
+                            (local (setf (variable-enumerated-antidomain x)
+                                   (adjoin t
+                                          (adjoin nil (variable-enumerated-antidomain x)
+                                                 :test #'eq)
+                                          :test #'eq))))))
+                    ((some (function ,predicate-p) (variable-enumerated-domain x))
+                     (set-enumerated-domain!
+                      x (remove-if (function ,predicate-p) (variable-enumerated-domain x)))))
               (run-noticers x)))
 
            (defun ,known?-typepv (x)

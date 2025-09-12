@@ -409,7 +409,7 @@ custom variable types, enhancing the flexibility and extensibility of the
 constraint system. Users can now create and register their own types, which
 can be used in constraints, variable declarations, and other parts of the
 Screamer framework. The possible types are now tracked from enumerated domains
-of non boolean, non number variables.
+of non number variables.
 
 About canonical-type and Type Order
 
@@ -431,7 +431,7 @@ After enabling this feature by compiling Screamer with the #+screamer-extensible
 feature, users can define a new type in two ways:
 
 1. Global Variable Method (Recommended for system-wide types):
-Add the type symbol to the global variable *NONBOOLEAN-NONNUMBER-TYPES* before
+Add the type symbol to the global variable *NONNUMBER-TYPES* before
 compiling or loading Screamer. Screamer will automatically generate all 
 associated functions and generator functions for every type in the list. This
 is the best approach if you want the new type to be available everywhere Screamer
@@ -449,9 +449,9 @@ AN-ARRAYV, etc.
 
 Example:
 
-Include the type or types in the global variable list *NONBOOLEAN-NONNUMBER-TYPES*:
+Include the type or types in the global variable list *NONNUMBER-TYPES*:
 
-(defparameter-compile-time *nonboolean-nonnumber-types*
+(defparameter-compile-time *nonnumber-types*
   '(hash-table ...) "...")
 
 Or manually define the type:

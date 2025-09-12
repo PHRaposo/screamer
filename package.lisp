@@ -154,7 +154,7 @@
            #:*maximum-list-domain-size*
            #:define-screamer-type
            #:define-screamer-generator-function
-           #:*nonboolean-nonnumber-types*))
+           #:*nonnumber-types*))
 
 (in-package :screamer)
 ;;; Avoid warnings when compiling screamer.lisp in LispWorks

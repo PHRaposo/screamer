@@ -79,6 +79,7 @@
            #:integerpv
            #:booleanpv
            #:memberv
+           #:all-differentv
            #:assert!
            #:known?
            #:decide

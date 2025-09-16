@@ -7587,7 +7587,7 @@ in the process of determining a good search order."
                 (integers-between (variable-lower-bound variable)
                                   (variable-upper-bound variable))))
               ((and (variable-max-denom variable)
-                    (<= (estimate-farey-domain-size (variable-max-denom)
+                    (<= (estimate-farey-domain-size (variable-max-denom variable)
                                                     (variable-lower-bound variable)
                                                     (variable-upper-bound variable))
                          *maximum-random-domain-size*))

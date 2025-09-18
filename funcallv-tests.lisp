@@ -1,17 +1,5 @@
 (in-package :screamer)
 
-(defun test-funcallv-domain-1 ()
-(let* ((x (an-integer-betweenv 0 2))
-        (z (funcallv #'+ x 1)))
-(equal-set? '(1 2 3) (variable-enumerated-domain z))))
-
-(defun test-funcallv-domain-2 ()
-(let* ((x (an-integer-betweenv 0 5))
-       (y (an-integer-betweenv 0 5))
-       (z (funcallv (lambda (a b) (+ (* a 2) (* b 3))) x y)))
-(equal-set? (variable-enumerated-domain z)
-            '(25 22 19 16 13 10 23 20 17 14 11 8 21 18 15 12 9 6 7 4 5 2 3 0))))
-
 (defun test-funcallv-ac-1 ()
   (let* ((*strategy* :ac)
          (x (an-integer-betweenv 0 2))
@@ -81,24 +69,6 @@
     (assert! (=v y 2))
     (known?-true (=v z 3))))
 
-(defun test-funcallv-list-domain-1 ()
-  (let* ((x (an-integer-betweenv 0 2))
-         (y (an-integer-betweenv 0 2))
-         (z (funcallv #'list x y)))
-    (equal-set? (variable-enumerated-domain z)
-                '((0 0) (0 1) (0 2)
-                  (1 0) (1 1) (1 2)
-                  (2 0) (2 1) (2 2)))))
-
-(defun test-funcallv-list-domain-2 ()
-  (let* ((x (an-integer-betweenv 0 2))
-         (y (an-integer-betweenv 0 2))
-         (z (funcallv (lambda (a b) (list (* a 2) (* b 3))) x y)))
-    (equal-set? (variable-enumerated-domain z)
-                '((0 0) (0 3) (0 6)
-                  (2 0) (2 3) (2 6)
-                  (4 0) (4 3) (4 6)))))
-
 (defun test-funcallv-lists-ac ()
  (let* ((*strategy* :ac)
         (x (list (a-member-ofv '(0 1 2 3))
@@ -133,9 +103,7 @@
    (all-values (solution x (static-ordering #'linear-force))))))
 
 (defparameter *funcallv-test-functions*
-'(test-funcallv-domain-1
-  test-funcallv-domain-2
-  test-funcallv-ac-1
+'(test-funcallv-ac-1
   test-funcallv-ac-2
   test-funcallv-ac-3
   test-funcallv-ac-4
@@ -143,8 +111,6 @@
   test-funcallv-bidirectional-propagation
   test-funcallv-bidirectional-propagation-2
   test-funcallv-bidirectional-propagation-3
-  test-funcallv-list-domain-1
-  test-funcallv-list-domain-2
   test-funcallv-lists-ac
   test-funcallv-lists-gfc-1
   test-funcallv-lists-gfc-2))

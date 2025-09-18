@@ -346,8 +346,6 @@
   (is (screamer::test-not-float-variable)))
 
 (deftest funcallv-tests ()
-  (is (screamer::test-funcallv-domain-1))
-  (is (screamer::test-funcallv-domain-2))
   (is (screamer::test-funcallv-ac-1))
   (is (screamer::test-funcallv-ac-2))
   (is (screamer::test-funcallv-ac-3))
@@ -356,8 +354,6 @@
   (is (screamer::test-funcallv-bidirectional-propagation))
   (is (screamer::test-funcallv-bidirectional-propagation-2))
   (is (screamer::test-funcallv-bidirectional-propagation-3))
-  (is (screamer::test-funcallv-list-domain-1))
-  (is (screamer::test-funcallv-list-domain-2))
   (is (screamer::test-funcallv-lists-ac))
   (is (screamer::test-funcallv-lists-gfc-1))
   (is (screamer::test-funcallv-lists-gfc-2)))

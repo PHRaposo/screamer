@@ -221,7 +221,7 @@ package by using the following preamble to your file:
 (IN-PACKAGE :MY-PACKAGE)
 
 9. Version 4.0.1 (by Paulo Raposo) - Rational numbers are now supported in Screamer.
-The following functions have been added:
+The following functions/macros have been added:
 
 A-RANDOM-MEMBER-OF
 A-RATIONAL
@@ -246,8 +246,8 @@ A-FLOAT-ABOVEV
 A-FLOAT-BELOWV
 A-FLOAT-BETWEENV
 A-RANDOM-MEMBER-OFV
-N-VARIABLES
-N-LISTS-OF VARIABLES
+N-VARIABLES (macro)
+N-LISTS-OF VARIABLES (macro)
 RANDOM-FORCE
 
 The following functions have been added/modified to support rational numbers:
@@ -299,7 +299,6 @@ OPTIMIZE-VALUE (based on BEST-VALUE, see best-optimize-value-examples.lisp)
 N-VALUES (by Killian Sprotte, from PWGL Community Library Repository: https://github.com/JulienVincenot/PWGL-community-library/blob/main/User-library/smc-0.2.7/screamer-additions.lisp)
 
 New global variables: 
-*maximum-list-domain-size*
 *maximum-random-domain-size*
 
 New tests files and tests.lisp modifications
@@ -360,16 +359,6 @@ Enhancements:
  These strategies are automatically applied to propagate domain restrictions
  across complex variable structures.
 
- Automatic Domain Generation
- A new feature enables automatic domain generation when a constraint is applied,
- provided the domain size remains within a configurable limit. This is controlled
- by the global variable:
-
-   *maximum-list-domain-size* Default: 100
-
- - If the estimated domain size exceeds this threshold, automatic generation is skipped.
- - Users can override the default value to accommodate larger domains as needed.
-
 Modified functions:
 KNOWN?-CONSTRAINT
 PROPAGATE-GFC
@@ -396,8 +385,6 @@ DEEP-GROUND?
 DEEP-FINITE-DOMAIN?
 FLATTEN
 SUBSTITUTE-VARIABLE
-PROPAGATE-DOMAIN
-SET-CONSTRAINT-ENUMERATED-DOMAIN!
 
 SEE EXAMPLES IN FUNCALLV-TESTS.LISP
 

@@ -751,6 +751,80 @@
         (= (variable-max-denom x) 4)
         (= (variable-max-denom y) 4)))))
 
+(defun test-=v-share-domains.1 ()
+;; SAME TYPE
+(let ((x (a-float-betweenv 0 1))
+      (y (a-member-ofv '(0.0 0.25 0.5 0.75 1.0))))
+ (assert! (=v x y))
+ (known? (memberv x '(0.0 0.25 0.5 0.75 1.0)))))
+
+(defun test-=v-share-domains.2 ()
+;; UNCONSTRAINED TYPE
+(let ((x (a-real-betweenv 0 1))
+      (y (a-member-ofv '(0.0 0.25 0.5 0.75 1.0))))
+ (assert! (=v x y))
+  (known? (memberv x '(0.0 0.25 0.5 0.75 1.0)))))
+
+(defun test-=v-share-domains.3 ()
+;; DIFFERENT TYPES
+(let ((x (a-rational-betweenv 0 1))
+      (y (a-member-ofv '(0.0 0.25 0.5 0.75 1.0))))
+        (assert! (=v x y))
+  (known? (memberv x '(0 1/4 1/2 3/4 1)))))
+
+(defun test-=v-share-domains.4 ()
+;; DIFFERENT TYPES WITH IMCOMPATIBLE ELEMENTS
+(let ((x (a-ratio-betweenv 0 1))
+      (y (a-member-ofv '(0.0 0.25 0.5 0.75 1.0))))
+  (assert! (=v x y))
+  (known? (andv (memberv x '(1/4 1/2 3/4))
+                (memberv y '(0.25 0.5 0.75))))))
+
+(defun test-=v-share-domains.5 ()
+;; DIFFERENT TYPES WITH IMCOMPATIBLE ELEMENTS
+(let ((x (an-integer-betweenv 0 1))
+      (y (a-member-ofv '(0.0 0.25 0.5 0.75 1.0))))
+  (assert! (=v x y))
+  (known? (andv (memberv x '(0 1))
+                (memberv y '(0.0 1.0))))))
+
+(defun test-=v-share-domains.6 ()
+  ;; SAME TYPE, X has domain, Y unconstrained
+  (let ((x (a-member-ofv '(0.0 0.25 0.5 0.75 1.0)))
+        (y (a-float-betweenv 0 1)))
+    (assert! (=v x y))
+    (known? (memberv y '(0.0 0.25 0.5 0.75 1.0)))))
+
+(defun test-=v-share-domains.7 ()
+  ;; UNCONSTRAINED TYPE, X has domain, Y unconstrained
+  (let ((x (a-member-ofv '(0.0 0.25 0.5 0.75 1.0)))
+        (y (a-real-betweenv 0 1)))
+    (assert! (=v x y))
+    (known? (memberv y '(0.0 0.25 0.5 0.75 1.0)))))
+
+(defun test-=v-share-domains.8 ()
+  ;; DIFFERENT TYPES, X has domain, Y unconstrained
+  (let ((x (a-member-ofv '(0.0 0.25 0.5 0.75 1.0)))
+        (y (a-rational-betweenv 0 1)))
+    (assert! (=v x y))
+    (known? (memberv y '(0 1/4 1/2 3/4 1)))))
+
+(defun test-=v-share-domains.9 ()
+    ;; DIFFERENT TYPES WITH INCOMPATIBLE ELEMENTS, X has domain, Y unconstrained
+    (let ((x (a-member-ofv '(0.0 0.25 0.5 0.75 1.0)))
+      (y (a-ratio-betweenv 0 1)))
+    (assert! (=v x y))
+    (known? (andv (memberv x '(0.25 0.5 0.75))
+            (memberv y '(1/4 1/2 3/4))))))
+
+(defun test-=v-share-domains.10 ()
+  ;; DIFFERENT TYPES WITH INCOMPATIBLE ELEMENTS, X has domain, Y unconstrained
+  (let ((x (a-member-ofv '(0.0 0.25 0.5 0.75 1.0)))
+    (y (an-integer-betweenv 0 1)))
+  (assert! (=v x y))
+  (known? (andv (memberv x '(0.0 1.0))
+          (memberv y '(0 1))))))
+
 (defparameter *rational-ordeal-tests*
   '(test-a-ratio-above-sqrt2
     test-a-rational-between-e
@@ -848,7 +922,18 @@
     test-minv-max-denom
     test-floatpv
     test-notv-floatpv
-    test-share-equalv-rational-enum-max-denom))
+    test-share-equalv-rational-enum-max-denom
+    test-=v-share-domains.1
+    test-=v-share-domains.2
+    test-=v-share-domains.3
+    test-=v-share-domains.4
+    test-=v-share-domains.5
+    test-=v-share-domains.6
+    test-=v-share-domains.7
+    test-=v-share-domains.8
+    test-=v-share-domains.9
+    test-=v-share-domains.10
+    ))
 
 (cl:defun rational-ordeal ()
   (let ((bug? nil))

@@ -8591,7 +8591,7 @@ X2."
 
 
 ;;; note: Enable this to use EXTENSIBLE TYPES.
-;;; #+(or)
+#+(or)
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (pushnew :screamer-extensible-types *features* :test #'eq))
 
@@ -8626,7 +8626,7 @@ X2."
   (<=v . known?-<=v)
   (>v . known?->v)
   (>=v . known?->=v)
-  (/=v . known?/=v)
+  (/=v . known?-/=v)
   (funcallv . known?-funcallv)
   (applyv . known?-applyv)
   (equalv . known?-equalv)

@@ -3619,8 +3619,6 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
   (possibly-noninteger-rational? t :type boolean)
   (max-denom nil :type (or null integer))
   (possibly-noninteger-real? t :type boolean)
-  ;; note: for implementation of gaussian-integers
-  ;(possibly-gaussian-integer? t)
   (possibly-nonreal-number? t :type boolean)
   (possibly-boolean? t :type boolean)
   (possibly-nonboolean-nonnumber? t :type boolean)
@@ -3640,8 +3638,6 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
    (possibly-noninteger-rational? :accessor variable-possibly-noninteger-rational? :initform t :type boolean)
    (max-denom :accessor variable-max-denom :initform nil :type (or null integer))
    (possibly-noninteger-real? :accessor variable-possibly-noninteger-real? :initform t :type boolean)
-   ;; note: for implementation of gaussian-integers
-   ;(possibly-gaussian-integer? :accessor variable-possibly-gaussian-integer? :initform t)
    (possibly-nonreal-number? :accessor variable-possibly-nonreal-number? :initform t :type boolean)
    (possibly-boolean? :accessor variable-possibly-boolean? :initform t :type boolean)
    (possibly-nonboolean-nonnumber? :accessor variable-possibly-nonboolean-nonnumber? :initform t :type boolean)
@@ -3690,15 +3686,6 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
 (defun-compile-time sequencep (x)
   "Returns T if X is a sequence, NIL otherwise."
  (typep x 'sequence))
-
-;; note: for implementation of gaussian integers
-;(defun gaussian-integerp (x)
-;  "Returns true iff X is a Gaussian integer, i.e., a complex number with both
-; real and imaginary parts that are integers."
-;  (typecase x
-;    (complex (and (integerp (realpart x))
-;                  (integerp (imagpart x))))
-;    (otherwise nil)))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (declaim (inline canonical-type)))
@@ -7657,16 +7644,6 @@ sufficient hooks for the user to define her own force functions.)"
       (variable (bounded? x))
       (cons (and (deep-bounded? (car x))
                  (deep-bounded? (cdr x))))
-      (otherwise t)))))
-
-(defun deep-ground? (x)
-  (the boolean
-  (let ((x (value-of x)))
-    (typecase x
-      (null t)
-      (variable (ground? x))
-      (cons (and (deep-ground? (car x))
-                 (deep-ground? (cdr x))))
       (otherwise t)))))
 
 (defun deep-finite-domain? (x)

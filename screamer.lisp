@@ -9564,8 +9564,8 @@ directly nested in a call to ASSERT!, are similarly transformed."
                          arguments)
                    (cons (cdr (assoc (first form)
                                      (if polarity?
-                                         *screamer-assert!-functions*
-                                         *screamer-assert!-notv-functions*)
+                                         *screamer-assert!-notv-functions*
+                                         *screamer-assert!-functions*)
                                      :test #'eq))
                          arguments))))
         (t (let ((argument (gensym "ARGUMENT-")))

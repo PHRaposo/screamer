@@ -40,6 +40,9 @@
            #:ith-value
            #:n-values
            #:print-values
+           #:nested-for-effects
+           #:nested-one-value
+           #:nested-all-values
            #:nondeterministic-function?
            #:funcall-nondeterministic
            #:apply-nondeterministic

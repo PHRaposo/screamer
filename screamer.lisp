@@ -2760,6 +2760,140 @@ N-VALUES is analogous to ALL-VALUES, but collects only the first N solutions."
              (when (>= ,number ,n) (return-from n-values ,values)))))
        ,values)))
 
+(defmacro-compile-time nested-for-effects (&rest bodies &environment environment)
+  "Variant of FOR-EFFECTS macro to create N-level nested search from list of bodies.
+  
+BODIES: Variable number of nondeterministic expressions in nesting order
+        (nested-search body1 body2 body3 ... bodyN)
+        
+Nesting Structure:
+- body1: Outermost level (solved first)
+- body2: Nested inside body1 (solved for each body1 solution)  
+- body3: Nested inside body2 (solved for each body1+body2 combination)
+- bodyN: Innermost level (solved for each body1+...+bodyN-1 combination)
+
+Returns: NIL (like FOR-EFFECTS)
+
+Backtracking Order:
+1. Innermost (bodyN) fails first
+2. Tries next bodyN for same outer context
+3. When bodyN exhausted, backtracks to bodyN-1
+4. Continues outward until all combinations explored"
+
+  ;; Generate variable names for each nesting level
+  (let ((level-vars (loop for i from 1 to (length bodies)
+                         collect (gensym (format nil "L~A-" i)))))
+    
+    ;; Recursive function to build nested choice-point structure
+    (labels ((build-nested-structure (remaining-bodies remaining-vars depth)
+               (if (null remaining-bodies)
+                   ;; Base case: all bodies processed, return collected results
+                   `(list ,@level-vars)
+                   
+                   ;; Recursive case: wrap current body in choice-point
+                   (let ((current-body (first remaining-bodies))
+                         (current-var (first remaining-vars)))
+                     `(choice-point
+                       ,(let ((*nondeterministic-context?* t))
+                          (cps-convert-progn
+                           `((let ((,current-var ,current-body))
+                               
+                               ;; Recursively build next inner level
+                               ,(build-nested-structure (rest remaining-bodies) 
+                                                       (rest remaining-vars)
+                                                       (1+ depth))))
+                           '#'fail nil nil environment)))))))
+      
+      ;; Handle edge cases
+      (cond 
+        ;; No bodies provided
+        ((null bodies) 
+         `'())
+        
+        ;; Single body (no nesting needed)
+        ((= (length bodies) 1)
+         `(list ,(first bodies)))
+        
+        ;; Multiple bodies (build nested structure)
+        (t 
+         (build-nested-structure bodies level-vars 1))))))
+
+(defmacro-compile-time nested-one-value (&rest bodies &environment environment)
+  "Get first solution from NESTED-FOR-EFFECTS."
+  (let ((level-vars (loop for i from 1 to (length bodies)
+                         collect (gensym (format nil "L~A-" i)))))
+    
+    (labels ((build-nested-one (remaining-bodies remaining-vars depth)
+               (if (null remaining-bodies)
+                   ;; Base case: return first complete solution found
+                   `(return-from nested-search-one (list ,@level-vars))
+                   
+                   ;; Recursive case: wrap current body in choice-point
+                   (let ((current-body (first remaining-bodies))
+                         (current-var (first remaining-vars)))
+                     `(choice-point
+                       ,(let ((*nondeterministic-context?* t))
+                          (cps-convert-progn
+                           `((let ((,current-var ,current-body))
+                               
+                               ;; Continue to next level
+                               ,(build-nested-one (rest remaining-bodies) 
+                                                 (rest remaining-vars)
+                                                 (1+ depth))))
+                           '#'fail nil nil environment)))))))
+      
+      `(block nested-search-one
+         ,(if (null bodies)
+              `nil
+              (build-nested-one bodies level-vars 1))
+         nil))))
+
+(defmacro-compile-time nested-all-values (&rest bodies &environment environment)
+  "Get all solutions from NESTED-FOR-EFFECTS."
+  (let ((solutions (gensym "SOLUTIONS"))
+        (last-cons (gensym "LAST-CONS"))
+        (level-vars (loop for i from 1 to (length bodies)
+                         collect (gensym (format nil "L~A-" i)))))
+    
+    (labels ((build-nested-all (remaining-bodies remaining-vars depth)
+               (if (null remaining-bodies)
+                   ;; Base case: collect this complete solution
+                   `(let ((solution (list ,@level-vars)))
+                      ;; Add to solutions list using GLOBAL
+                      (global (if (null ,solutions)
+                                  (setf ,last-cons (list solution)
+                                        ,solutions ,last-cons)
+                                  (setf (rest ,last-cons) (list solution)
+                                        ,last-cons (rest ,last-cons))))
+                      ;; Force backtracking to find more solutions
+                      (fail))
+                   
+                   ;; Recursive case: wrap current body in choice-point
+                   (let ((current-body (first remaining-bodies))
+                         (current-var (first remaining-vars)))
+                     `(choice-point
+                       ,(let ((*nondeterministic-context?* t))
+                          (cps-convert-progn
+                           `((let ((,current-var ,current-body))
+                               
+                               ;; Continue to next level
+                               ,(build-nested-all (rest remaining-bodies) 
+                                                 (rest remaining-vars)
+                                                 (1+ depth))))
+                           '#'fail nil nil environment)))))))
+      
+      `(let ((,solutions '())
+             (,last-cons nil))
+         ,(if (null bodies)
+              `'()
+              `(progn
+                 (choice-point
+                  ,(let ((*nondeterministic-context?* t))
+                     (cps-convert-progn
+                      `(,(build-nested-all bodies level-vars 1))
+                      '#'fail nil nil environment)))
+                 ,solutions))))))
+
 ;;; In classic Screamer TRAIL is unexported and UNWIND-TRAIL is exported. This
 ;;; doesn't seem very safe or sane: while users could conceivably want to use
 ;;; TRAIL to track unwinds, using UNWIND-TRAIL seems inherently dangerous

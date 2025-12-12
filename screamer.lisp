@@ -2,6 +2,9 @@
 
 ;;; LaHaShem HaAretz U'Mloah
 
+#+sbcl (eval-when (:compile-toplevel :load-toplevel :execute)
+         (require :sb-cltl2))
+
 ;;; Screamer
 ;;; A portable efficient implementation of nondeterministic Common Lisp
 ;;; Based on original version 3.20 by:
@@ -216,6 +219,74 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
            (= (length function-name) 2)
            (symbolp (second function-name))
            (not (null (second function-name))))))
+
+;;; Support for MACROLET and SYMBOL-MACROLET
+
+(defun-compile-time augment-environment-with-macros (environment macro-bindings)
+  "Create an augmented environment with local macro definitions.
+MACRO-BINDINGS is a list of (name lambda-list . body) forms."
+  #+sbcl
+  (sb-cltl2:augment-environment
+   environment
+   :macro (mapcar #'(lambda (binding)
+                      (list (first binding)
+                            (compile nil
+                                     `(lambda (form env)
+                                        (declare (ignore env))
+                                        (destructuring-bind ,(second binding)
+                                            (rest form)
+                                          ,@(rest (rest binding)))))))
+                  macro-bindings))
+  #+ccl
+  (ccl:augment-environment
+   environment
+   :macro (mapcar #'(lambda (binding)
+                      (list (first binding)
+                            (compile nil
+                                     `(lambda (form env)
+                                        (declare (ignore env))
+                                        (destructuring-bind ,(second binding)
+                                            (rest form)
+                                          ,@(rest (rest binding)))))))
+                  macro-bindings))
+  #+lispworks
+  (hcl:augment-environment
+   environment
+   :macro (mapcar #'(lambda (binding)
+                      (list (first binding)
+                            (compile nil
+                                     `(lambda (form env)
+                                        (declare (ignore env))
+                                        (destructuring-bind ,(second binding)
+                                            (rest form)
+                                          ,@(rest (rest binding)))))))
+                  macro-bindings))
+  #-(or sbcl ccl lispworks)
+  (error "MACROLET is not supported on this Common Lisp implementation. Supported implementations: SBCL, CCL (Clozure CL), LispWorks."))
+
+(defun-compile-time augment-environment-with-symbol-macros (environment symbol-macro-bindings)
+  "Create an augmented environment with local symbol-macro definitions.
+SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
+  #+sbcl
+  (sb-cltl2:augment-environment
+   environment
+   :symbol-macro (mapcar #'(lambda (binding)
+                             (list (first binding) (second binding)))
+                         symbol-macro-bindings))
+  #+ccl
+  (ccl:augment-environment
+   environment
+   :symbol-macro (mapcar #'(lambda (binding)
+                             (list (first binding) (second binding)))
+                         symbol-macro-bindings))
+  #+lispworks
+  (hcl:augment-environment
+   environment
+   :symbol-macro (mapcar #'(lambda (binding)
+                             (list (first binding) (second binding)))
+                         symbol-macro-bindings))
+  #-(or sbcl ccl lispworks)
+  (error "SYMBOL-MACROLET is not supported on this Common Lisp implementation. Supported implementations: SBCL, CCL (Clozure CL), LispWorks."))
 
 (defun-compile-time check-function-name (function-name)
   (unless (valid-function-name? function-name)
@@ -668,6 +739,71 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
                                  (rest (rest form)))))))
       (funcall map-function form form-type)))
 
+(defun-compile-time walk-macrolet
+    (map-function reduce-function screamer? partial? nested? form environment)
+  (unless (null (rest (last form))) (error "Improper MACROLET: ~S" form))
+  (unless (>= (length form) 2)
+    (error "MACROLET must have BINDINGS: ~S" form))
+  (unless (and (listp (second form))
+               (null (rest (last (second form))))
+               (every #'(lambda (binding)
+                          (and (consp binding)
+                               (null (rest (last binding)))
+                               (>= (length binding) 2)
+                               (symbolp (first binding))
+                               (listp (second binding))))
+                      (second form)))
+    (error "Invalid BINDINGS for MACROLET: ~S" form))
+  (if reduce-function
+      (let ((new-environment
+             (augment-environment-with-macros environment (second form))))
+        (funcall
+         reduce-function
+         (funcall map-function form 'macrolet)
+         (reduce reduce-function
+                 (mapcar #'(lambda (subform)
+                             (walk map-function
+                                   reduce-function
+                                   screamer?
+                                   partial?
+                                   nested?
+                                   subform
+                                   new-environment))
+                         (rest (rest form))))))
+      (funcall map-function form 'macrolet)))
+
+(defun-compile-time walk-symbol-macrolet
+    (map-function reduce-function screamer? partial? nested? form environment)
+  (unless (null (rest (last form))) (error "Improper SYMBOL-MACROLET: ~S" form))
+  (unless (>= (length form) 2)
+    (error "SYMBOL-MACROLET must have BINDINGS: ~S" form))
+  (unless (and (listp (second form))
+               (null (rest (last (second form))))
+               (every #'(lambda (binding)
+                          (and (consp binding)
+                               (null (rest (last binding)))
+                               (= (length binding) 2)
+                               (symbolp (first binding))))
+                      (second form)))
+    (error "Invalid BINDINGS for SYMBOL-MACROLET: ~S" form))
+  (if reduce-function
+      (let ((new-environment
+             (augment-environment-with-symbol-macros environment (second form))))
+        (funcall
+         reduce-function
+         (funcall map-function form 'symbol-macrolet)
+         (reduce reduce-function
+                 (mapcar #'(lambda (subform)
+                             (walk map-function
+                                   reduce-function
+                                   screamer?
+                                   partial?
+                                   nested?
+                                   subform
+                                   new-environment))
+                         (rest (rest form))))))
+      (funcall map-function form 'symbol-macrolet)))
+
 (defun-compile-time walk-multiple-value-call
     (map-function reduce-function screamer? partial? nested? form environment)
   (unless (null (rest (last form)))
@@ -1110,13 +1246,45 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
 ;;;  Other:
 ;;;   MACRO-CALL LAMBDA-CALL SYMBOL-CALL SETF-CALL
 
+(defun-compile-time contains-nondeterministic-call? (form)
+  "Check if FORM contains calls to nondeterministic functions (both built-in and user-defined)."
+  (let ((nondeterministic-functions
+         '(either fail a-boolean an-integer an-integer-above an-integer-below
+           an-integer-between a-member-of a-random-member-of a-rational-between
+           a-rational a-rational-above a-rational-below a-ratio a-ratio-between
+           a-ratio-above a-ratio-below)))
+    (cond
+      ((null form) nil)
+      ((atom form) nil)
+      ((and (symbolp (first form))
+            (or
+             ;; Check built-in nondeterministic functions
+             (member (first form) nondeterministic-functions)
+             ;; Check user-defined nondeterministic functions via function-record-table
+             (let ((record (gethash (first form) *function-record-table*)))
+               (and record (not (function-record-deterministic? record))))))
+       t)
+      (t (or (contains-nondeterministic-call? (car form))
+             (contains-nondeterministic-call? (cdr form)))))))
+
 (defun-compile-time walk
     (map-function reduce-function screamer? partial? nested? form environment)
   ;; needs work: Cannot walk MACROLET or special forms not in both CLtL1 and
   ;;             CLtL2.
   (cond
     ((self-evaluating? form) (funcall map-function form 'quote))
-    ((symbolp form) (funcall map-function form 'variable))
+    ((symbolp form)
+     ;; Check if symbol is a symbol-macro and expand it if so
+     #+(or sbcl ccl lispworks allegro)
+     (let ((expansion (macroexpand-1 form environment)))
+       (if (not (eq expansion form))
+           ;; Symbol-macro was expanded, walk the expansion
+           (walk map-function reduce-function screamer? partial? nested?
+                 expansion environment)
+           ;; Regular variable
+           (funcall map-function form 'variable)))
+     #-(or sbcl ccl lispworks allegro)
+     (funcall map-function form 'variable))
     ((eq (first form) 'block)
      (walk-block
       map-function reduce-function screamer? partial? nested? form environment))
@@ -1149,6 +1317,12 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
      (walk-let/let*
       map-function reduce-function screamer? partial? nested? form environment
       'let*))
+    ((eq (first form) 'macrolet)
+     (walk-macrolet
+      map-function reduce-function screamer? partial? nested? form environment))
+    ((eq (first form) 'symbol-macrolet)
+     (walk-symbol-macrolet
+      map-function reduce-function screamer? partial? nested? form environment))
     ;; needs work: This is a temporary kludge to support MCL.
     ((and (eq (first form) 'locally) (null (fourth form)))
      (walk map-function reduce-function screamer? partial? nested? (third form)
@@ -1204,6 +1378,12 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
      (walk-multiple-value-call-nondeterministic
       map-function reduce-function screamer? partial? nested? form environment))
     ((and partial? (eq (first form) 'full)) (walk-full map-function form))
+    ;; Detect LOOP with nondeterministic expressions
+    ((and (symbolp (first form))
+          (eq (first form) 'loop)
+          (contains-nondeterministic-call? form))
+     (error "Cannot (currently) handle LOOP with nondeterministic expressions: ~S"
+            form))
     ((and (symbolp (first form))
           (macro-function (first form) environment))
      (walk-macro-call
@@ -2182,6 +2362,16 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
                            types
                            value?
                            environment)))
+                  (macrolet
+                   (let ((new-environment
+                          (augment-environment-with-macros environment (second form))))
+                     (cps-convert-progn
+                      (rest (rest form)) continuation types value? new-environment)))
+                  (symbol-macrolet
+                   (let ((new-environment
+                          (augment-environment-with-symbol-macros environment (second form))))
+                     (cps-convert-progn
+                      (rest (rest form)) continuation types value? new-environment)))
                   (multiple-value-call
                       (cps-convert-multiple-value-call
                        nil
@@ -3670,7 +3860,7 @@ either a list or a vector."
          (fail)
          variable)))
 
-(cl:defun a-ratio (&optional max-denominator)
+(defun a-ratio (&optional max-denominator)
   "Nondeterministically returns a ratio (noninteger rational) in the interval (-inf, +inf)
   with a maximum denominator [MAX-DENOMINATOR]. All ratios are reduced and have denominator ≤ MAX-DENOMINATOR.
   Results are returned in order of increasing denominator. This function may not terminate, as the set of ratios is infinite."
@@ -6087,7 +6277,6 @@ Otherwise returns the value of X."
         (fail))))
 
 (defun =-rule (x y)
- (declare (type variable x y))
   (cond
     ;; note: I forget why +-RULE *-RULE MIN-RULE and MAX-RULE must perform the
     ;;       check in the second COND clause irrespective of whether the first
@@ -6106,9 +6295,9 @@ Otherwise returns the value of X."
            (restrict-max-denom! x min-denom)
            (restrict-max-denom! y min-denom)))))
      ((and (not (variable? (value-of x)))
-           (not (variable? (value-of y)))
-           (/= (value-of x) (value-of y)))
-      (fail)))
+	       (not (variable? (value-of y)))
+		   (/= (value-of x) (value-of y)))
+	  (fail)))
   (let ((x (value-of x))
         (y (value-of y)))
   (cond ((and (not (variable? x))

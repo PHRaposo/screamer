@@ -3670,7 +3670,7 @@ either a list or a vector."
          (fail)
          variable)))
 
-(cl:defun a-ratio (&optional max-denominator)
+(defun a-ratio (&optional max-denominator)
   "Nondeterministically returns a ratio (noninteger rational) in the interval (-inf, +inf)
   with a maximum denominator [MAX-DENOMINATOR]. All ratios are reduced and have denominator ≤ MAX-DENOMINATOR.
   Results are returned in order of increasing denominator. This function may not terminate, as the set of ratios is infinite."

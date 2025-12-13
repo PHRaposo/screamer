@@ -1,10 +1,7 @@
 ;;; -*- Mode: LISP; Package: (SCREAMER :USE CL :COLON-MODE :EXTERNAL); Base: 10; Syntax: Ansi-common-lisp -*-
 
 ;;; LaHaShem HaAretz U'Mloah
-
-#+sbcl (eval-when (:compile-toplevel :load-toplevel :execute)
-         (require :sb-cltl2))
-
+;;;
 ;;; Screamer
 ;;; A portable efficient implementation of nondeterministic Common Lisp
 ;;; Based on original version 3.20 by:
@@ -39,6 +36,9 @@
 ;;; (CLRHASH SCREAMER::*FUNCTION-RECORD-TABLE*)
 
 (in-package :screamer)
+
+#+sbcl (eval-when (:compile-toplevel :load-toplevel :execute)
+         (require :sb-cltl2))
 
 #-lispworks(declaim (declaration magic))
 
@@ -103,6 +103,11 @@ disable it. Default is platform dependent.")
   "This must be globally NIL.")
 
 (defvar-compile-time *local?* nil "This must be globally NIL.")
+
+;;; REMOVED
+;;; (defvar-compile-time *thread-tagbody-variables?* nil
+;;;  "When T, thread mutated variables through TAGBODY continuations instead of closing over them.
+;;;   This enables correct backtracking for LOOP/ITERATE with nondeterministic expressions.")
 
 (defvar-compile-time *block-tags* '() "This must be globally NIL.")
 
@@ -1379,11 +1384,11 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
       map-function reduce-function screamer? partial? nested? form environment))
     ((and partial? (eq (first form) 'full)) (walk-full map-function form))
     ;; Detect LOOP with nondeterministic expressions
-    ((and (symbolp (first form))
-          (eq (first form) 'loop)
-          (contains-nondeterministic-call? form))
-     (error "Cannot (currently) handle LOOP with nondeterministic expressions: ~S"
-            form))
+     ((and (symbolp (first form))
+           (eq (first form) 'loop)
+           (contains-nondeterministic-call? form))
+      (error "Cannot (currently) handle LOOP with nondeterministic expressions: ~S"
+             form))
     ((and (symbolp (first form))
           (macro-function (first form) environment))
      (walk-macro-call
@@ -2148,6 +2153,47 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
          t
          environment))))
 
+;;; REMOVED
+;(defun-compile-time collect-setq-variables (forms)
+;  "Collect all variables that are assigned via SETQ in FORMS."
+;  (let ((vars nil))
+;    (labels ((scan (form)
+;               (when (consp form)
+;                 (cond
+;                   ((eq (first form) 'setq)
+;                    ;; SETQ has pairs: (setq var1 val1 var2 val2 ...)
+;                    (loop for (var val) on (rest form) by #'cddr
+;                          when (symbolp var)
+;                          do (pushnew var vars)))
+;                   (t
+                    ;; Recursively scan subforms
+;                    (mapc #'scan form))))))
+;      (mapc #'scan forms))
+;    (reverse vars)))
+
+;(defun-compile-time contains-setq-mutations? (forms)
+;  "Check if FORMS contain any SETQ mutations."
+;  (not (null (collect-setq-variables forms))))
+
+;(defun-compile-time tagbody-needs-threading? (body environment)
+;  "Determine if TAGBODY should use variable threading.
+;   Threading is needed when:
+;   1. Threading is globally enabled (*thread-tagbody-variables?* is T)
+;   2. AND the body contains nondeterministic function calls
+;   3. AND the body contains SETQ mutations"
+;  (and *thread-tagbody-variables?*
+;       (contains-nondeterministic-call? body)
+;       (contains-setq-mutations? body)))
+
+;(defun-compile-time cps-convert-tagbody
+;    (body continuation types value? environment)
+  ;; Check if threading is needed
+;  (if (tagbody-needs-threading? body environment)
+      ;; Use threaded version
+;      (cps-convert-tagbody-threaded body continuation types value? environment)
+      ;; Use current closure-based version (backward compatible)
+;      (cps-convert-tagbody-closure body continuation types value? environment)))
+
 (defun-compile-time cps-convert-tagbody
     (body continuation types value? environment)
   (let ((segments (list (list 'header)))
@@ -2180,7 +2226,7 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
                    (rest segments))
            ;; Add DYNAMIC-EXTENT declaration for all generated functions
            ,@(when (and function-names *dynamic-extent?*)
-               `((declare (dynamic-extent ,@(mapcar (lambda (name) `#',name) 
+               `((declare (dynamic-extent ,@(mapcar (lambda (name) `#',name)
                                                    function-names)))))
            ,(let ((next (rest segments)))
                  (cps-convert-progn
@@ -2189,6 +2235,114 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
                   (if next '() types)
                   (or next value?)
                   environment)))))))
+
+#|
+(defun-compile-time cps-convert-tagbody-threaded
+    (body continuation types value? environment)
+  "Threaded TAGBODY conversion - threads mutated variables as function parameters.
+   This enables correct backtracking for ITERATE/LOOP with nondeterministic expressions."
+  (let* ((segments (list (list 'header)))
+         (*tagbody-tags* *tagbody-tags*)
+         (threaded-vars (collect-setq-variables body)))
+    ;; Build segments (same as closure version)
+    (dolist (form body)
+      (if (consp form)
+          (push form (rest (first segments)))
+          (let ((c (gensym "CONTINUATION-")))
+            (push (list form c) *tagbody-tags*)
+            (push (list c) segments))))
+    (push nil (rest (first segments)))
+    (let ((segments (reverse segments))
+          (dummy-argument (gensym "DUMMY-"))
+          (other-arguments (gensym "OTHER-")))
+      (let ((function-names (mapcar #'first (rest segments))))
+        ;; Create a continuation that assigns threaded variables back before calling original continuation
+        (let ((threaded-continuation
+               (if threaded-vars
+                   `#'(lambda (,@threaded-vars &optional ,dummy-argument &rest ,other-arguments)
+                        (declare (magic) (ignore ,dummy-argument ,other-arguments))
+                        ;; Assign threaded variables back to their original bindings
+                        (progn
+                          ,@(mapcar (lambda (var) `(setq ,var ,var)) threaded-vars)
+                          ,(possibly-beta-reduce-funcall continuation types nil value?)))
+                   continuation)))
+          `(labels ,(mapcar
+                     #'(lambda (segment)
+                         (let ((next (rest (member segment segments :test #'eq))))
+                           `(,(first segment)
+                              (,@threaded-vars &optional ,dummy-argument &rest ,other-arguments)
+                              (declare (ignore ,dummy-argument ,other-arguments))
+                              ,(cps-convert-progn-threaded
+                                (reverse (rest segment))
+                                threaded-vars
+                                (if next `#',(first (first next)) threaded-continuation)
+                                (if next '() types)
+                                (or next value?)
+                                environment))))
+                     (rest segments))
+             ,@(when (and function-names *dynamic-extent?*)
+                 `((declare (dynamic-extent ,@(mapcar (lambda (name) `#',name)
+                                                     function-names)))))
+             ;; Initial call with current values of threaded variables
+             ,(let ((next (rest segments)))
+                   `(,(first (first next)) ,@threaded-vars))))))))
+
+(defun-compile-time cps-convert-progn-threaded
+    (body threaded-vars continuation types value? environment)
+  "Convert PROGN with threading awareness.
+   SETQ to threaded variables becomes binding + continuation call with new value."
+  (cond
+    ((null body)
+     (possibly-beta-reduce-funcall continuation types nil value?))
+    ((and (consp (first body))
+          (eq (first (first body)) 'setq)
+          (member (second (first body)) threaded-vars))
+     ;; SETQ to a threaded variable - convert to LET binding + continue with new value
+     (let* ((var (second (first body)))
+            (val-form (third (first body)))
+            (new-val (gensym "NEW-VAL-")))
+       `(let ((,new-val ,val-form))
+          ,(if (rest body)
+               ;; More forms to process - continue with updated variable list
+               (cps-convert-progn-threaded
+                (rest body)
+                threaded-vars
+                `#'(lambda (&rest ignore)
+                     (declare (ignore ignore))
+                     (funcall ,continuation ,@(mapcar (lambda (v)
+                                                        (if (eq v var)
+                                                            new-val
+                                                            v))
+                                                      threaded-vars)))
+                types
+                value?
+                environment)
+               ;; Last form - call continuation with new value
+               `(funcall ,continuation ,@(mapcar (lambda (v)
+                                                   (if (eq v var)
+                                                       new-val
+                                                       v))
+                                                 threaded-vars))))))
+    ((null (rest body))
+     ;; Last form (not SETQ)
+     (cps-convert (first body) continuation types value? environment))
+    (t
+     ;; Multiple forms - convert first, then rest
+     (cps-convert
+      (first body)
+      `#'(lambda (&rest ignore)
+           (declare (ignore ignore))
+           ,(cps-convert-progn-threaded
+             (rest body)
+             threaded-vars
+             continuation
+             types
+             value?
+             environment))
+      '()
+      nil
+      environment))))
+|#
 
 (defun-compile-time cps-convert-local-setf/setq
     (arguments continuation types value? environment)
@@ -2858,6 +3012,8 @@ ALL-VALUES is analogous to the `bagof' primitive in Prolog."
         (last-value-cons (gensym "LAST-VALUE-CONS")))
     `(let ((,values '())
            (,last-value-cons nil))
+           ;;; REMOVED
+           ;;; (*thread-tagbody-variables?* t))  ; Enable threading for correct backtracking
        (for-effects
          (let ((value (progn ,@body)))
            (global (if (null ,values)
@@ -8895,7 +9051,7 @@ X2."
 
 
 ;;; note: Enable this to use EXTENSIBLE TYPES.
-#+(or)
+;;; #+(or)
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (pushnew :screamer-extensible-types *features* :test #'eq))
 

@@ -261,8 +261,20 @@ MACRO-BINDINGS is a list of (name lambda-list . body) forms."
                                             (rest form)
                                           ,@(rest (rest binding)))))))
                   macro-bindings))
-  #-(or sbcl ccl lispworks)
-  (error "MACROLET is not supported on this Common Lisp implementation. Supported implementations: SBCL, CCL (Clozure CL), LispWorks."))
+  #+allegro
+  (sys:augment-environment
+   environment
+   :macro (mapcar #'(lambda (binding)
+                      (list (first binding)
+                            (compile nil
+                                     `(lambda (form env)
+                                        (declare (ignore env))
+                                        (destructuring-bind ,(second binding)
+                                            (rest form)
+                                          ,@(rest (rest binding)))))))
+                  macro-bindings))
+  #-(or sbcl ccl lispworks allegro)
+  (error "MACROLET is not supported on this Common Lisp implementation. Supported implementations: SBCL, CCL (Clozure CL), LispWorks, Allegro CL."))
 
 (defun-compile-time augment-environment-with-symbol-macros (environment symbol-macro-bindings)
   "Create an augmented environment with local symbol-macro definitions.
@@ -285,8 +297,14 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
    :symbol-macro (mapcar #'(lambda (binding)
                              (list (first binding) (second binding)))
                          symbol-macro-bindings))
-  #-(or sbcl ccl lispworks)
-  (error "SYMBOL-MACROLET is not supported on this Common Lisp implementation. Supported implementations: SBCL, CCL (Clozure CL), LispWorks."))
+  #+allegro
+  (sys:augment-environment
+   environment
+   :symbol-macro (mapcar #'(lambda (binding)
+                             (list (first binding) (second binding)))
+                         symbol-macro-bindings))
+  #-(or sbcl ccl lispworks allegro)
+  (error "SYMBOL-MACROLET is not supported on this Common Lisp implementation. Supported implementations: SBCL, CCL (Clozure CL), LispWorks, Allegro CL."))
 
 (defun-compile-time check-function-name (function-name)
   (unless (valid-function-name? function-name)
@@ -10143,8 +10161,9 @@ domain size is odd, the halves differ in size by at most one."
           ((and (variable-real? variable)
                 (variable-lower-bound variable)
                 (variable-upper-bound variable))
-           (cond ((zerop (- (variable-upper-bound variable)
-                            (variable-lower-bound variable)))
+           (cond 
+                ((zerop (- (variable-upper-bound variable)
+                           (variable-lower-bound variable)))
                   (cond ((variable-rational? variable)
                          (set-enumerated-domain!
                           variable

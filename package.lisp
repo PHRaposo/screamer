@@ -68,7 +68,7 @@
            #:a-ratio-below
            #:a-ratio-between
            #:a-member-of
-           #:a-random-member-of		   
+           #:a-random-member-of
            #:when-failing
            #:count-failures
            #:boolean

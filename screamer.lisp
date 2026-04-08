@@ -4348,14 +4348,13 @@ Return NIL if any element is a number, boolean, or types differ."
 
 (defun print-variable (x stream print-level)
    (declare (ignore print-level))
-  (let ((name (variable-name x))
-        (x (value-of x)))
+  (let ((x (value-of x)))
     (cond
       ((variable? x)
        (if (and (not (eq (variable-enumerated-domain x) t))
                 (not (null (variable-enumerated-antidomain x))))
            (error "This shouldn't happen"))
-       (format stream "[~S" name)
+       (format stream "[~S" (variable-name x))
       (format stream "~A"
         (cond
           ((and (variable-possibly-nonboolean-nonnumber? x)
@@ -4405,8 +4404,7 @@ Return NIL if any element is a number, boolean, or types differ."
          (format stream " enumerated-antidomain:~S"
                  (variable-enumerated-antidomain x)))
        (format stream "]"))
-      (t (cond ((or (booleanp x) (numberp x)) (format stream "~S" x))
-               (t (format stream "[~S value:~S]" name x)))))))
+      (t (format stream "~S" x)))))
 
 (defun make-variable (&optional (name nil name?))
   "Creates and returns a new variable. Variables are assigned a name
@@ -5704,8 +5702,7 @@ Otherwise returns the value of X."
                       (if (variable-max-denom x)
                           (setf (variable-max-denom x) nil))
                       (if (not (variable-type x))
-                          (unless (contains-variables? value)
-                            (setf (variable-type x) (canonical-type value))))))
+                          (setf (variable-type x) (canonical-type value)))))
          (cond ((eq (variable-enumerated-domain x) t)
                 ;; needs work: This is sound only if VALUE does not contain any
                 ;;             variables.
@@ -9174,35 +9171,40 @@ then a noticer attached to V restricts X to be not ~A ~A."
                                 (eq (variable-type x) ',type))))))
 
                   (defun ,variable-type? (x)
-                    (declare (type variable x))
-                    (the boolean
+                   (declare (type variable x))
+                   (the boolean
                     (and (not (variable-possibly-nonreal-number? x))
                          (not (variable-possibly-noninteger-real? x))
                          (not (variable-possibly-integer? x))
                          (not (variable-possibly-noninteger-rational? x))
-                         (or (and (variable-possibly-boolean? x)
-                                  (or (eq (variable-enumerated-domain x) t)
-                                   ;; KLUDGE: find a better solution for this case.
-                                   ;; if the enumerated domain contains NIL, then it could be a list.
-                                      (if (member nil (variable-enumerated-domain x) :test #'eq) t)))
-                             (and (variable-possibly-nonboolean-nonnumber? x)
-                                  (eq (variable-type x) ',type))))))
+                          ;; Boolean path: if possible, T must be excluded (only NIL is a list)
+                         (or (not (variable-possibly-boolean? x))
+                             (and (not (eq (variable-enumerated-domain x) t))
+                                  (not (member t (variable-enumerated-domain x) :test #'eq)))
+                             (member t (variable-enumerated-antidomain x) :test #'eq))
+                          ;; Nonboolean-nonnumber path: if possible, type must be LIST
+                         (or (not (variable-possibly-nonboolean-nonnumber? x))
+                             (eq (variable-type x) ',type)))))
 
                    (defun ,variable-non-type? (x)
-                     (declare (type variable x))
-                     (the boolean
-                     (and (or (variable-possibly-nonreal-number? x)
-                              (variable-possibly-noninteger-real? x)
-                              (variable-possibly-integer? x)
-                              (variable-possibly-noninteger-rational? x))
-                              (not (or (and (variable-possibly-boolean? x)
-                                            (or (eq (variable-enumerated-domain x) t)
-                                             ;; KLUDGE: find a better solution for this case.
-                                             ;; if the enumerated domain contains NIL, then it could be a list.
-                                                (not (member nil (variable-enumerated-domain x) :test #'eq))))
-                                       (and (variable-possibly-nonboolean-nonnumber? x)
-                                            (or (null (variable-type x))
-                                                 (eq (variable-type x) ',type)))))))))
+                    (declare (type variable x))
+                    (the boolean
+                    (and ;; At least some type is possible
+                         (or (variable-possibly-nonreal-number? x)
+                             (variable-possibly-noninteger-real? x)
+                             (variable-possibly-integer? x)
+                             (variable-possibly-noninteger-rational? x)
+                             (variable-possibly-boolean? x)
+                             (variable-possibly-nonboolean-nonnumber? x))
+                         ;; Boolean path: if possible, NIL must be excluded (NIL is a list)
+                         (or (not (variable-possibly-boolean? x))
+                             (and (not (eq (variable-enumerated-domain x) t))
+                                  (not (member nil (variable-enumerated-domain x) :test #'eq))))
+                         ;; Nonboolean-nonnumber path: if possible, type must be known and NOT list
+                         (or (not (variable-possibly-nonboolean-nonnumber? x))
+                             (and (not (null (variable-type x)))
+                                  (not (eq (variable-type x) ',type))))))))
+
 
                  (t (defun ,variable-possibly-type? (x)
                      (declare (type variable x))

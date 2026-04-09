@@ -1287,27 +1287,6 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
 ;;;  Other:
 ;;;   MACRO-CALL LAMBDA-CALL SYMBOL-CALL SETF-CALL
 
-(defun-compile-time contains-nondeterministic-call? (form)
-  "Check if FORM contains calls to nondeterministic functions (both built-in and user-defined)."
-  (let ((nondeterministic-functions
-         '(either fail a-boolean an-integer an-integer-above an-integer-below
-           an-integer-between a-member-of a-random-member-of a-rational-between
-           a-rational a-rational-above a-rational-below a-ratio a-ratio-between
-           a-ratio-above a-ratio-below)))
-    (cond
-      ((null form) nil)
-      ((atom form) nil)
-      ((and (symbolp (first form))
-            (or
-             ;; Check built-in nondeterministic functions
-             (member (first form) nondeterministic-functions)
-             ;; Check user-defined nondeterministic functions via function-record-table
-             (let ((record (gethash (first form) *function-record-table*)))
-               (and record (not (function-record-deterministic? record))))))
-       t)
-      (t (or (contains-nondeterministic-call? (car form))
-             (contains-nondeterministic-call? (cdr form)))))))
-
 (defun-compile-time walk
     (map-function reduce-function screamer? partial? nested? form environment)
   ;; needs work: Cannot walk MACROLET or special forms not in both CLtL1 and
@@ -1419,12 +1398,6 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
      (walk-multiple-value-call-nondeterministic
       map-function reduce-function screamer? partial? nested? form environment))
     ((and partial? (eq (first form) 'full)) (walk-full map-function form))
-    ;; Detect LOOP with nondeterministic expressions
-     ((and (symbolp (first form))
-           (eq (first form) 'loop)
-           (contains-nondeterministic-call? form))
-      (error "Cannot (currently) handle LOOP with nondeterministic expressions: ~S"
-             form))
     ((and (symbolp (first form))
           (macro-function (first form) environment))
      (walk-macro-call

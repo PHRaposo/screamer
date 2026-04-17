@@ -371,85 +371,10 @@ SUBSTITUTE-VARIABLE
 
 SEE EXAMPLES IN FUNCALLV-TESTS.LISP
 
-New feature: SCREAMER-EXTENSIBLE-TYPES (EXPERIMENTAL)
-
-This update introduces a new feature in Screamer that allows users to
-define custom variable types, enhancing the flexibility and
-extensibility of the constraint system. Users can now create and
-register their own types, which can be used in constraints, variable
-declarations, and other parts of the Screamer framework. The possible
-types are now tracked from enumerated domains of non number variables.
-
-About canonical-type and Type Order
-
-The function CANONICAL-TYPE is central to Screamer\'s extensible type
-system. It determines the canonical type of an object for use in
-constraints and variable declarations. The order of type checks in
-CANONICAL-TYPE is important: for example, proper lists are classified as
-'list rather than 'cons, because the check for list comes before cons.
-This ensures that each object is assigned the most specific and
-appropriate type.
-
-When extending Screamer with new types, make sure to update
-CANONICAL-TYPE and carefully consider the order in which types are
-checked. This guarantees correct classification and avoids unintended
-overlaps (e.g., distinguishing between lists and cons cells).
-
-Defining Custom Types
-
-After enabling this feature by compiling Screamer with the
-#+screamer-extensible-types feature, users can define a new type in two
-ways:
-
-1. Global Variable Method (Recommended for system-wide types): Add the
-     type symbol to the global variable *NONNUMBER-TYPES* before compiling
-     or loading Screamer. Screamer will automatically generate all associated
-     functions and generator functions for every type in the list. This is
-     the best approach if you want the new type to be available everywhere
-     Screamer is used.
-
-2. Macro Method (Recommended for project-specific types): In your own
-     project, you can manually call the macros (DEFINE-SCREAMER-TYPE ...)
-     and (DEFINE-SCREAMER-GENERATOR-FUNCTION ...) from within the SCREAMER
-     package before loading or compiling any code that uses these functions.
-     This is useful if users want to define types only for a specific project
-     or session.
-
-The generated functions follow a consistent naming convention based on
-the type name, e.g. the type LIST generates LISTPV, A-LISTV; the type
-ARRAY generates ARRAYPV, AN-ARRAYV, etc.
-
-Example:
-
-Include the type or types in the global variable list *NONNUMBER-TYPES:
-
-```
-(defparameter-compile-time *nonnumber-types* '(hash-table ...))
-```
-
-Or manually define the type:
-```
-(in-package :screamer)
-
-(define-screamer-type hash-table)
-
-(define-screamer-generator-function hash-table)
-```
-
-This will generate the following functions:
-VARIABLE-POSSIBLY-HASH-TABLE? VARIABLE-HASH-TABLE?
-VARIABLE-NONHASH-TABLE? KNOWN?-HASH-TABLEPV KNOWN?-NOTV-HASH-TABLEPV
-ASSERT!-HASH-TABLEPV ASSERT!-NOTV-HASH-TABLEPV HASH-TABLEPV (EXPORTED)
-A-HASH-TABLEV (EXPORTED)
-
-The user can now use (KNOWN? (HASH-TABLEPV X)), (ASSERT! (HASH-TABLEPV
-X)) and (DECIDE (HASH-TABLEPV)), which will call the specialized lifted
-functions.
-
 Currently the version 4.0.1 was tested on the following LISP
 implementations:
-- SBCL 2.5.9
+- SBCL 2.6.3
 - Allegro Common LISP 11.0
-- LispWorks 8.0.1
+- LispWorks 8.1.2
 - Clozure Common LISP 1.13
 

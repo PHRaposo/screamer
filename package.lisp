@@ -154,10 +154,7 @@
            #:*minimum-shrink-ratio*
            #:*maximum-discretization-range*
            #:*strategy*
-           #:*maximum-random-domain-size*
-           #:define-screamer-type
-           #:define-screamer-generator-function
-           #:*nonnumber-types*))
+           #:*maximum-random-domain-size*))
 
 (in-package :screamer)
 ;;; Avoid warnings when compiling screamer.lisp in LispWorks

@@ -5675,7 +5675,8 @@ Otherwise returns the value of X."
                       (if (variable-max-denom x)
                           (setf (variable-max-denom x) nil))
                       (if (not (variable-type x))
-                          (setf (variable-type x) (canonical-type value)))))
+                          (unless (contains-variables? value)
+                           (setf (variable-type x) (canonical-type value))))))
          (cond ((eq (variable-enumerated-domain x) t)
                 ;; needs work: This is sound only if VALUE does not contain any
                 ;;             variables.

@@ -79,6 +79,10 @@ to DEFPACKAGE, and automatically injects two additional options:
   `(eval-when (:compile-toplevel :load-toplevel :execute)
      (defmacro ,function-name ,lambda-list ,@body)))
 
+(defmacro-compile-time define-condition-compile-time (name (&rest parent-types) (&rest slot-specs) &body options)
+  `(eval-when (:compile-toplevel :load-toplevel :execute)
+     (define-condition ,name ,parent-types ,slot-specs ,@options)))
+
 (defparameter *screamer-version* (asdf:component-version (asdf:find-system :screamer))
   "The version of Screamer which is loaded.")
 
@@ -94,12 +98,16 @@ disable it. Default is platform dependent.")
 (defvar *iscream?* nil
   "T if Screamer is running under ILisp/GNUEmacs with iscream.el loaded.")
 
-(defvar *nondeterministic?* nil "This must be globally NIL.")
+(defvar-compile-time *nondeterministic-context* nil
+  "Hash-table storing context information for the current nondeterministic search.
+NIL outside any choice-point. Initialized to a fresh hash-table at the outermost
+choice-point; nested choice-points reuse the same instance.")
+(declaim (type (or null hash-table) *nondeterministic-context*))
 
 (defvar-compile-time *screamer?* nil
   "This must be NIL except when defining internal Screamer functions.")
 
-(defvar-compile-time *nondeterministic-context?* nil
+(defvar-compile-time *compiling-nondeterministic-context?* nil
   "This must be globally NIL.")
 
 (defvar-compile-time *local?* nil "This must be globally NIL.")
@@ -108,7 +116,8 @@ disable it. Default is platform dependent.")
 
 (defvar-compile-time *tagbody-tags* '() "This must be globally NIL.")
 
-(defvar *trail* (make-array 4096 :adjustable t :fill-pointer 0) "The trail.")
+(defvar-compile-time *trail* (make-array 4096 :adjustable t :fill-pointer 0) "The trail.")
+(declaim (vector *trail*))
 
 (defvar-compile-time *function-record-table* (make-hash-table :test #'equal)
   "The function record table.")
@@ -119,7 +128,9 @@ disable it. Default is platform dependent.")
 
 (defmacro-compile-time choice-point-internal (form)
   `(catch '%fail
-     (let ((*nondeterministic?* t))
+     (let ((*nondeterministic-context*
+             (or *nondeterministic-context*
+                 (make-hash-table :test 'equal))))
        (unwind-protect ,form
          (unwind-trail-to trail-pointer)))))
 
@@ -145,13 +156,24 @@ disable it. Default is platform dependent.")
                          (:predicate nondeterministic-function?-internal))
   function)
 
+(define-condition-compile-time screamer-error (error)
+    ((message :initarg :message :initform nil)
+     (args :initarg :args :initform nil))
+  (:documentation "Class for errors thrown by Screamer.")
+  (:report (lambda (condition stream)
+             (format stream
+                     "Encountered Screamer error:~2%~A"
+                     (apply #'format nil
+                            (slot-value condition 'message)
+                            (slot-value condition 'args))))))
+
 (defun-compile-time screamer-error (header &rest args)
-  (apply
-   #'error
-   (concatenate
-    'string
-    header
-    "~2%There are nine types of nondeterministic contexts:
+  (error 'screamer-error
+         :message (remove #\return
+                   (concatenate
+                   'string
+                   header
+                   "~2%There are nine types of nondeterministic contexts:
 
   1. the body of a function defined with SCREAMER::DEFUN
   2. the body of a FOR-EFFECTS macro invocation
@@ -165,7 +187,8 @@ disable it. Default is platform dependent.")
 
 Note that the default forms of &OPTIONAL and &KEY arguments and the
 initialization forms of &AUX variables are always deterministic
-contexts even though they may appear inside a SCREAMER::DEFUN.") args))
+contexts even though they may appear inside a SCREAMER::DEFUN."))
+         :args args))
 
 (defun-compile-time get-function-record (function-name)
   (or (gethash function-name *function-record-table*)
@@ -1264,27 +1287,6 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
 ;;;  Other:
 ;;;   MACRO-CALL LAMBDA-CALL SYMBOL-CALL SETF-CALL
 
-(defun-compile-time contains-nondeterministic-call? (form)
-  "Check if FORM contains calls to nondeterministic functions (both built-in and user-defined)."
-  (let ((nondeterministic-functions
-         '(either fail a-boolean an-integer an-integer-above an-integer-below
-           an-integer-between a-member-of a-random-member-of a-rational-between
-           a-rational a-rational-above a-rational-below a-ratio a-ratio-between
-           a-ratio-above a-ratio-below)))
-    (cond
-      ((null form) nil)
-      ((atom form) nil)
-      ((and (symbolp (first form))
-            (or
-             ;; Check built-in nondeterministic functions
-             (member (first form) nondeterministic-functions)
-             ;; Check user-defined nondeterministic functions via function-record-table
-             (let ((record (gethash (first form) *function-record-table*)))
-               (and record (not (function-record-deterministic? record))))))
-       t)
-      (t (or (contains-nondeterministic-call? (car form))
-             (contains-nondeterministic-call? (cdr form)))))))
-
 (defun-compile-time walk
     (map-function reduce-function screamer? partial? nested? form environment)
   ;; needs work: Cannot walk MACROLET or special forms not in both CLtL1 and
@@ -1396,12 +1398,6 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
      (walk-multiple-value-call-nondeterministic
       map-function reduce-function screamer? partial? nested? form environment))
     ((and partial? (eq (first form) 'full)) (walk-full map-function form))
-    ;; Detect LOOP with nondeterministic expressions
-     ((and (symbolp (first form))
-           (eq (first form) 'loop)
-           (contains-nondeterministic-call? form))
-      (error "Cannot (currently) handle LOOP with nondeterministic expressions: ~S"
-             form))
     ((and (symbolp (first form))
           (macro-function (first form) environment))
      (walk-macro-call
@@ -2650,7 +2646,7 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
 
 (defmacro-compile-time defun
     (function-name lambda-list &body body &environment environment)
-  (let ((*nondeterministic-context?* t))
+  (let ((*compiling-nondeterministic-context?* t))
     (check-function-name function-name)
     (let* ((callees (compute-callees body environment))
            (function-record (get-function-record function-name))
@@ -2784,7 +2780,7 @@ contexts. Irrespective of what context the FOR-EFFECTS appears in, BODY are
 always in a nondeterministic context. A FOR-EFFECTS expression is is always
 deterministic."
   `(choice-point
-    ,(let ((*nondeterministic-context?* t))
+    ,(let ((*compiling-nondeterministic-context?* t))
           (cps-convert-progn body '#'fail nil nil environment))))
 
 (defmacro-compile-time one-value (form &optional (default '(fail)))
@@ -3006,7 +3002,7 @@ Backtracking Order:
                    (let ((current-body (first remaining-bodies))
                          (current-var (first remaining-vars)))
                      `(choice-point
-                       ,(let ((*nondeterministic-context?* t))
+                       ,(let ((*compiling-nondeterministic-context?* t))
                           (cps-convert-progn
                            `((let ((,current-var ,current-body))
                                
@@ -3044,7 +3040,7 @@ Backtracking Order:
                    (let ((current-body (first remaining-bodies))
                          (current-var (first remaining-vars)))
                      `(choice-point
-                       ,(let ((*nondeterministic-context?* t))
+                       ,(let ((*compiling-nondeterministic-context?* t))
                           (cps-convert-progn
                            `((let ((,current-var ,current-body))
                                
@@ -3084,7 +3080,7 @@ Backtracking Order:
                    (let ((current-body (first remaining-bodies))
                          (current-var (first remaining-vars)))
                      `(choice-point
-                       ,(let ((*nondeterministic-context?* t))
+                       ,(let ((*compiling-nondeterministic-context?* t))
                           (cps-convert-progn
                            `((let ((,current-var ,current-body))
                                
@@ -3100,7 +3096,7 @@ Backtracking Order:
               `'()
               `(progn
                  (choice-point
-                  ,(let ((*nondeterministic-context?* t))
+                  ,(let ((*compiling-nondeterministic-context?* t))
                      (cps-convert-progn
                       `(,(build-nested-all bodies level-vars 1))
                       '#'fail nil nil environment)))
@@ -3121,7 +3117,7 @@ Functions on the trail are called when unwinding from a nondeterministic
 selection (due to either a normal return, or calling FAIL.)"
   ;; note: Is it really better to use VECTOR-PUSH-EXTEND than CONS for the
   ;;       trail?
-  (when *nondeterministic?*
+  (when *nondeterministic-context*
     (vector-push-extend function *trail* 1024))
   function)
 
@@ -3232,7 +3228,7 @@ PRINT-VALUES is analogous to the standard top-level user interface in Prolog."
   (funcall continuation nil))
 
 (defvar *fail* (lambda ()
-                 (if *nondeterministic?*
+                 (if *nondeterministic-context*
                      (throw '%fail nil)
                      (error "Cannot FAIL: no choice-point to backtrack to."))))
 
@@ -4325,14 +4321,13 @@ Return NIL if any element is a number, boolean, or types differ."
 
 (defun print-variable (x stream print-level)
    (declare (ignore print-level))
-  (let ((name (variable-name x))
-        (x (value-of x)))
+  (let ((x (value-of x)))
     (cond
       ((variable? x)
        (if (and (not (eq (variable-enumerated-domain x) t))
                 (not (null (variable-enumerated-antidomain x))))
            (error "This shouldn't happen"))
-       (format stream "[~S" name)
+       (format stream "[~S" (variable-name x))
       (format stream "~A"
         (cond
           ((and (variable-possibly-nonboolean-nonnumber? x)
@@ -4382,8 +4377,7 @@ Return NIL if any element is a number, boolean, or types differ."
          (format stream " enumerated-antidomain:~S"
                  (variable-enumerated-antidomain x)))
        (format stream "]"))
-      (t (cond ((or (booleanp x) (numberp x)) (format stream "~S" x))
-               (t (format stream "[~S value:~S]" name x)))))))
+      (t (format stream "~S" x)))))
 
 (defun make-variable (&optional (name nil name?))
   "Creates and returns a new variable. Variables are assigned a name
@@ -5052,7 +5046,9 @@ Otherwise returns the value of X."
     ((variable-rational? x)
      (if (variable-max-denom x)
          (setf lower-bound (closest-rational-lower lower-bound (variable-max-denom x)))
-         (setf lower-bound (rationalize lower-bound)))))
+         (setf lower-bound (rationalize lower-bound))))
+  ((variable-float? x)
+    (setf lower-bound (coerce lower-bound 'double-float))))
   (when (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
              (or (not (variable-lower-bound x))
                  (> lower-bound (variable-lower-bound x))))
@@ -5114,7 +5110,9 @@ Otherwise returns the value of X."
   ((variable-rational? x)
     (if (variable-max-denom x)
         (setf upper-bound (closest-rational-upper upper-bound (variable-max-denom x)))
-        (setf upper-bound (rationalize upper-bound)))))
+        (setf upper-bound (rationalize upper-bound))))
+  ((variable-float? x)
+    (setf upper-bound (coerce upper-bound 'double-float))))
 (when (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
             (or (not (variable-upper-bound x))
                 (< upper-bound (variable-upper-bound x))))
@@ -5181,7 +5179,10 @@ Otherwise returns the value of X."
             (when lower-bound (setf lower-bound (closest-rational-lower lower-bound (variable-max-denom x))))
             (when upper-bound (setf upper-bound (closest-rational-upper upper-bound (variable-max-denom x)))))
           (t (when lower-bound (setf lower-bound (rationalize lower-bound)))
-              (when upper-bound (setf upper-bound (rationalize upper-bound)))))))
+             (when upper-bound (setf upper-bound (rationalize upper-bound))))))
+     ((variable-float? x)
+      (when lower-bound (setf lower-bound (coerce lower-bound 'double-float)))
+      (when upper-bound (setf upper-bound (coerce upper-bound 'double-float)))))
   (if (or (eq (variable-value x) x) (not (variable? (variable-value x))))
       (let ((run? nil))
         (when (and lower-bound
@@ -5675,7 +5676,7 @@ Otherwise returns the value of X."
                           (setf (variable-max-denom x) nil))
                       (if (not (variable-type x))
                           (unless (contains-variables? value)
-                            (setf (variable-type x) (canonical-type value))))))
+                           (setf (variable-type x) (canonical-type value))))))
          (cond ((eq (variable-enumerated-domain x) t)
                 ;; needs work: This is sound only if VALUE does not contain any
                 ;;             variables.
@@ -9144,35 +9145,40 @@ then a noticer attached to V restricts X to be not ~A ~A."
                                 (eq (variable-type x) ',type))))))
 
                   (defun ,variable-type? (x)
-                    (declare (type variable x))
-                    (the boolean
+                   (declare (type variable x))
+                   (the boolean
                     (and (not (variable-possibly-nonreal-number? x))
                          (not (variable-possibly-noninteger-real? x))
                          (not (variable-possibly-integer? x))
                          (not (variable-possibly-noninteger-rational? x))
-                         (or (and (variable-possibly-boolean? x)
-                                  (or (eq (variable-enumerated-domain x) t)
-                                   ;; KLUDGE: find a better solution for this case.
-                                   ;; if the enumerated domain contains NIL, then it could be a list.
-                                      (if (member nil (variable-enumerated-domain x) :test #'eq) t)))
-                             (and (variable-possibly-nonboolean-nonnumber? x)
-                                  (eq (variable-type x) ',type))))))
+                          ;; Boolean path: if possible, T must be excluded (only NIL is a list)
+                         (or (not (variable-possibly-boolean? x))
+                             (and (not (eq (variable-enumerated-domain x) t))
+                                  (not (member t (variable-enumerated-domain x) :test #'eq)))
+                             (member t (variable-enumerated-antidomain x) :test #'eq))
+                          ;; Nonboolean-nonnumber path: if possible, type must be LIST
+                         (or (not (variable-possibly-nonboolean-nonnumber? x))
+                             (eq (variable-type x) ',type)))))
 
                    (defun ,variable-non-type? (x)
-                     (declare (type variable x))
-                     (the boolean
-                     (and (or (variable-possibly-nonreal-number? x)
-                              (variable-possibly-noninteger-real? x)
-                              (variable-possibly-integer? x)
-                              (variable-possibly-noninteger-rational? x))
-                              (not (or (and (variable-possibly-boolean? x)
-                                            (or (eq (variable-enumerated-domain x) t)
-                                             ;; KLUDGE: find a better solution for this case.
-                                             ;; if the enumerated domain contains NIL, then it could be a list.
-                                                (not (member nil (variable-enumerated-domain x) :test #'eq))))
-                                       (and (variable-possibly-nonboolean-nonnumber? x)
-                                            (or (null (variable-type x))
-                                                 (eq (variable-type x) ',type)))))))))
+                    (declare (type variable x))
+                    (the boolean
+                    (and ;; At least some type is possible
+                         (or (variable-possibly-nonreal-number? x)
+                             (variable-possibly-noninteger-real? x)
+                             (variable-possibly-integer? x)
+                             (variable-possibly-noninteger-rational? x)
+                             (variable-possibly-boolean? x)
+                             (variable-possibly-nonboolean-nonnumber? x))
+                         ;; Boolean path: if possible, NIL must be excluded (NIL is a list)
+                         (or (not (variable-possibly-boolean? x))
+                             (and (not (eq (variable-enumerated-domain x) t))
+                                  (not (member nil (variable-enumerated-domain x) :test #'eq))))
+                         ;; Nonboolean-nonnumber path: if possible, type must be known and NOT list
+                         (or (not (variable-possibly-nonboolean-nonnumber? x))
+                             (and (not (null (variable-type x)))
+                                  (not (eq (variable-type x) ',type))))))))
+
 
                  (t (defun ,variable-possibly-type? (x)
                      (declare (type variable x))
@@ -10282,6 +10288,8 @@ have domain size of 1."
                      ((variable-max-denom x)
                       (estimate-farey-domain-size (variable-max-denom x)
                                                   (variable-lower-bound x) (variable-upper-bound x)))))
+             ((variable-dependencies x)
+              (domain-size (variable-dependencies x)))
              (t nil)))
       (otherwise 1))))
 

@@ -230,7 +230,7 @@ The following functions/macros have been added:
      DIVIDE-AND-CONQUER-FORCE 
      FINITE-DOMAIN? 
      =-RULE (use enumerated-domains)
-     DOMAIN-SIZE
+     DOMAIN-SIZE (rational numbers and dependencies support)
 
      - The following functions have been added to support Farey sequences
          (unexported): 

@@ -9358,7 +9358,7 @@ VALUES can be either a vector or a list designator."
 random permutation of VALUES.
 VALUES can be either a vector or a list designator."
   (let ((v (if name? (make-variable name) (make-variable))))
-    (assert! (memberv v (alexandria::shuffle values)))
+    (assert! (memberv v (alexandria::shuffle (copy-list values))))
     (value-of v)))
 
 (defmacro-compile-time n-variables (n var-fn &rest args)

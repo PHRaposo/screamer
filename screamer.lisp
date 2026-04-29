@@ -3603,6 +3603,12 @@ either a list or a vector."
 
 ;;; NONDETERMINISTIC RATIONAL NUMBERS
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline ratiop)))
+(defun-compile-time ratiop (x)
+  "Returns true iff X is a ratio."
+ (typep x 'ratio))
+
 ;;; Farey generators
   
 (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -3743,6 +3749,28 @@ either a list or a vector."
      (let* ((step (/ 1 max-denom)))
       (* (ceiling (/ (rationalize x) step)) step)))))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline strict-next-in-domain)))
+  
+(cl:defun strict-next-in-domain (x max-denom)
+  "Smallest rational with denominator <= max-denom strictly greater than x."
+  (if (and (ratiop x) (<= (denominator x) max-denom))
+      (farey-next-value x max-denom)
+      (let* ((step (/ 1 max-denom))
+             (result (* (ceiling (/ x step)) step)))
+        (if (integerp result) (+ result step) result))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline strict-prev-in-domain)))
+  
+(cl:defun strict-prev-in-domain (x max-denom)
+  "Greatest rational with denominator <= max-denom strictly less than x."
+  (if (and (ratiop x) (<= (denominator x) max-denom))
+      (farey-prev-value x max-denom)
+      (let* ((step (/ 1 max-denom))
+             (result (* (floor (/ x step)) step)))
+        (if (integerp result) (- result step) result))))
+        
 (cl:defun rationals-between (low high &optional max-denominator)
   "Return all reduced rationals in [low, high] with denominator <= max-denominator."
   (let* ((max-denom (or max-denominator 10))
@@ -3962,6 +3990,11 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
 (defvar *maximum-random-domain-size* 88
   "The maximum size allowed for a random domain.")
 
+(defvar *max-denom* 1000000
+  " When non-NIL, RESTRICT-LOWER-BOUND!, RESTRICT-UPPER-BOUND! and RESTRICT-BOUNDS!
+discretize a REAL variable whose bounds become rational and whose range fits within
+SAFEST-FAREY-RANGE-SIZE under this denominator.")
+
 ;;; note: Enable this to use CLOS instead of DEFSTRUCT for variables.
 #+(or)
 (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -4034,12 +4067,6 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
 (defun-compile-time booleanp (x)
   "Returns true iff X is T or NIL."
   (typep x 'boolean))
-
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (declaim (inline ratiop)))
-(defun-compile-time ratiop (x)
-  "Returns true iff X is a ratio."
- (typep x 'ratio))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (declaim (inline infinity-min)))
@@ -5038,8 +5065,19 @@ Otherwise returns the value of X."
               (set-enumerated-domain!
                x (rationals-between lower-bound (variable-upper-bound x) (variable-max-denom x)))))
           ((variable-real? x)
-           (if (zerop (- (variable-upper-bound x) (variable-lower-bound x)))
-               (set-enumerated-domain! x (list (variable-lower-bound x))))))))
+           (cond
+             ((zerop (- (variable-upper-bound x) (variable-lower-bound x)))
+              (set-enumerated-domain! x (list (variable-lower-bound x))))
+             ((and *max-denom*
+                   *maximum-discretization-range*
+                   (rationalp (variable-lower-bound x))
+                   (rationalp (variable-upper-bound x))
+                   (<= (- (variable-upper-bound x) (variable-lower-bound x))
+                       (safest-farey-range-size *maximum-discretization-range* *max-denom*)))
+              (set-enumerated-domain!
+                x (rationals-between (variable-lower-bound x)
+                                     (variable-upper-bound x)
+                                     *max-denom*))))))))
          ((some #'(lambda (element) (< element lower-bound))
                    (variable-enumerated-domain x))
              ;; note: Could do less consing if had LOCAL DELETE-IF.
@@ -5102,8 +5140,19 @@ Otherwise returns the value of X."
                   (set-enumerated-domain!
                     x (rationals-between (variable-lower-bound x) upper-bound (variable-max-denom x)))))
               ((variable-real? x)
-               (if (zerop (- (variable-upper-bound x) (variable-lower-bound x)))
-                   (set-enumerated-domain! x (list (variable-lower-bound x))))))))
+               (cond
+                 ((zerop (- (variable-upper-bound x) (variable-lower-bound x)))
+                  (set-enumerated-domain! x (list (variable-lower-bound x))))
+                 ((and *max-denom*
+                       *maximum-discretization-range*
+                       (rationalp (variable-lower-bound x))
+                       (rationalp (variable-upper-bound x))
+                       (<= (- (variable-upper-bound x) (variable-lower-bound x))
+                           (safest-farey-range-size *maximum-discretization-range* *max-denom*)))
+                  (set-enumerated-domain!
+                    x (rationals-between (variable-lower-bound x)
+                                         (variable-upper-bound x)
+                                         *max-denom*))))))))
       ((some #'(lambda (element) (> element upper-bound))
               (variable-enumerated-domain x))
         ;; note: Could do less consing if had LOCAL DELETE-IF.
@@ -5198,8 +5247,19 @@ Otherwise returns the value of X."
                                                (variable-upper-bound x)
                                                (variable-max-denom x)))))
                       ((variable-real? x)
-                        (if (zerop (- (variable-upper-bound x) (variable-lower-bound x)))
-                            (set-enumerated-domain! x (list (variable-lower-bound x))))))))                                            
+                        (cond
+                          ((zerop (- (variable-upper-bound x) (variable-lower-bound x)))
+                           (set-enumerated-domain! x (list (variable-lower-bound x))))
+                          ((and *max-denom*
+                                *maximum-discretization-range*
+                                (rationalp (variable-lower-bound x))
+                                (rationalp (variable-upper-bound x))
+                                (<= (- (variable-upper-bound x) (variable-lower-bound x))
+                                    (safest-farey-range-size *maximum-discretization-range* *max-denom*)))
+                           (set-enumerated-domain!
+                             x (rationals-between (variable-lower-bound x)
+                                                  (variable-upper-bound x)
+                                                  *max-denom*))))))))
                 ((or (and lower-bound
                           (some #'(lambda (element) (< element lower-bound))
                                 (variable-enumerated-domain x)))
@@ -6307,13 +6367,17 @@ Otherwise returns the value of X."
 (defun <-rule (x y)
 (declare (type variable x y))
   (if (variable-lower-bound x)
-      (restrict-lower-bound! y (if (variable-integer? y)
-                                   (1+ (floor (variable-lower-bound x)))
-                                   (variable-lower-bound x))))
+      (restrict-lower-bound! y (cond ((variable-integer? y)
+                                      (1+ (floor (variable-lower-bound x))))
+                                     ((variable-rational? y)
+                                      (strict-next-in-domain (variable-lower-bound x) (variable-max-denom y)))
+                                     (t (variable-lower-bound x)))))
   (if (variable-upper-bound y)
-      (restrict-upper-bound! x (if (variable-integer? x)
-                                   (1- (ceiling (variable-upper-bound y)))
-                                   (variable-upper-bound y))))
+      (restrict-upper-bound! x (cond ((variable-integer? x)
+                                      (1- (ceiling (variable-upper-bound y))))
+                                     ((variable-rational? x)
+                                      (strict-prev-in-domain (variable-upper-bound y) (variable-max-denom x)))
+                                     (t (variable-upper-bound y)))))
   (let ((x (value-of x))
         (y (value-of y)))
     (if (and (not (variable? x)) (not (variable? y)) (>= x y)) (fail))))
@@ -8819,7 +8883,7 @@ X2."
                        (rest form))))
         ((member (first form)
                  '(integerpv rationalpv ratiopv floatpv realpv numberpv
-                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv)
+                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv all-differentv)
                  :test #'eq)
          (cons (cdr (assoc (first form)
                            (if polarity?
@@ -8922,7 +8986,7 @@ nested in a call to KNOWN?, are similarly transformed."
                         (rest form)))))
         ((member (first form)
                  '(integerpv rationalpv ratiopv floatpv realpv numberpv
-                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv)
+                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv all-differentv)
                  :test #'eq)
          (cons (cdr (assoc (first form)
                            (if polarity?
@@ -9021,7 +9085,7 @@ directly nested in a call to ASSERT!, are similarly transformed."
                          (mapcar #'third result)))))
         ((member (first form)
                  '(integerpv rationalpv ratiopv floatpv realpv numberpv
-                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv)
+                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv all-differentv)
                  :test #'eq)
          (let ((arguments (mapcar #'(lambda (argument)
                                       (declare (ignore argument))

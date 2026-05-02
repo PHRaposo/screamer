@@ -1,6 +1,12 @@
 
 (in-package :screamer)
 
+;; Local copy from primordial.lisp so this file stands alone if loaded
+;; before the primordial test suite.
+(unless (fboundp 'equal-set?)
+  (cl:defun equal-set? (x y)
+    (and (subsetp x y :test #'equal) (subsetp y x :test #'equal))))
+
 ; ------------------------------------------------------------------ -;
 ;; EXAMPLES FROM https://www.cuemath.com/algebra/objective-function/ ;;
 ; ------------------------------------------------------------------- ;
@@ -125,7 +131,7 @@
 
 ; Solution:
 
-; Let x be the number of rotis and y be the number of bread.
+; Let x be the number of wallets and y be the number of school bags.
 
 ; A man can invest a maximum of 8 hours by investing 2 hours on making a wallet and 4 hour on making a school bag.
 ; Therefore the first constraint equation is

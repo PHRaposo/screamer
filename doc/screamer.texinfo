@@ -59,22 +59,22 @@ Screamer was originally written by Jeffrey Mark Siskind and David
 Allen McAllester.
 
 The copy of Screamer this documentation refers to is maintained
-courtesy of @url{http://sb-studio.net/, Steel Bank Studio Ltd} by
+courtesy of @url{https://sb-studio.net/, Steel Bank Studio Ltd} by
 @email{nikodemus@@sb-studio.net, Nikodemus Siivola}.
 
 The Google Group
 @example
-@url{http://groups.google.com/group/screamer/}
+@url{https://groups.google.com/group/screamer/}
 @end example
 exists for Screamer-related discussions.
 
 Screamer is maintained in Git:
 @example
-git clone git://github.com/nikodemus/screamer.git
+git clone https://github.com/PHRaposo/screamer.git
 @end example
 will get you a local copy.
 @example
-@url{http://github.com/nikodemus/screamer}
+@url{https://github.com/PHRaposo/screamer}
 @end example
 is the GitHub project page.
 
@@ -98,17 +98,17 @@ is the GitHub project page.
 Following original publications by Siskind and McAllester form the
 basis of this manual:
 
-@url{http://nikodemus.github.io/screamer/screaming-yellow-zonkers.pdf,
+@url{https://phraposo.github.io/screamer/screaming-yellow-zonkers.pdf,
 Screaming Yellow Zonkers}, 1991. Old Screamer manual, doesn't always
 hold true for Screamer 3.20 on which this ``modern'' Screamer is
 based, but still probably the most complete discussion of various
 operators and the overall design of Screamer outside of this manual.
 
-@url{http://nikodemus.github.io/screamer/screamer-paper.pdf,
+@url{https://phraposo.github.io/screamer/screamer-paper.pdf,
 Screamer: A Portable Efficient Implementation of Nondeterministic
 Common Lisp}, 1993. A paper describing the fundamentals of Screamer.
 
-@url{http://nikodemus.github.io/screamer/nondeterministic-lisp.pdf,
+@url{https://phraposo.github.io/screamer/nondeterministic-lisp.pdf,
 Nondeterministic Lisp as a Substrate for Constraint Logic
 Programming}, 1993. A paper describing the constaints propagation
 features of Screamer.
@@ -447,8 +447,8 @@ the new key and its value entirely via @code{remhash}.
 Solving the ``Einstein's Riddle'' using nondeterministic features of
 Screamer, ie. backtracking search.
 
-[ @url{http://nikodemus.github.io/screamer/einstein.lisp.html, HTML} ]
-[ @url{http://nikodemus.github.io/screamer/einstein.lisp, Source} ]
+[ @url{https://phraposo.github.io/screamer/einstein.lisp.html, HTML} ]
+[ @url{https://phraposo.github.io/screamer/einstein.lisp, Source} ]
 
 @section The Zebra Puzzle
 
@@ -458,16 +458,16 @@ features of Screamer.
 (This puzzle is virtually identical to ``Einstein's Riddle'', but the
 solution is very different.)
 
-[ @url{http://nikodemus.github.io/screamer/zebra.lisp.html, HTML} ]
-[ @url{http://nikodemus.github.io/screamer/zebra.lisp, Source} ]
+[ @url{https://phraposo.github.io/screamer/zebra.lisp.html, HTML} ]
+[ @url{https://phraposo.github.io/screamer/zebra.lisp, Source} ]
 
 @section The Sudoku Puzzle
 
 Solving a sudoku puzzle using forward constraint propagation features
 of Screamer.
 
-[ @url{http://nikodemus.github.io/screamer/sudoku.lisp.html, HTML} ]
-[ @url{http://nikodemus.github.io/screamer/sudoku.lisp, Source} ]
+[ @url{https://phraposo.github.io/screamer/sudoku.lisp.html, HTML} ]
+[ @url{https://phraposo.github.io/screamer/sudoku.lisp, Source} ]
 
 @node Dictionary
 @comment  node-name,  next,  previous,  up

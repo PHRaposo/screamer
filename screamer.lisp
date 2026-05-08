@@ -46,13 +46,11 @@
   "Convenience wrapper around DEFPACKAGE. Passes its argument directly
 to DEFPACKAGE, and automatically injects two additional options:
 
-    \(:shadowing-import-from :screamer
-                             :defun :multiple-value-bind :y-or-n-p)
+    \(:shadowing-import-from :screamer :defun :multiple-value-bind :y-or-n-p)
     \(:use :cl :screamer)"
   `(defpackage ,defined-package-name
      ,@options
-     (:shadowing-import-from :screamer
-                             :defun :multiple-value-bind :y-or-n-p)
+     (:shadowing-import-from :screamer :defun :multiple-value-bind :y-or-n-p)
      (:use :cl :screamer)))
 
 (define-screamer-package :screamer-user)
@@ -2080,17 +2078,6 @@ model cannot propagate through helper parameters."
       (walk form))
     vars))
 
-(defun-compile-time walk-loop (form &optional environment)
-  "Walker entry point for CL:LOOP. Deterministic LOOPs go through
-the host's MACROEXPAND-1 (works on any impl with MACROLET support);
-only nondeterministic LOOPs use the LABELS-recursion rewriter, since
-CPS conversion of the host expansion's internal SETQs is unsound."
-  (if (deterministic? form environment)
-      (let ((*macroexpand-hook* #'funcall))
-        (macroexpand-1 form environment))
-      (walk-loop-rewrite-as-recursion form)))
-
-
 (defun-compile-time walk-macro-call
     (map-function reduce-function screamer? partial? nested? form environment)
   (if reduce-function
@@ -2104,16 +2091,19 @@ CPS conversion of the host expansion's internal SETQs is unsound."
                      (let ((*macroexpand-hook* #'funcall))
                        (macroexpand-1 form environment))
                      environment))
-      ;; CPS-rewrite path. CL:LOOP routes through WALK-LOOP (which dispatches
-      ;; on determinism); everything else macroexpands normally.
+      ;; CPS-rewrite path. Nondet CL:LOOP routes through the
+      ;; LABELS-recursion rewriter (CPS conversion of the host
+      ;; expansion's internal SETQs is unsound). Det LOOPs and all
+      ;; other macros macroexpand normally.
       (walk map-function
             reduce-function
             screamer?
             partial?
             nested?
             (let ((*macroexpand-hook* #'funcall))
-              (if (and (consp form) (eq (car form) 'loop))
-                  (walk-loop form environment)
+              (if (and (consp form) (eq (car form) 'loop)
+                       (not (deterministic? form environment)))
+                  (walk-loop-rewrite-as-recursion form)
                   (macroexpand-1 form environment)))
             environment)))
 

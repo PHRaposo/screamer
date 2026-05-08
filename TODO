@@ -11,7 +11,9 @@
 * TODO Rewrite dynamic-extent continuations using FLET
     At least SBCL cannot currently stack-allocate a let-bound lambda,
     but manages FLET and LABELS just fine.
-* TODO Dynamic-extent in CPS-CONVERT-TAGBODY.
+* DONE Dynamic-extent in CPS-CONVERT-TAGBODY.
+    LABELS-bound continuations declared (dynamic-extent ...) when
+    *dynamic-extent?* is true.
 * WIP Split the system into logical pieces.
     Most of the DEFUN-COMPILE-TIME functions should probably go
     to a file of their own, loaded before the main screamer code
@@ -20,13 +22,17 @@
 *** TODO #:DUMMY-N gensyms used all over the place
     This makes macro-expansions harder to read than they need to be.
     Use differently named gensyms for different things.
-*** TODO DEFMACRO-COMPILE-TIME
+*** DONE DEFMACRO-COMPILE-TIME
       Check if Allegro still needs this.
-*** TODO primordial.lisp has some commented-out tests using LOOP
+      Used across all 4 supported impls (SBCL, CCL, LispWorks, Allegro).
+*** DONE primordial.lisp has some commented-out tests using LOOP
     Apparently LOCAL and LOOP interactions depend on the specific
     expansion of loop. :/ If nothing else, documentation should
     mention this. An alternative would be to provide our own
     implemntation of LOOP that is well-behaved when it comes to LOCAL.
+    test7 / test8 reactivated; the walker now dispatches LOOP on
+    determinism (LABELS-recursive rewrite for nondet, host
+    macroexpansion for det, with MACROLET/SYMBOL-MACROLET support).
 *** TODO review the remaining limitations listed in the old source, and put the in the manual
      1. Does not handle SETF methods with multiple values for LOCAL
         SETF.
@@ -35,9 +41,9 @@
      3. If you do a (SETF (SYMBOL-FUNCTION 'FOO) ...) to a deterministic
 	function when FOO was previously defined as a nondeterministic
 	function you will lose when you attempt to evaluate (FOO ...).
-     4. The function record table will not work if we ever support FLET and
-	 LABELS and in particular, if we ever support FLET and LABELS of
-	  nondeterministic functions.
+     4. DONE: FLET and LABELS now supported via cps-convert-flet/labels +
+        *lexical-function-records*. Bindings are lexically scoped; calls to
+        labels-bound nondet names dispatch through their CPS form.
      5. There is no way to force Screamer into compiling a deterministic
 	function as a nondeterministic one. A wizard might want to do this to
 	take advantage of the fact that a LOCAL SETF/SETQ in a nondeterministic
@@ -55,10 +61,19 @@
 * Old "Bugs to fix" list from screamer.lisp
   These haven't been verified or anything, just moved here.
 *** TODO Deterministic/nondeterministic LOCAL SETF/SETQ undone out of order.
+    No regression test or repro available; bug is unverified in 4.0.1.
+    Needs a deliberate failing example before acting.
 *** TODO Changing determinism status
     can cause code from a different file to be included causing wierd behavior.
 *** TODO May loop when expressions contain circular lists.
-*** TODO APPLY-NONDETERMINISTIC conses.
+    Confirmed still present in 4.0.1: occurs-in?, attach-noticer!-internal,
+    attach-dependencies!-internal carry "Will loop if X is circular" notes.
+    apply-substitution/contains-variables? have no cycle guard either.
+    Preserved behaviour from upstream; circular Screamer expressions are
+    rare in practice.
+*** DONE APPLY-NONDETERMINISTIC conses.
+    Reduced via (apply #'apply ...) flattening in
+    apply-nondeterministic-nondeterministic.
 * Old "TTMTTD" list from screamer.lisp
   Things to Maybe Think Then Do? *shrug*
 *** TODO Should have way of having a stream of values.
@@ -70,7 +85,10 @@
 *** TODO Should give warning when it recompiles functions due to changing determinism status.
 *** TODO =V <V <=V >V and >=V should do congruence/monotone closure.
 *** TODO =V should propagate domains.
-*** TODO BEST-VALUE
+*** DONE BEST-VALUE
+    Generalized macro OPTIMIZE-VALUE introduced (max/min via bound-type
+    arg, attach-noticer! for early failure on suboptimal partial states).
+    Old BEST-VALUE retained for backwards compatibility.
 *** TODO Should cache VARIABLE-LOWER-BOUND/VARIABLE-UPPER-BOUND for domain variables.
 *** TODO Faster version of BIND! which doesn't cons.
 *** TODO Get DIAGNOSIS and MONTAGUE to work.
@@ -81,9 +99,13 @@
 *** TODO MEMBERV and derivatives should support vectors.
 *** TODO Backtracking out of INTEGER-BETWEENV and the like will yield an
     unconstrained variable since the constraints are asserted locally.
+    Likely no longer applies: AN-INTEGER-BETWEENV in 4.0.1 uses ASSERT!
+    (global) rather than wrapping in (LOCAL ...). Needs an explicit test
+    to confirm.
 * Refactoring
-*** Depend on Alexandria
-***** peal-off-documentation-string-and-declarations -> alexandria:parse-body
+*** DONE Depend on Alexandria
+    :depends-on (:alexandria) added to screamer.asd.
+***** TODO peal-off-documentation-string-and-declarations -> alexandria:parse-body
 *** SETF and SETQ walking is suspiciously different
 * Future Work
 *** TODO See if it would make sense to make nondeterministic functions funcallable instances.

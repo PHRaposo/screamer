@@ -25,6 +25,9 @@
 
 (in-package :screamer-tests)
 
+(defsuite (screamer-tests :in root-suite) ()
+  (run-child-tests))
+
 (defun test-screamer (&optional no-debug)
   (flet ((test ()
            (eql 0 (getf (extract-test-run-statistics (screamer-tests))
@@ -32,9 +35,6 @@
     (if no-debug
         (without-debugging (test))
         (test))))
-
-(defsuite (screamer-tests :in root-suite) ()
-  (run-child-tests))
 
 (in-suite screamer-tests)
 
@@ -87,11 +87,15 @@
 
 (deftest prime-ordeal ()
   (is (primordial::test1))
+  (is (primordial::test1a))
   (is (primordial::test2))
+  (is (primordial::test2a))
   (is (primordial::test3))
   (is (primordial::test4))
   (is (primordial::test5))
   (is (primordial::test6))
+  (is (primordial::test7))
+  (is (primordial::test8))
   (is (primordial::test11))
   (is (primordial::test12))
   (is (primordial::test13))

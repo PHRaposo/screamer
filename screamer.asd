@@ -32,8 +32,9 @@
   :licence "MIT"
   :description "Nondeterministic programming and constraint propagation."
   :author "Jeffrey Mark Siskind & David Allen McAllester"
-  :maintainer "Nikodemus Siivola <nikodemus@random-state.net>"
-  :version "4.0.0"
+  :maintainer "Paulo Henrique Raposo"
+  :version "4.0.1"
+  :depends-on (:alexandria)
   :components
   ((:file "package")
    (:file "screamer")))

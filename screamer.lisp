@@ -1,7 +1,7 @@
 ;;; -*- Mode: LISP; Package: (SCREAMER :USE CL :COLON-MODE :EXTERNAL); Base: 10; Syntax: Ansi-common-lisp -*-
 
 ;;; LaHaShem HaAretz U'Mloah
-
+;;;
 ;;; Screamer
 ;;; A portable efficient implementation of nondeterministic Common Lisp
 ;;; Based on original version 3.20 by:
@@ -37,17 +37,22 @@
 
 (in-package :screamer)
 
-(declaim (declaration magic))
+#+sbcl (eval-when (:compile-toplevel :load-toplevel :execute)
+         (require :sb-cltl2))
+
+#-lispworks(declaim (declaration magic))
 
 (defmacro define-screamer-package (defined-package-name &body options)
   "Convenience wrapper around DEFPACKAGE. Passes its argument directly
 to DEFPACKAGE, and automatically injects two additional options:
 
-    \(:shadowing-import-from :screamer :defun :multiple-value-bind :y-or-n-p)
+    \(:shadowing-import-from :screamer
+                             :defun :multiple-value-bind :y-or-n-p)
     \(:use :cl :screamer)"
   `(defpackage ,defined-package-name
      ,@options
-     (:shadowing-import-from :screamer :defun :multiple-value-bind :y-or-n-p)
+     (:shadowing-import-from :screamer
+                             :defun :multiple-value-bind :y-or-n-p)
      (:use :cl :screamer)))
 
 (define-screamer-package :screamer-user)
@@ -60,6 +65,10 @@ to DEFPACKAGE, and automatically injects two additional options:
   `(eval-when (:compile-toplevel :load-toplevel :execute)
      (defvar ,name ,initial-value ,documentation)))
 
+(defmacro defparameter-compile-time (name &optional initial-value documentation)
+  `(eval-when (:compile-toplevel :load-toplevel :execute)
+     (defparameter ,name ,initial-value ,documentation)))
+
 (defmacro defun-compile-time (function-name lambda-list &body body)
   `(eval-when (:compile-toplevel :load-toplevel :execute)
      (cl:defun ,function-name ,lambda-list ,@body)
@@ -71,6 +80,10 @@ to DEFPACKAGE, and automatically injects two additional options:
 (defmacro defmacro-compile-time (function-name lambda-list &body body)
   `(eval-when (:compile-toplevel :load-toplevel :execute)
      (defmacro ,function-name ,lambda-list ,@body)))
+
+(defmacro-compile-time define-condition-compile-time (name (&rest parent-types) (&rest slot-specs) &body options)
+  `(eval-when (:compile-toplevel :load-toplevel :execute)
+     (define-condition ,name ,parent-types ,slot-specs ,@options)))
 
 (defparameter *screamer-version* (asdf:component-version (asdf:find-system :screamer))
   "The version of Screamer which is loaded.")
@@ -87,12 +100,16 @@ disable it. Default is platform dependent.")
 (defvar *iscream?* nil
   "T if Screamer is running under ILisp/GNUEmacs with iscream.el loaded.")
 
-(defvar *nondeterministic?* nil "This must be globally NIL.")
+(defvar-compile-time *nondeterministic-context* nil
+  "Hash-table storing context information for the current nondeterministic search.
+NIL outside any choice-point. Initialized to a fresh hash-table at the outermost
+choice-point; nested choice-points reuse the same instance.")
+(declaim (type (or null hash-table) *nondeterministic-context*))
 
 (defvar-compile-time *screamer?* nil
   "This must be NIL except when defining internal Screamer functions.")
 
-(defvar-compile-time *nondeterministic-context?* nil
+(defvar-compile-time *compiling-nondeterministic-context?* nil
   "This must be globally NIL.")
 
 (defvar-compile-time *local?* nil "This must be globally NIL.")
@@ -101,7 +118,8 @@ disable it. Default is platform dependent.")
 
 (defvar-compile-time *tagbody-tags* '() "This must be globally NIL.")
 
-(defvar *trail* (make-array 4096 :adjustable t :fill-pointer 0) "The trail.")
+(defvar-compile-time *trail* (make-array 4096 :adjustable t :fill-pointer 0) "The trail.")
+(declaim (vector *trail*))
 
 (defvar-compile-time *function-record-table* (make-hash-table :test #'equal)
   "The function record table.")
@@ -112,7 +130,9 @@ disable it. Default is platform dependent.")
 
 (defmacro-compile-time choice-point-internal (form)
   `(catch '%fail
-     (let ((*nondeterministic?* t))
+     (let ((*nondeterministic-context*
+             (or *nondeterministic-context*
+                 (make-hash-table :test 'equal))))
        (unwind-protect ,form
          (unwind-trail-to trail-pointer)))))
 
@@ -138,13 +158,24 @@ disable it. Default is platform dependent.")
                          (:predicate nondeterministic-function?-internal))
   function)
 
+(define-condition-compile-time screamer-error (error)
+    ((message :initarg :message :initform nil)
+     (args :initarg :args :initform nil))
+  (:documentation "Class for errors thrown by Screamer.")
+  (:report (lambda (condition stream)
+             (format stream
+                     "Encountered Screamer error:~2%~A"
+                     (apply #'format nil
+                            (slot-value condition 'message)
+                            (slot-value condition 'args))))))
+
 (defun-compile-time screamer-error (header &rest args)
-  (apply
-   #'error
-   (concatenate
-    'string
-    header
-    "~2%There are eight types of nondeterministic contexts:
+  (error 'screamer-error
+         :message (remove #\return
+                   (concatenate
+                   'string
+                   header
+                   "~2%There are nine types of nondeterministic contexts:
 
   1. the body of a function defined with SCREAMER::DEFUN
   2. the body of a FOR-EFFECTS macro invocation
@@ -152,22 +183,32 @@ disable it. Default is platform dependent.")
   4. the first argument of a ONE-VALUE macro invocation
   5. the body of a PRINT-VALUES macro invocation
   6. the second argument of an ITH-VALUE macro invocation
-  7. the body of a POSSIBLY? macro invocation
-  8. the body of a NECESSARILY? macro invocation.
+  7. the second argument of an N-VALUES macro invocation
+  8. the body of a POSSIBLY? macro invocation
+  9. the body of a NECESSARILY? macro invocation.
 
 Note that the default forms of &OPTIONAL and &KEY arguments and the
 initialization forms of &AUX variables are always deterministic
-contexts even though they may appear inside a SCREAMER::DEFUN.") args))
+contexts even though they may appear inside a SCREAMER::DEFUN."))
+         :args args))
 
 (defun-compile-time get-function-record (function-name)
   (or (gethash function-name *function-record-table*)
       (setf (gethash function-name *function-record-table*)
             (make-function-record :function-name function-name))))
 
+;;; FLET/LABELS lexical records, dynamically shadowed in cps-convert.
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defvar *lexical-function-records* nil)
+  (defvar *conditional-guard* nil))
+
+(defun-compile-time function-record-or-lexical (function-name)
+  (or (cdr (assoc function-name *lexical-function-records* :test #'equal))
+      (get-function-record function-name)))
+
 (defun-compile-time peal-off-documentation-string-and-declarations
     (body &optional documentation-string?)
-  ;; note: This will need to be done as well for LOCALLY and MACROLET when we
-  ;;       eventually implement them.
   ;; needs work: This requires that the documentation string preceed all
   ;;             declarations which needs to be fixed.
   (let (documentation-string declarations)
@@ -184,6 +225,73 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
       (push (first body) declarations)
       (pop body))
     (values body (reverse declarations) documentation-string)))
+
+(defun-compile-time split-declaration-clause (clause var)
+  "Split a single declaration CLAUSE according to whether it mentions VAR.
+
+Returns (values FOR-VAR REMAINING) where each value is either NIL or a
+single declaration clause (without the (DECLARE ...) wrapper).
+
+Recognised binding-scoped clauses: DYNAMIC-EXTENT, IGNORE, IGNORABLE,
+SPECIAL, TYPE. For these, multi-variable forms are split so FOR-VAR
+contains only VAR and REMAINING contains the other variables.
+
+Implementation-specific clauses whose tail is a list of symbols (e.g.
+SBCL's SB-C::NO-DEBUG) are treated as binding-scoped and split the same
+way.
+
+Non-variable clauses (OPTIMIZE, FTYPE, DECLARATION, etc.) and clauses
+with non-symbol tails are returned untouched in REMAINING."
+  (flet ((split-vars (head vars)
+           (cond ((not (member var vars :test #'eq))
+                  (values nil clause))
+                 ((null (set-difference vars (list var) :test #'eq))
+                  (values clause nil))
+                 (t
+                  (values `(,head ,var)
+                          `(,head ,@(remove var vars :test #'eq)))))))
+    (case (first clause)
+      ((dynamic-extent ignore ignorable special)
+       (split-vars (first clause) (rest clause)))
+      (type
+       (let ((type-spec (second clause))
+             (vars (rest (rest clause))))
+         (cond ((not (member var vars :test #'eq))
+                (values nil clause))
+               ((null (set-difference vars (list var) :test #'eq))
+                (values clause nil))
+               (t
+                (values `(type ,type-spec ,var)
+                        `(type ,type-spec
+                               ,@(remove var vars :test #'eq)))))))
+      (otherwise
+       (let ((tail (rest clause)))
+         (if (and (consp tail) (every #'symbolp tail))
+             (split-vars (first clause) tail)
+             (values nil clause)))))))
+
+(defun-compile-time partition-declarations-for-variable (declarations var)
+  "Walk all (DECLARE ...) forms in DECLARATIONS and extract clauses that
+apply to VAR.
+
+Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
+
+  CLAUSES-FOR-VAR is a list of bare declaration clauses ready to be
+    spliced into another (DECLARE ...) form.
+
+  REMAINING-DECLARATIONS is a list of (DECLARE ...) forms with VAR's
+    clauses removed; (DECLARE ...) forms whose clauses are entirely
+    consumed are dropped."
+  (let (mine remaining-forms)
+    (dolist (decl-form declarations)
+      (let (kept-clauses)
+        (dolist (clause (rest decl-form))
+          (cl:multiple-value-bind (m r) (split-declaration-clause clause var)
+            (when m (push m mine))
+            (when r (push r kept-clauses))))
+        (when kept-clauses
+          (push `(declare ,@(nreverse kept-clauses)) remaining-forms))))
+    (values (nreverse mine) (nreverse remaining-forms))))
 
 (defun-compile-time self-evaluating? (thing)
   (and (not (consp thing))
@@ -211,6 +319,110 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
            (= (length function-name) 2)
            (symbolp (second function-name))
            (not (null (second function-name))))))
+
+;;; MACROLET / SYMBOL-MACROLET support. Required by the Dietz LOOP
+;;; suite (uses local macros to set up scenarios) and by any user code
+;;; that puts MACROLET inside (LOCAL ...) or other walked forms.
+;;; Impl-specific because each CL provides AUGMENT-ENVIRONMENT in its
+;;; own package: SBCL/sb-cltl2, CCL/ccl, LW/hcl, Allegro/sys.
+
+(defun-compile-time strip-macro-extras (lambda-list)
+  "Strip &ENVIRONMENT and &WHOLE from a macro lambda list. Per CLHS 3.4.4 each may appear at most once."
+  (let ((env-var nil)
+        (whole-var nil)
+        (clean nil)
+        (rest lambda-list))
+    (loop while rest do
+          (let ((head (car rest)))
+            (cond ((eq head '&environment)
+                   (when env-var
+                     (error "repeated &ENVIRONMENT in macro lambda list: ~S"
+                            lambda-list))
+                   (setf env-var (second rest)) (setf rest (cddr rest)))
+                  ((eq head '&whole)
+                   (when whole-var
+                     (error "repeated &WHOLE in macro lambda list: ~S"
+                            lambda-list))
+                   (setf whole-var (second rest)) (setf rest (cddr rest)))
+                  (t (push head clean) (setf rest (cdr rest))))))
+    (values (nreverse clean) env-var whole-var)))
+
+(defun-compile-time inject-aux-bindings (lambda-list aux-additions)
+  "Append AUX-ADDITIONS to LAMBDA-LIST's &aux section, creating &aux if absent."
+  (if (null aux-additions)
+      lambda-list
+      (let ((aux-pos (position '&aux lambda-list)))
+        (if aux-pos
+            (append (subseq lambda-list 0 aux-pos)
+                    (cons '&aux
+                          (append (subseq lambda-list (1+ aux-pos))
+                                  aux-additions)))
+            (append lambda-list (cons '&aux aux-additions))))))
+
+(defun-compile-time build-macrolet-expander (binding)
+  "Compile a macro function for one MACROLET binding."
+  (cl:multiple-value-bind (clean-ll env-var whole-var)
+      (strip-macro-extras (second binding))
+    (cl:multiple-value-bind (real-body user-decls user-doc)
+        (peal-off-documentation-string-and-declarations (cddr binding) t)
+      (let* ((form-gensym (gensym "FORM"))
+             (env-gensym (gensym "ENV"))
+             (aux-additions
+               (append (when whole-var `((,whole-var ,form-gensym)))
+                       (when env-var `((,env-var ,env-gensym)))))
+             (full-ll (inject-aux-bindings clean-ll aux-additions)))
+        (compile nil
+                 `(lambda (,form-gensym ,env-gensym)
+                    ,@(when user-doc (list user-doc))
+                    (declare (ignorable ,form-gensym ,env-gensym))
+                    (destructuring-bind ,full-ll (rest ,form-gensym)
+                      ,@user-decls
+                      ,@real-body)))))))
+
+(defun-compile-time augment-environment-with-macros (environment macro-bindings)
+  "Add local macros to ENVIRONMENT. MACRO-BINDINGS: ((name lambda-list . body) ...)."
+  (let ((macros (mapcar #'(lambda (binding)
+                            (list (first binding)
+                                  (build-macrolet-expander binding)))
+                        macro-bindings)))
+    #+sbcl     (sb-cltl2:augment-environment environment :macro macros)
+    #+ccl      (ccl:augment-environment environment :macro macros)
+    #+lispworks (hcl:augment-environment environment :macro macros)
+    #+allegro  (sys:augment-environment
+                (or environment (sys:ensure-portable-walking-environment nil))
+                :macro macros)
+    #-(or sbcl ccl lispworks allegro)
+    (progn macros
+           (error "MACROLET is not supported on this Common Lisp implementation. Supported: SBCL, CCL, LispWorks, Allegro."))))
+
+(defun-compile-time augment-environment-with-symbol-macros (environment symbol-macro-bindings)
+  "Add local symbol-macros to ENVIRONMENT. SYMBOL-MACRO-BINDINGS: ((name expansion) ...)."
+  #+sbcl
+  (sb-cltl2:augment-environment
+   environment
+   :symbol-macro (mapcar #'(lambda (binding)
+                             (list (first binding) (second binding)))
+                         symbol-macro-bindings))
+  #+ccl
+  (ccl:augment-environment
+   environment
+   :symbol-macro (mapcar #'(lambda (binding)
+                             (list (first binding) (second binding)))
+                         symbol-macro-bindings))
+  #+lispworks
+  (hcl:augment-environment
+   environment
+   :symbol-macro (mapcar #'(lambda (binding)
+                             (list (first binding) (second binding)))
+                         symbol-macro-bindings))
+  #+allegro
+  (sys:augment-environment
+   (or environment (sys:ensure-portable-walking-environment nil))
+   :symbol-macro (mapcar #'(lambda (binding)
+                             (list (first binding) (second binding)))
+                         symbol-macro-bindings))
+  #-(or sbcl ccl lispworks allegro)
+  (error "SYMBOL-MACROLET is not supported on this Common Lisp implementation. Supported: SBCL, CCL, LispWorks, Allegro."))
 
 (defun-compile-time check-function-name (function-name)
   (unless (valid-function-name? function-name)
@@ -396,7 +608,7 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
 
 (defun-compile-time walk-catch
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper PROGN: ~S" form))
+  (unless (null (rest (last form))) (error "Improper CATCH: ~S" form))
   (unless (>= (length form) 2)
     (error "CATCH must have at least one argument, a TAG: ~S" form))
   (if reduce-function
@@ -429,7 +641,7 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
                                          :execute
                                          compile
                                          load
-                                         evel)
+                                         eval)
                              :test #'eq))
                  (second form))
     (error "Invalid SITUATION: ~S" form))
@@ -663,6 +875,111 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
                                  (rest (rest form)))))))
       (funcall map-function form form-type)))
 
+(defun-compile-time walk-macrolet
+    (map-function reduce-function screamer? partial? nested? form environment)
+  (unless (null (rest (last form))) (error "Improper MACROLET: ~S" form))
+  (unless (>= (length form) 2)
+    (error "MACROLET must have BINDINGS: ~S" form))
+  (unless (and (listp (second form))
+               (null (rest (last (second form))))
+               (every #'(lambda (binding)
+                          (and (consp binding)
+                               (null (rest (last binding)))
+                               (>= (length binding) 2)
+                               (symbolp (first binding))
+                               (listp (second binding))))
+                      (second form)))
+    (error "Invalid BINDINGS for MACROLET: ~S" form))
+  (if reduce-function
+      (let ((new-environment
+             (if (null (second form))
+                 environment
+                 (augment-environment-with-macros environment (second form)))))
+        (cl:multiple-value-bind (body declarations)
+            (peal-off-documentation-string-and-declarations (rest (rest form)))
+          (declare (ignore declarations))
+          (funcall
+           reduce-function
+           (funcall map-function form 'macrolet)
+           (reduce reduce-function
+                   (mapcar #'(lambda (subform)
+                               (walk map-function
+                                     reduce-function
+                                     screamer?
+                                     partial?
+                                     nested?
+                                     subform
+                                     new-environment))
+                           body)))))
+      (funcall map-function form 'macrolet)))
+
+(defun-compile-time walk-symbol-macrolet
+    (map-function reduce-function screamer? partial? nested? form environment)
+  (unless (null (rest (last form))) (error "Improper SYMBOL-MACROLET: ~S" form))
+  (unless (>= (length form) 2)
+    (error "SYMBOL-MACROLET must have BINDINGS: ~S" form))
+  (unless (and (listp (second form))
+               (null (rest (last (second form))))
+               (every #'(lambda (binding)
+                          (and (consp binding)
+                               (null (rest (last binding)))
+                               (= (length binding) 2)
+                               (symbolp (first binding))))
+                      (second form)))
+    (error "Invalid BINDINGS for SYMBOL-MACROLET: ~S" form))
+  (if reduce-function
+      (let ((new-environment
+             (if (null (second form))
+                 environment
+                 (augment-environment-with-symbol-macros environment (second form)))))
+        (cl:multiple-value-bind (body declarations)
+            (peal-off-documentation-string-and-declarations (rest (rest form)))
+          (declare (ignore declarations))
+          (funcall
+           reduce-function
+           (funcall map-function form 'symbol-macrolet)
+           (reduce reduce-function
+                   (mapcar #'(lambda (subform)
+                               (walk map-function
+                                     reduce-function
+                                     screamer?
+                                     partial?
+                                     nested?
+                                     subform
+                                     new-environment))
+                           body)))))
+      (funcall map-function form 'symbol-macrolet)))
+
+(defun-compile-time walk-load-time-value
+    (map-function reduce-function screamer? partial? nested? form environment)
+  ;; Body is opaque to the runtime walker (load-time only); treat as constant.
+  (declare (ignore reduce-function screamer? partial? nested? environment))
+  (unless (null (rest (last form))) (error "Improper LOAD-TIME-VALUE: ~S" form))
+  (unless (or (= (length form) 2) (= (length form) 3))
+    (error "LOAD-TIME-VALUE must have one or two arguments: ~S" form))
+  (funcall map-function form 'load-time-value))
+
+(defun-compile-time walk-locally
+    (map-function reduce-function screamer? partial? nested? form environment)
+  (unless (null (rest (last form))) (error "Improper LOCALLY: ~S" form))
+  (if reduce-function
+      (cl:multiple-value-bind (body declarations)
+          (peal-off-documentation-string-and-declarations (rest form))
+        (declare (ignore declarations))
+        (funcall reduce-function
+                 (funcall map-function form 'locally)
+                 (reduce reduce-function
+                         (mapcar #'(lambda (subform)
+                                     (walk map-function
+                                           reduce-function
+                                           screamer?
+                                           partial?
+                                           nested?
+                                           subform
+                                           environment))
+                                 body))))
+      (funcall map-function form 'locally)))
+
 (defun-compile-time walk-multiple-value-call
     (map-function reduce-function screamer? partial? nested? form environment)
   (unless (null (rest (last form)))
@@ -670,6 +987,8 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
   (unless (>= (length form) 2)
     (error "MULTIPLE-VALUE-CALL must have at least one argument, a FUNCTION: ~S"
            form))
+  ;; Force descent into a literal #'(lambda ...) function arg -- it's
+  ;; guaranteed to be invoked.
   (if reduce-function
       (funcall reduce-function
                (funcall map-function form 'multiple-value-call)
@@ -679,7 +998,14 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
                                          reduce-function
                                          screamer?
                                          partial?
-                                         nested?
+                                         ;; Force descent for the
+                                         ;; immediately-called function arg.
+                                         (or nested?
+                                             (and (consp subform)
+                                                  (eq (car subform) 'function)
+                                                  (consp (cdr subform))
+                                                  (lambda-expression?
+                                                   (second subform))))
                                          subform
                                          environment))
                                (rest form))))
@@ -814,7 +1140,7 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
   (unless (every #'(lambda (subform)
                      (or (symbolp subform) (integerp subform) (listp subform)))
                  (rest form))
-    (error "A subforms of a TAGBODY must be symbols, integers or lists: ~S"
+    (error "Subforms of a TAGBODY must be symbols, integers or lists: ~S"
            form))
   (let ((tags (remove-if #'consp (rest form))))
     (unless (= (length tags) (length (remove-duplicates tags)))
@@ -992,6 +1318,779 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
     (error "FULL must have exactly one argument, a FORM: ~S" form))
   (funcall map-function form 'full))
 
+;;; LOOP -> LABELS-recursion rewriter.
+
+(defstruct loop-ir
+  (iterators '())
+  (for-let '())
+  (accumulators '())
+  (body '())
+  while-cond
+  until-cond
+  (extra-term-conds '())
+  (outer-bindings '())
+  (initially-body '())
+  (finally-body '())
+  return-form
+  unsupported)
+
+(defun-compile-time walk-loop-kw-eq (sym name)
+  (and (symbolp sym) (string-equal (symbol-name sym) name)))
+
+(defun-compile-time walk-loop-loop-keyword-p (sym)
+  (and (symbolp sym)
+       (member (symbol-name sym)
+               '("WITH" "REPEAT" "FOR" "AS" "DO" "DOING"
+                 "WHILE" "UNTIL"
+                 "COLLECT" "COLLECTING"
+                 "SUM" "SUMMING"
+                 "COUNT" "COUNTING"
+                 "MAX" "MAXIMIZE" "MAXIMIZING"
+                 "MIN" "MINIMIZE" "MINIMIZING"
+                 "APPEND" "APPENDING" "NCONC" "NCONCING"
+                 "ALWAYS" "NEVER" "THEREIS" "LOOP-FINISH"
+                 "FINALLY" "INITIALLY"
+                 "RETURN" "AND" "INTO" "BY" "OF-TYPE"
+                 "FROM" "UPFROM" "DOWNFROM"
+                 "TO" "UPTO" "BELOW" "ABOVE" "DOWNTO"
+                 "THEN"
+                 "ON" "IN" "ACROSS" "BEING" "THE"
+                 "HASH-KEY" "HASH-KEYS" "HASH-VALUE" "HASH-VALUES"
+                 "EACH" "USING" "=" "NAMED"
+                 "WHEN" "UNLESS" "IF" "ELSE" "END")
+               :test #'string-equal)))
+
+(defun-compile-time walk-loop-parse-iterator (cs)
+  "Parse an iterator clause starting at CS (after FOR/AS keyword).
+Returns (VALUES VAR INIT STEP TERMINATE FOR-LET-BINDING REST-CS) or
+(VALUES :unsupported ...) if the iterator form isn't recognized.
+FOR-LET-BINDING is non-NIL when the iterator value comes from a let
+expression (e.g., for x in list -> binding x = (car tail))."
+  (let ((var (first cs))
+        (rest (rest cs)))
+    (cond
+      ;; for VAR = INIT THEN STEP  -> iterator: init once, step each later iter
+      ;; for VAR = EXPR            -> for-let binding (re-eval each iter)
+      ((walk-loop-kw-eq (first rest) "=")
+       (let ((init-expr (second rest))
+             (after (cddr rest)))
+         (cond
+           ((walk-loop-kw-eq (first after) "THEN")
+            (values var init-expr (second after) nil nil (cddr after)))
+           (t
+            (values var nil nil nil (list var init-expr) after)))))
+      ;; for VAR in LIST [BY step-fn] -> tail iterator, var = (car tail)
+      ((walk-loop-kw-eq (first rest) "IN")
+       (let* ((list-expr (second rest))
+              (after-list (cddr rest))
+              (by-fn (when (walk-loop-kw-eq (first after-list) "BY")
+                       (second after-list)))
+              (rest-after (if by-fn (cddr after-list) after-list))
+              (tail-sym (gensym "TAIL-"))
+              (step-form (if by-fn
+                             `(funcall ,by-fn ,tail-sym)
+                             `(cdr ,tail-sym))))
+         (values tail-sym list-expr step-form `(null ,tail-sym)
+                 (list var `(car ,tail-sym))
+                 rest-after)))
+      ;; for VAR across VECTOR -> integer index iterator. Vector binding
+      ;; is returned via OUTER-BINDING (sixth value); evaluated once.
+      ((walk-loop-kw-eq (first rest) "ACROSS")
+       (let* ((vec-expr (second rest))
+              (after (cddr rest))
+              (vec-sym (gensym "VEC-"))
+              (idx-sym (gensym "IDX-")))
+         ;; Caller signature: (var init step term for-let rest [outer])
+         ;; Old callers expect 6 values; we extend to 7 with optional outer.
+         (values idx-sym 0 `(1+ ,idx-sym) `(>= ,idx-sym (length ,vec-sym))
+                 (list var `(aref ,vec-sym ,idx-sym))
+                 after
+                 (list vec-sym vec-expr))))
+      ;; for VAR on LIST [BY step-fn] -> var IS the tail
+      ((walk-loop-kw-eq (first rest) "ON")
+       (let* ((list-expr (second rest))
+              (after-list (cddr rest))
+              (by-fn (when (walk-loop-kw-eq (first after-list) "BY")
+                       (second after-list)))
+              (rest-after (if by-fn (cddr after-list) after-list))
+              (step-form (if by-fn `(funcall ,by-fn ,var) `(cdr ,var))))
+         (values var list-expr step-form `(atom ,var) nil rest-after)))
+      ;; for VAR {from|upfrom|downfrom} A {to|upto|below|downto|above} B [by N]
+      ((or (walk-loop-kw-eq (first rest) "FROM")
+           (walk-loop-kw-eq (first rest) "UPFROM")
+           (walk-loop-kw-eq (first rest) "DOWNFROM"))
+       (let* ((from-kw (first rest))
+              (downward? (walk-loop-kw-eq from-kw "DOWNFROM"))
+              (from-expr (second rest))
+              (kw (third rest))
+              (limit (fourth rest))
+              (has-limit (walk-loop-loop-direction-keyword-p kw))
+              (after-limit (if has-limit (cddddr rest) (cddr rest)))
+              (by-expr (when (walk-loop-kw-eq (first after-limit) "BY")
+                         (second after-limit)))
+              (by-rest (if by-expr (cddr after-limit) after-limit))
+              ;; TO is the direction-flexible keyword: it inherits direction
+              ;; from FROM (or DOWNFROM). UPTO/BELOW are always increment;
+              ;; DOWNTO/ABOVE are always decrement. Default direction (no
+              ;; limit keyword) follows FROM/DOWNFROM.
+              (incr-step `(+ ,var ,(or by-expr 1)))
+              (decr-step `(- ,var ,(or by-expr 1)))
+              (default-step (if downward? decr-step incr-step))
+              (step (cond ((not has-limit) default-step)
+                          ((walk-loop-kw-eq kw "TO")
+                           (if downward? decr-step incr-step))
+                          ((or (walk-loop-kw-eq kw "UPTO")
+                               (walk-loop-kw-eq kw "BELOW"))   incr-step)
+                          ((or (walk-loop-kw-eq kw "DOWNTO")
+                               (walk-loop-kw-eq kw "ABOVE"))   decr-step)
+                          (t :unsupported)))
+              (term (cond ((not has-limit) nil)
+                          ((walk-loop-kw-eq kw "TO")
+                           (if downward? `(< ,var ,limit) `(> ,var ,limit)))
+                          ((walk-loop-kw-eq kw "UPTO")        `(> ,var ,limit))
+                          ((walk-loop-kw-eq kw "BELOW")       `(>= ,var ,limit))
+                          ((walk-loop-kw-eq kw "DOWNTO")      `(< ,var ,limit))
+                          ((walk-loop-kw-eq kw "ABOVE")       `(<= ,var ,limit))
+                          (t :unsupported))))
+         (if (eq step :unsupported)
+             (values :unsupported nil nil nil nil nil)
+             (values var from-expr step term nil by-rest))))
+      ;; for VAR -- bare variable as iterator, no init/step (for use with WHILE)
+      ((or (null rest) (walk-loop-loop-keyword-p (first rest)))
+       (values var nil nil nil nil rest))
+      (t (values :unsupported nil nil nil nil nil)))))
+
+(defun-compile-time walk-loop-loop-direction-keyword-p (sym)
+  "True for the keywords that bound the direction of a numeric FOR
+iterator (TO/UPTO/BELOW/DOWNTO/ABOVE). Used to detect whether FROM..."
+  (and (symbolp sym)
+       (member (symbol-name sym)
+               '("TO" "UPTO" "BELOW" "DOWNTO" "ABOVE")
+               :test #'string-equal)))
+
+(defun-compile-time walk-loop-parse (form)
+  "Parse (loop CLAUSES...) into a LOOP-IR. Always returns the IR.
+On unsupported clause, sets LOOP-IR-UNSUPPORTED to a description and
+stops parsing. The caller signals an error mentioning that description
+so the user sees exactly which clause is missing."
+  (let ((ir (make-loop-ir))
+        (cs (rest form))
+        (implicit-acc nil))
+    (labels ((mark-unsupported (reason)
+               (setf (loop-ir-unsupported ir) reason))
+             (acc-init (kind)
+               (case kind
+                 ((:collect :append :nconc) nil)
+                 ((:sum :count) 0)
+                 ((:max :min) nil)
+                 (t nil)))
+             (mk-acc (kind &optional named-var)
+               "Get or create an accumulator. NAMED-VAR non-NIL means INTO
+              clause: lookup-or-create by name; auto-return is suppressed
+              (caller leaves the FIFTH slot NIL). NIL means implicit
+              singleton: at most one per loop, returned automatically.
+
+              Returns (VALUES RECORD ALREADY-HAS-UPDATE?). The second
+              value is true iff the record's UPDATE-FN slot was already
+              set, meaning the caller's clause is being combined with
+              an earlier clause that targeted the same accumulator."
+               (cond
+                 (named-var
+                  (let ((existing (find named-var (loop-ir-accumulators ir)
+                                        :key #'first :test #'eq)))
+                    (cond (existing (values existing (and (fourth existing) t)))
+                          (t
+                           (let ((record (list named-var (acc-init kind)
+                                               kind nil nil)))
+                             (push record (loop-ir-accumulators ir))
+                             (values record nil))))))
+                 (t
+                  (or (when implicit-acc (values implicit-acc
+                                                 (and (fourth implicit-acc) t)))
+                      (let* ((var (gensym (format nil "ACC-~A-" kind)))
+                             (record (list var (acc-init kind) kind nil nil)))
+                        (push record (loop-ir-accumulators ir))
+                        (setf implicit-acc record)
+                        (values record nil)))))))
+      (labels ((wrap-update (new-update acc-var)
+                 ;; Conditional accumulator update: when *conditional-guard*
+                 ;; is active, the no-op branch returns the current acc-var
+                 ;; (i.e., this iteration contributes nothing).
+                 (cond ((null *conditional-guard*) new-update)
+                       (t `(if ,*conditional-guard* ,new-update ,acc-var))))
+               (wrap-body (form)
+                 ;; Conditional body / RETURN form: (when guard ...).
+                 (cond ((null *conditional-guard*) form)
+                       (t `(when ,*conditional-guard* ,form))))
+               (parse-acc (cs0 kind compute-update final-fn)
+                 ;; Common path for accumulator clauses. COMPUTE-UPDATE is
+                 ;; a function (acc-var expr) -> update-form. FINAL-FN is
+                 ;; a function (acc-var) -> form for the implicit-return
+                 ;; FIFTH slot, or :default to use the acc-var as-is.
+                 (let* ((kw (first cs0))
+                        (expr (second cs0))
+                        (after (cddr cs0))
+                        (into-var (when (walk-loop-kw-eq (first after) "INTO")
+                                    (second after))))
+                   (cl:multiple-value-bind (record combined?)
+                       (mk-acc kind into-var)
+                     (cond (combined?
+                            (mark-unsupported
+                             (format nil "multiple ~A clauses INTO the same variable" kw))
+                            cs0)
+                           (t
+                            (let ((acc-var (first record)))
+                              (setf (fourth record)
+                                    (wrap-update (funcall compute-update acc-var expr)
+                                                 acc-var))
+                              (when (and (null into-var) (not (eq final-fn :skip)))
+                                (setf (fifth record)
+                                      (cond ((eq final-fn :default) acc-var)
+                                            (t (funcall final-fn acc-var))))))
+                            (if into-var (cddr after) after))))))
+               (parse-conditional (cs0 negate?)
+                 ;; WHEN/IF/UNLESS test sub-clauses [ELSE sub-clauses] [END].
+                 ;; Builds a guard expression composed with any outer guard
+                 ;; via AND, then parses ONE sub-clause under that guard.
+                 ;; AND chaining of sub-clauses is not yet supported.
+                 (let* ((test (second cs0))
+                        (effective (if negate? `(not ,test) test))
+                        (then-guard (if *conditional-guard*
+                                        `(and ,*conditional-guard* ,effective)
+                                        effective))
+                        (after-test (cddr cs0))
+                        (after-then (let ((*conditional-guard* then-guard))
+                                      (parse-clause after-test))))
+                   (let* ((after-else
+                           (cond ((walk-loop-kw-eq (first after-then) "ELSE")
+                                  (let* ((negated (if negate? test `(not ,test)))
+                                         (else-guard
+                                          (if *conditional-guard*
+                                              `(and ,*conditional-guard* ,negated)
+                                              negated))
+                                         (*conditional-guard* else-guard))
+                                    (parse-clause (cdr after-then))))
+                                 (t after-then))))
+                     (cond ((walk-loop-kw-eq (first after-else) "END")
+                            (cdr after-else))
+                           (t after-else)))))
+               (parse-clause (cs0)
+                 (let ((kw (first cs0)))
+                   (cond
+                     ((walk-loop-kw-eq kw "WITH")
+                      (let ((var (second cs0)))
+                        (cond ((walk-loop-kw-eq (third cs0) "=")
+                               (push (list var (fourth cs0) :user nil nil)
+                                     (loop-ir-accumulators ir))
+                               (cddddr cs0))
+                              (t
+                               (push (list var nil :user nil nil)
+                                     (loop-ir-accumulators ir))
+                               (cddr cs0)))))
+                     ((walk-loop-kw-eq kw "REPEAT")
+                      (let ((counter (gensym "REPEAT-")))
+                        (push (list counter (second cs0)
+                                    `(1- ,counter) `(<= ,counter 0))
+                              (loop-ir-iterators ir)))
+                      (cddr cs0))
+                     ((or (walk-loop-kw-eq kw "FOR") (walk-loop-kw-eq kw "AS"))
+                      (cl:multiple-value-bind (var init step term for-let new-cs
+                                               outer-binding)
+                          (walk-loop-parse-iterator (rest cs0))
+                        (cond ((eq var :unsupported)
+                               (mark-unsupported
+                                (format nil "FOR-iterator clause: ~S" (rest cs0)))
+                               cs0)
+                              (t
+                               (when init
+                                 (push (list var init step term)
+                                       (loop-ir-iterators ir)))
+                               (when for-let
+                                 (push for-let (loop-ir-for-let ir)))
+                               (when outer-binding
+                                 (push outer-binding (loop-ir-outer-bindings ir)))
+                               new-cs))))
+                     ((or (walk-loop-kw-eq kw "DO") (walk-loop-kw-eq kw "DOING"))
+                      (let ((cs1 cs0))
+                        (loop while (and (rest cs1) (consp (second cs1)))
+                              do (push (wrap-body (second cs1)) (loop-ir-body ir))
+                                 (setf cs1 (cdr cs1)))
+                        (cdr cs1)))
+                     ((walk-loop-kw-eq kw "WHILE")
+                      (setf (loop-ir-while-cond ir) (second cs0))
+                      (cddr cs0))
+                     ((walk-loop-kw-eq kw "UNTIL")
+                      (setf (loop-ir-until-cond ir) (second cs0))
+                      (cddr cs0))
+                     ;; UPDATE-FN slots store a PURE EXPRESSION using the
+                     ;; acc var that produces the NEW acc value. Used as the
+                     ;; recursive call argument -- no in-body mutation.
+                     ((or (walk-loop-kw-eq kw "COLLECT")
+                          (walk-loop-kw-eq kw "COLLECTING"))
+                      ;; Implicit acc stores reversed; INTO acc forward.
+                      (let* ((after (cddr cs0))
+                             (into? (walk-loop-kw-eq (first after) "INTO")))
+                        (parse-acc cs0 :collect
+                                   (lambda (acc-var expr)
+                                     (cond (into? `(append ,acc-var (list ,expr)))
+                                           (t `(cons ,expr ,acc-var))))
+                                   (cond (into? :skip)
+                                         (t (lambda (acc-var)
+                                              `(reverse ,acc-var)))))))
+                     ((or (walk-loop-kw-eq kw "APPEND") (walk-loop-kw-eq kw "APPENDING")
+                          (walk-loop-kw-eq kw "NCONC")  (walk-loop-kw-eq kw "NCONCING"))
+                      ;; Implicit: list-of-lists reversed, flattened at end.
+                      ;; INTO: forward APPEND (non-destructive even for NCONC,
+                      ;; since shared cons cells leak across backtrack paths).
+                      (let* ((after (cddr cs0))
+                             (into? (walk-loop-kw-eq (first after) "INTO")))
+                        (parse-acc cs0 :append
+                                   (lambda (acc-var expr)
+                                     (cond (into? `(append ,acc-var ,expr))
+                                           (t `(cons ,expr ,acc-var))))
+                                   (cond (into? :skip)
+                                         (t (lambda (acc-var)
+                                              `(apply (function append)
+                                                      (reverse ,acc-var))))))))
+                     ((or (walk-loop-kw-eq kw "SUM") (walk-loop-kw-eq kw "SUMMING"))
+                      (parse-acc cs0 :sum
+                                 (lambda (acc-var expr) `(+ ,expr ,acc-var))
+                                 :default))
+                     ((or (walk-loop-kw-eq kw "COUNT") (walk-loop-kw-eq kw "COUNTING"))
+                      (parse-acc cs0 :count
+                                 (lambda (acc-var expr)
+                                   `(if ,expr (1+ ,acc-var) ,acc-var))
+                                 :default))
+                     ((or (walk-loop-kw-eq kw "MAX") (walk-loop-kw-eq kw "MAXIMIZE")
+                          (walk-loop-kw-eq kw "MAXIMIZING"))
+                      (parse-acc cs0 :max
+                                 (lambda (acc-var expr)
+                                   (let ((val-sym (gensym "VAL-")))
+                                     `(let ((,val-sym ,expr))
+                                        (cond ((null ,acc-var) ,val-sym)
+                                              ((> ,val-sym ,acc-var) ,val-sym)
+                                              (t ,acc-var)))))
+                                 :default))
+                     ((or (walk-loop-kw-eq kw "MIN") (walk-loop-kw-eq kw "MINIMIZE")
+                          (walk-loop-kw-eq kw "MINIMIZING"))
+                      (parse-acc cs0 :min
+                                 (lambda (acc-var expr)
+                                   (let ((val-sym (gensym "VAL-")))
+                                     `(let ((,val-sym ,expr))
+                                        (cond ((null ,acc-var) ,val-sym)
+                                              ((< ,val-sym ,acc-var) ,val-sym)
+                                              (t ,acc-var)))))
+                                 :default))
+                     ;; Bare RETURN clause -- equivalent to "DO (RETURN expr)"
+                     ;; per ANSI. The (block nil ...) wrap lets CL:RETURN
+                     ;; unwind the loop. Skips FINALLY (per spec).
+                     ((walk-loop-kw-eq kw "RETURN")
+                      (push (wrap-body `(return ,(second cs0)))
+                            (loop-ir-body ir))
+                      (cddr cs0))
+                     ;; Boolean termination clauses. Modeled as accumulators:
+                     ;; each iter updates the boolean acc; the loop exits as
+                     ;; soon as the acc settles (extra-term-cond).
+                     ((or (walk-loop-kw-eq kw "ALWAYS") (walk-loop-kw-eq kw "NEVER")
+                          (walk-loop-kw-eq kw "THEREIS"))
+                      (let* ((expr (second cs0))
+                             (kind (cond ((walk-loop-kw-eq kw "ALWAYS")  :always)
+                                         ((walk-loop-kw-eq kw "NEVER")   :never)
+                                         (t                              :thereis)))
+                             (var (gensym (format nil "BOOL-~A-" kind)))
+                             (init (case kind ((:always :never) t) (:thereis nil)))
+                             (update (case kind
+                                       (:always  `(if ,expr ,var nil))
+                                       (:never   `(if ,expr nil ,var))
+                                       (:thereis `(or ,var ,expr))))
+                             (exit-cond (case kind
+                                          ((:always :never) `(not ,var))
+                                          (:thereis         var))))
+                        (push (list var init kind (wrap-update update var) var)
+                              (loop-ir-accumulators ir))
+                        (push exit-cond (loop-ir-extra-term-conds ir))
+                        (cddr cs0)))
+                     ((walk-loop-kw-eq kw "INITIALLY")
+                      ;; Prologue: all consp forms following INITIALLY belong
+                      ;; to it (until the next loop keyword).
+                      (let ((cs1 cs0))
+                        (loop while (and (rest cs1) (consp (second cs1)))
+                              do (push (second cs1) (loop-ir-initially-body ir))
+                                 (setf cs1 (cdr cs1)))
+                        (cdr cs1)))
+                     ((walk-loop-kw-eq kw "FINALLY")
+                      (cond ((and (consp (second cs0))
+                                  (walk-loop-kw-eq (first (second cs0)) "RETURN"))
+                             (setf (loop-ir-return-form ir) (second (second cs0)))
+                             (cddr cs0))
+                            ((consp (second cs0))
+                             (let ((cs1 cs0))
+                               (loop while (and (rest cs1) (consp (second cs1)))
+                                     do (push (second cs1) (loop-ir-finally-body ir))
+                                        (setf cs1 (cdr cs1)))
+                               (cdr cs1)))
+                            (t
+                             (mark-unsupported
+                              (format nil "FINALLY clause: ~S" (second cs0)))
+                             cs0)))
+                     ((or (walk-loop-kw-eq kw "WHEN") (walk-loop-kw-eq kw "IF"))
+                      (parse-conditional cs0 nil))
+                     ((walk-loop-kw-eq kw "UNLESS")
+                      (parse-conditional cs0 t))
+                     (t
+                      (mark-unsupported
+                       (format nil "loop clause keyword: ~S" kw))
+                      cs0)))))
+        (loop while (and cs (not (loop-ir-unsupported ir))) do
+          (let ((next (parse-clause cs)))
+            ;; Guard against handlers that returned the same cs (i.e., they
+            ;; couldn't advance). MARK-UNSUPPORTED already explains why; the
+            ;; main loop exits via the unsupported check.
+            (when (eq next cs) (loop-finish))
+            (setf cs next)))))
+    (setf (loop-ir-iterators ir)      (nreverse (loop-ir-iterators ir)))
+    (setf (loop-ir-for-let ir)        (nreverse (loop-ir-for-let ir)))
+    (setf (loop-ir-accumulators ir)   (nreverse (loop-ir-accumulators ir)))
+    (setf (loop-ir-body ir)           (nreverse (loop-ir-body ir)))
+    (setf (loop-ir-outer-bindings ir) (nreverse (loop-ir-outer-bindings ir)))
+    (setf (loop-ir-initially-body ir) (nreverse (loop-ir-initially-body ir)))
+    (setf (loop-ir-finally-body ir)   (nreverse (loop-ir-finally-body ir)))
+    ir))
+
+(defun-compile-time walk-loop-collect-free-symbols (form bound)
+  "Walk FORM, return symbols in value positions that aren't in BOUND
+and aren't constants/keywords. Heuristic: skips operators, declares,
+quoted forms, lambda-list keywords. Tracks lexical bindings of LET/
+LET*/LAMBDA encountered during walk."
+  (let ((free '()))
+    (labels ((bound-here (vars more-bound)
+               (append (remove-if-not #'symbolp vars) more-bound))
+             (push-binding (b)
+               (cond ((symbolp b) (list b))
+                     ((consp b) (list (first b)))
+                     (t nil)))
+             (walk (x bnd)
+               (cond
+                 ((null x) nil)
+                 ((symbolp x)
+                  (unless (or (member x bnd :test #'eq)
+                              (member x lambda-list-keywords :test #'eq)
+                              (member x '(t nil) :test #'eq)
+                              (keywordp x))
+                    (pushnew x free)))
+                 ((atom x) nil)
+                 ((eq (car x) 'quote) nil)
+                 ((eq (car x) 'function)
+                  ;; (function NAME) -- if NAME is a symbol, it's the
+                  ;; function name, not a free variable.
+                  nil)
+                 ((eq (car x) 'declare) nil)
+                 ((member (car x) '(let let*) :test #'eq)
+                  (let* ((bindings (second x))
+                         (vars (mapcan #'push-binding bindings)))
+                    ;; Walk init forms in outer scope
+                    (dolist (b bindings)
+                      (when (consp b) (walk (second b) bnd)))
+                    (let ((new-bnd (bound-here vars bnd)))
+                      (mapc (lambda (s) (walk s new-bnd)) (cddr x)))))
+                 ((eq (car x) 'lambda)
+                  (let* ((ll (second x))
+                         (vars (mapcan #'push-binding ll))
+                         (new-bnd (bound-here vars bnd)))
+                    (mapc (lambda (s) (walk s new-bnd)) (cddr x))))
+                 (t
+                  ;; Function call form: skip the operator (it's a function
+                  ;; or special form name, not a value reference), walk args.
+                  (mapc (lambda (s) (walk s bnd)) (cdr x))))))
+      (walk form bound))
+    (nreverse free)))
+
+(defun-compile-time walk-loop-extract-mutations (body acc-vars)
+  "Walk BODY (a list of forms). Recognize (push X V) and (setq V EXPR)
+where V is in ACC-VARS; record after-body expression for each. Returns
+(VALUES FILTERED-BODY UPDATES) where FILTERED-BODY is BODY with the
+mutation forms removed, and UPDATES is alist (VAR . AFTER-EXPR) for
+each accumulator that gets mutated. ACC-VARS not present in UPDATES
+are unchanged across iterations."
+  (let ((filtered '())
+        (updates '()))
+    (dolist (form body)
+      (cond
+        ((and (consp form)
+              (eq (first form) 'push)
+              (member (third form) acc-vars :test #'eq))
+         ;; (push X V) -> after V = (cons X current-V-expr)
+         (let* ((var (third form))
+                (current (or (cdr (assoc var updates :test #'eq)) var)))
+           (setf updates
+                 (cons (cons var `(cons ,(second form) ,current))
+                       (remove var updates :key #'car :test #'eq)))))
+        ((and (consp form)
+              (eq (first form) 'setq)
+              (= (length form) 3)
+              (member (second form) acc-vars :test #'eq))
+         (let ((var (second form)))
+           (setf updates
+                 (cons (cons var (third form))
+                       (remove var updates :key #'car :test #'eq)))))
+        (t (push form filtered))))
+    (values (nreverse filtered) updates)))
+
+(defun-compile-time walk-loop-substitute-loop-finish (form replacement)
+  "Recursively replace (LOOP-FINISH) with REPLACEMENT in FORM. Matches
+any symbol whose SYMBOL-NAME is \"LOOP-FINISH\" regardless of package
+(handles both CL:LOOP-FINISH and screamer:loop-finish). Does not
+descend into nested (LOOP ...) forms -- their loop-finish belongs to
+the inner loop."
+  (cond
+    ((atom form) form)
+    ((and (symbolp (car form))
+          (string-equal (symbol-name (car form)) "LOOP-FINISH")
+          (null (cdr form)))
+     replacement)
+    ((and (symbolp (car form))
+          (string-equal (symbol-name (car form)) "LOOP"))
+     form)
+    (t
+     (cons (walk-loop-substitute-loop-finish (car form) replacement)
+           (mapcar (lambda (sub)
+                     (walk-loop-substitute-loop-finish sub replacement))
+                   (cdr form))))))
+
+(defun-compile-time walk-loop-rewrite-as-recursion (form)
+  "Generate a LABELS-recursive expansion for FORM, a (LOOP ...) pattern.
+
+Errors out -- with a message identifying the offending clause -- when
+the parser hits something it doesn't yet handle, when the body mutates
+an outer variable (the recursion model can't propagate the mutation
+through helper parameters), or when there's no termination source.
+
+The point of erroring is to make missing coverage VISIBLE: silent
+fallback would let LOOPs run with weaker semantics and the user would
+not know which clause needs a parser extension."
+  (let ((ir (walk-loop-parse form)))
+    (when (loop-ir-unsupported ir)
+      (screamer-error
+       "Cannot (currently) handle ~A inside a (LOOP ...): ~%~
+        ~S~%~
+        Loop form: ~S"
+       (loop-ir-unsupported ir) (loop-ir-unsupported ir) form))
+    (unless (or (some #'fourth (loop-ir-iterators ir))
+                (loop-ir-while-cond ir)
+                (loop-ir-until-cond ir)
+                (loop-ir-extra-term-conds ir))
+      (screamer-error
+       "(LOOP ...) has no termination source~%~
+        (no iterator with TO/BELOW/etc, no WHILE/UNTIL, no boolean clause).~%~
+        Loop form: ~S"
+       form))
+    (let* ((helper-name (intern (symbol-name (gensym "WALK-LOOP-HELPER-"))
+                                   :screamer))
+              (iter-vars (mapcar #'first (loop-ir-iterators ir)))
+              (iter-inits (mapcar #'second (loop-ir-iterators ir)))
+              (iter-steps (mapcar (lambda (it)
+                                    (or (third it) (first it)))
+                                  (loop-ir-iterators ir)))
+              (iter-terms (remove nil (mapcar #'fourth
+                                              (loop-ir-iterators ir))))
+              (acc-records (loop-ir-accumulators ir))
+              (acc-vars (mapcar #'first acc-records))
+              (acc-inits (mapcar #'second acc-records))
+              (for-let-vars (mapcar #'first (loop-ir-for-let ir)))
+              (outer-vars (mapcar #'first (loop-ir-outer-bindings ir)))
+              (outer-exprs (mapcar #'second (loop-ir-outer-bindings ir)))
+              (loop-internal-vars (append iter-vars acc-vars for-let-vars
+                                          outer-vars))
+              ;; Helper params: iter + acc + outer. Free-vars captured
+              ;; lexically by the LABELS closure (not as params).
+              (helper-params (append iter-vars acc-vars outer-vars)))
+      (declare (ignorable loop-internal-vars))
+      (walk-loop-rewrite-as-recursion-finish
+       ir helper-name iter-vars iter-inits iter-steps iter-terms
+       acc-records acc-vars acc-inits
+       outer-vars outer-exprs helper-params))))
+
+(defun-compile-time walk-loop-rewrite-as-recursion-finish
+    (ir helper-name iter-vars iter-inits iter-steps iter-terms
+        acc-records acc-vars acc-inits
+        outer-vars outer-exprs helper-params)
+  "Continuation of walk-loop-rewrite-as-recursion. Split into a separate
+function so the gating in the caller stays readable."
+  (let* ((helper-params helper-params)
+         (outer-vars outer-vars)
+         (outer-exprs outer-exprs)
+              ;; Termination condition: iterator term, while/until, plus any
+              ;; extra conds from boolean accumulators (ALWAYS/NEVER/THEREIS).
+              (term-conds
+               (append iter-terms
+                       (when (loop-ir-while-cond ir)
+                         `((not ,(loop-ir-while-cond ir))))
+                       (when (loop-ir-until-cond ir)
+                         `(,(loop-ir-until-cond ir)))
+                       (loop-ir-extra-term-conds ir)))
+              (term-form (cond ((null term-conds) nil)
+                               ((= 1 (length term-conds)) (first term-conds))
+                               (t `(or ,@term-conds))))
+              ;; Body for-let bindings (re-evaluated per iter inside body)
+              (for-lets (loop-ir-for-let ir))
+              ;; Compute final/return form
+              (finally-body (loop-ir-finally-body ir))
+              (return-form
+               (cond ((loop-ir-return-form ir)
+                      (if finally-body
+                          `(progn ,@finally-body ,(loop-ir-return-form ir))
+                          (loop-ir-return-form ir)))
+                     ;; Implicit return from accumulators (use FINAL-FN).
+                     ;; INTO accumulators have FIFTH=NIL and are skipped.
+                     ((some (lambda (a) (fifth a)) acc-records)
+                      (let ((fns (mapcar #'fifth
+                                         (remove-if-not #'fifth acc-records))))
+                        (if (= 1 (length fns)) (first fns) `(values ,@fns))))
+                     ;; FINALLY without explicit RETURN: run side effects,
+                     ;; result is NIL (per ANSI).
+                     (finally-body
+                      `(progn ,@finally-body nil))
+                     (t nil))))
+         ;; Extract user mutations on user (WITH) accumulator vars from body
+         (cl:multiple-value-bind (filtered-body updates)
+             (walk-loop-extract-mutations
+              (loop-ir-body ir)
+              (loop for r in acc-records when (eq (third r) :user)
+                    collect (first r)))
+           ;; Next-value per acc passed as recursive call args (no in-body
+           ;; mutation). Implicit acc: UPDATE-FN slot. User (WITH) acc:
+           ;; body setq/push via UPDATES alist.
+           (let* ((next-acc-vars
+                   (mapcar (lambda (r)
+                             (let* ((v (first r))
+                                    (kind (third r))
+                                    (update-fn (fourth r)))
+                               (cond ((and (not (eq kind :user)) update-fn)
+                                      update-fn)
+                                     ((eq kind :user)
+                                      (or (cdr (assoc v updates :test #'eq))
+                                          v))
+                                     (t v))))
+                           acc-records))
+                  (next-iter-vars iter-steps)
+                  ;; Free vars from all scanned forms. OUTER-VARS are
+                  ;; already passed as helper params (their inits live
+                  ;; outside the helper) so don't re-collect them.
+                  (bound (append iter-vars acc-vars
+                                 (mapcar #'first for-lets)
+                                 outer-vars))
+                  (free-vars
+                   (remove-duplicates
+                    (append (walk-loop-collect-free-symbols
+                             `(progn ,@(loop-ir-body ir)) bound)
+                            (mapcan (lambda (it)
+                                      (walk-loop-collect-free-symbols
+                                       (second it) bound))
+                                    (loop-ir-iterators ir))
+                            (mapcan (lambda (it)
+                                      (append
+                                       (when (third it)
+                                         (walk-loop-collect-free-symbols
+                                          (third it) bound))
+                                       (when (fourth it)
+                                         (walk-loop-collect-free-symbols
+                                          (fourth it) bound))))
+                                    (loop-ir-iterators ir))
+                            (mapcan (lambda (fl)
+                                      (walk-loop-collect-free-symbols
+                                       (second fl) bound))
+                                    for-lets)
+                            (when (loop-ir-while-cond ir)
+                              (walk-loop-collect-free-symbols
+                               (loop-ir-while-cond ir) bound))
+                            (when (loop-ir-until-cond ir)
+                              (walk-loop-collect-free-symbols
+                               (loop-ir-until-cond ir) bound))
+                            (when return-form
+                              (walk-loop-collect-free-symbols return-form bound))
+                            (mapcan (lambda (a)
+                                      (append
+                                       (walk-loop-collect-free-symbols
+                                        (second a) bound)
+                                       (when (fourth a)
+                                         (walk-loop-collect-free-symbols
+                                          (fourth a) bound))
+                                       (when (fifth a)
+                                         (walk-loop-collect-free-symbols
+                                          (fifth a) bound))))
+                                    acc-records))
+                    :test #'eq))
+                  ;; Wrap body in (block nil ...) so CL:RETURN inside DO/RETURN
+                  ;; clauses unwinds the loop. Substitute (loop-finish) with
+                  ;; an explicit RETURN-FROM that runs FINALLY + natural-end
+                  ;; return form (loop-finish skips the natural-end IF test).
+                  (loop-finish-form
+                   `(return-from nil ,return-form))
+                  (filtered-body-rewritten
+                   (mapcar (lambda (f)
+                             (walk-loop-substitute-loop-finish
+                              f loop-finish-form))
+                           filtered-body))
+                  ;; FREE-VARS captured lexically, not threaded as params.
+                  (helper-body
+                   `(block nil
+                      (if ,term-form
+                          ,return-form
+                          (let* ,for-lets
+                            ,@filtered-body-rewritten
+                            (,helper-name ,@next-iter-vars ,@next-acc-vars
+                                          ,@outer-vars))))))
+             (declare (ignorable free-vars))
+             ;; Emit helper as LABELS binding. INITIALLY runs once before
+             ;; the call; OUTER-EXPRS thread through on each recursion.
+             (let* ((call-form `(,helper-name ,@iter-inits ,@acc-inits
+                                              ,@outer-exprs))
+                    (with-init (if (loop-ir-initially-body ir)
+                                   `(progn ,@(loop-ir-initially-body ir)
+                                           ,call-form)
+                                   call-form)))
+               `(labels ((,helper-name (,@helper-params)
+                           ,helper-body))
+                  ,with-init))))))
+
+(defun-compile-time walk-loop-collect-mutated-vars (form)
+  "Walk FORM, return the list of variables that appear as the target of
+SETQ/PUSH/POP/INCF/DECF anywhere inside. Used by the rewriter to detect
+mutations on outer (non-loop-internal) variables, which the recursion
+model cannot propagate through helper parameters."
+  (let ((vars '()))
+    (labels ((walk (x)
+               (when (consp x)
+                 (case (car x)
+                   ((quote function) nil)
+                   ((setq)
+                    (loop for cell on (cdr x) by #'cddr do
+                          (when (symbolp (first cell))
+                            (pushnew (first cell) vars))
+                          (walk (second cell))))
+                   ((push)
+                    (when (symbolp (third x))
+                      (pushnew (third x) vars))
+                    (walk (second x)))
+                   ((pop incf decf)
+                    (when (symbolp (second x))
+                      (pushnew (second x) vars))
+                    (mapc #'walk (cddr x)))
+                   (t (mapc #'walk x))))))
+      (walk form))
+    vars))
+
+(defun-compile-time walk-loop (form &optional environment)
+  "Walker entry point for CL:LOOP. Deterministic LOOPs go through
+the host's MACROEXPAND-1 (works on any impl with MACROLET support);
+only nondeterministic LOOPs use the LABELS-recursion rewriter, since
+CPS conversion of the host expansion's internal SETQs is unsound."
+  (if (deterministic? form environment)
+      (let ((*macroexpand-hook* #'funcall))
+        (macroexpand-1 form environment))
+      (walk-loop-rewrite-as-recursion form)))
+
+
 (defun-compile-time walk-macro-call
     (map-function reduce-function screamer? partial? nested? form environment)
   (if reduce-function
@@ -1005,13 +2104,17 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
                      (let ((*macroexpand-hook* #'funcall))
                        (macroexpand-1 form environment))
                      environment))
+      ;; CPS-rewrite path. CL:LOOP routes through WALK-LOOP (which dispatches
+      ;; on determinism); everything else macroexpands normally.
       (walk map-function
             reduce-function
             screamer?
             partial?
             nested?
             (let ((*macroexpand-hook* #'funcall))
-              (macroexpand-1 form environment))
+              (if (and (consp form) (eq (car form) 'loop))
+                  (walk-loop form environment)
+                  (macroexpand-1 form environment)))
             environment)))
 
 (defun-compile-time walk-function-call
@@ -1094,10 +2197,11 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
 ;;;   LAMBDA-LIST VARIABLE
 ;;;  Special forms:
 ;;;   BLOCK CATCH EVAL-WHEN FLET FUNCTION-LAMBDA FUNCTION-SYMBOL FUNCTION-SETF
-;;;   GO IF LABELS LET LET* MULTIPLE-VALUE-CALL MULTIPLE-VALUE-PROG1 PROGN
-;;;   PROGV QUOTE RETURN-FROM SETQ TAGBODY THE THROW UNWIND-PROTECT
-;;;  Symbolics special forms:
-;;;   SYS:VARIABLE-LOCATION COMPILER:INVISIBLE-REFERENCES
+;;;   GO IF LABELS LET LET* LOAD-TIME-VALUE LOCALLY MACROLET
+;;;   MULTIPLE-VALUE-CALL MULTIPLE-VALUE-PROG1 PROGN PROGV QUOTE RETURN-FROM
+;;;   SETQ SYMBOL-MACROLET TAGBODY THE THROW UNWIND-PROTECT
+;;;  Implementation-specific special forms:
+;;;   CCL:COMPILER-LET (Clozure CL only; walked as LET)
 ;;;  Screamer special forms:
 ;;;   FOR-EFFECTS LOCAL-SETF
 ;;;  Partial special forms:
@@ -1107,11 +2211,15 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
 
 (defun-compile-time walk
     (map-function reduce-function screamer? partial? nested? form environment)
-  ;; needs work: Cannot walk MACROLET or special forms not in both CLtL1 and
-  ;;             CLtL2.
+  ;; needs work: special forms not in both CLtL1 and CLtL2.
   (cond
     ((self-evaluating? form) (funcall map-function form 'quote))
-    ((symbolp form) (funcall map-function form 'variable))
+    ((symbolp form)
+     (let ((expansion (macroexpand-1 form environment)))
+       (if (eq expansion form)
+           (funcall map-function form 'variable)
+           (walk map-function reduce-function screamer? partial? nested?
+                 expansion environment))))
     ((eq (first form) 'block)
      (walk-block
       map-function reduce-function screamer? partial? nested? form environment))
@@ -1144,10 +2252,18 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
      (walk-let/let*
       map-function reduce-function screamer? partial? nested? form environment
       'let*))
-    ;; needs work: This is a temporary kludge to support MCL.
-    ((and (eq (first form) 'locally) (null (fourth form)))
-     (walk map-function reduce-function screamer? partial? nested? (third form)
-           environment))
+    ((eq (first form) 'load-time-value)
+     (walk-load-time-value
+      map-function reduce-function screamer? partial? nested? form environment))
+    ((eq (first form) 'macrolet)
+     (walk-macrolet
+      map-function reduce-function screamer? partial? nested? form environment))
+    ((eq (first form) 'symbol-macrolet)
+     (walk-symbol-macrolet
+      map-function reduce-function screamer? partial? nested? form environment))
+    ((eq (first form) 'locally)
+     (walk-locally
+      map-function reduce-function screamer? partial? nested? form environment))
     ((eq (first form) 'multiple-value-call)
      (walk-multiple-value-call
       map-function reduce-function screamer? partial? nested? form environment))
@@ -1203,7 +2319,12 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
           (macro-function (first form) environment))
      (walk-macro-call
       map-function reduce-function screamer? partial? nested? form environment))
-    ((special-operator-p (first form))
+    #+ccl
+    ((eq (first form) 'ccl:compiler-let)
+    (walk-let/let*
+      map-function reduce-function screamer? partial? nested? form environment
+      'ccl:compiler-let))
+    ((and (symbolp (first form)) (special-operator-p (first form)))
      (error "Cannot (currently) handle the special form ~S" (first form)))
     (t (walk-function-call
         map-function reduce-function screamer? partial? nested? form
@@ -1252,6 +2373,41 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
           ,@declarations
           ,@(mapcar
              #'(lambda (subform) (funcall function subform environment)) body))))
+    (macrolet
+     (let* ((bindings (second form))
+            (new-environment (if (null bindings)
+                                 environment
+                                 (augment-environment-with-macros
+                                  environment bindings))))
+       (cl:multiple-value-bind (body declarations)
+           (peal-off-documentation-string-and-declarations (rest (rest form)))
+         `(macrolet ,bindings
+            ,@declarations
+            ,@(mapcar #'(lambda (subform)
+                          (funcall function subform new-environment))
+                      body)))))
+    (symbol-macrolet
+     (let* ((bindings (second form))
+            (new-environment (if (null bindings)
+                                 environment
+                                 (augment-environment-with-symbol-macros
+                                  environment bindings))))
+       (cl:multiple-value-bind (body declarations)
+           (peal-off-documentation-string-and-declarations (rest (rest form)))
+         `(symbol-macrolet ,bindings
+            ,@declarations
+            ,@(mapcar #'(lambda (subform)
+                          (funcall function subform new-environment))
+                      body)))))
+    (locally
+     (cl:multiple-value-bind (body declarations)
+         (peal-off-documentation-string-and-declarations (rest form))
+       `(locally
+          ,@declarations
+          ,@(mapcar #'(lambda (subform)
+                        (funcall function subform environment))
+                    body))))
+    (load-time-value form)
     (progn
       `(progn ,@(mapcar
                  #'(lambda (subform) (funcall function subform environment))
@@ -1272,18 +2428,43 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
          ,@(mapcar
             #'(lambda (subform) (funcall function subform environment))
             (rest form)))))
+     #+ccl       
+     ((ccl:compiler-let)
+     (cl:multiple-value-bind (body declarations)
+         (peal-off-documentation-string-and-declarations (rest (rest form)))
+       `(,(first form)
+          ,(mapcar
+            #'(lambda (binding)
+                (if (and (consp binding) (= (length binding) 2))
+                    `(,(first binding)
+                       ,(funcall function (second binding) environment))
+                    binding))
+            (second form))
+          ,@declarations
+          ,@(mapcar
+             #'(lambda (subform) (funcall function subform environment)) body))))
     (otherwise
      (cons (first form)
            (mapcar #'(lambda (subform) (funcall function subform environment))
                    (rest form))))))
 
 (defun-compile-time deterministic? (form environment)
+  ;; FLET/LABELS bindings descend; FUNCTION-LAMBDA stays opaque (handled
+  ;; surgically in WALK-MULTIPLE-VALUE-CALL for immediate-invoke).
   (walk
    #'(lambda (form form-type)
        (case form-type
          ((symbol-call setf-call)
-          (function-record-deterministic? (get-function-record (first form))))
+          (function-record-deterministic?
+           (function-record-or-lexical (first form))))
          (multiple-value-call-nondeterministic nil)
+         ((flet labels)
+          (every (lambda (binding)
+                   (every (lambda (subform)
+                            (deterministic? subform environment))
+                          (peal-off-documentation-string-and-declarations
+                           (rest (rest binding)) t)))
+                 (second form)))
          ;; note: not really sure about CATCH, THROW and UNWIND-PROTECT
          (otherwise t)))
    ;; note: potentially inefficient because must walk entire form even
@@ -1619,14 +2800,9 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
                             (list (the (and ,@types) ,form))))
                        ;; Peal off LAMBDA, arguments, and DECLARE.
                        ,@(rest (rest (rest (second continuation)))))))
-               ((or (and (consp form)
-                         (not
-                          (and (eq (first form) 'function)
-                               (null (rest (last form)))
-                               (= (length form) 2)
-                               (symbolp (second form)))))
-                    (and (symbolp form) (symbol-package form))
-                    (symbol-package (magic-continuation-argument continuation)))
+               (t
+                ;; Materialise continuation arg as LET binding, not SUBST
+                ;; (gensym aliasing corrupts accumulators).
                 (if (null types)
                     `(let ((,(magic-continuation-argument continuation) ,form))
                        ,@(if (and *dynamic-extent?* (is-magic-continuation? form))
@@ -1641,23 +2817,7 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
                         (type (and ,@types)
                               ,(magic-continuation-argument continuation)))
                        ;; Peal off LAMBDA, arguments, and DECLARE.
-                       ,@(rest (rest (rest (second continuation)))))))
-               ;; note: This case may be unsoundly taken in the following cases:
-               ;;       a. (MAGIC-CONTINUATION-ARGUMENT CONTINUATION) is a
-               ;;          non-Screamer GENSYM. This can only happen if a
-               ;;          a BINDING-VARIABLE is a GENSYM in CPS-CONVERT-LET*.
-               ;;       b. FORM is a non-Screamer GENSYM
-               (t (if (null types)
-                      (subst form
-                             (magic-continuation-argument continuation)
-                             ;; Peal off LAMBDA, arguments, and DECLARE.
-                             `(progn ,@(rest (rest (rest (second continuation)))))
-                             :test #'eq)
-                      (subst `(the (and ,@types) ,form)
-                             (magic-continuation-argument continuation)
-                             ;; Peal off LAMBDA, arguments, and DECLARE.
-                             `(progn ,@(rest (rest (rest (second continuation)))))
-                             :test #'eq)))))
+                       ,@(rest (rest (rest (second continuation)))))))))
            (progn
              (unless (null (second (second continuation)))
                (error "Please report this bug; This shouldn't happen (C)"))
@@ -1733,6 +2893,58 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
      continuation
      t)))
 
+(defun-compile-time cps-convert-flet/labels
+    (bindings body declarations continuation types value? environment kind)
+  "CPS-convert FLET (KIND :FLET) or LABELS (KIND :LABELS). Each binding
+gets a CPS-form name (NAME-NONDETERMINISTIC) taking an extra continuation
+argument. Lexical records are bound for the duration of the body walk so
+calls to labels-bound names route to the CPS form. For LABELS, lexical
+records are also visible to each binding's own body (mutual recursion);
+for FLET, they are not. Outside the form, names revert to global lookup.
+
+This handler does not optimize det-only bindings -- every binding is
+CPS-converted. Future work could check each binding's deterministic?
+flag and emit a regular cl function for det-only ones."
+  (let* ((names (mapcar #'first bindings))
+         (cps-names (mapcar #'cps-convert-function-name names))
+         (lex-records
+          (mapcar (lambda (n)
+                    (let ((rec (make-function-record :function-name n)))
+                      (setf (function-record-deterministic? rec) nil)
+                      (cons n rec)))
+                  names))
+         ;; LABELS sees its own bindings during body walk; FLET does not.
+         (binding-walk-records (case kind
+                                 (:labels (append lex-records
+                                                  *lexical-function-records*))
+                                 (:flet *lexical-function-records*)))
+         (cps-bindings
+          (mapcar (lambda (binding cps-name)
+                    (let* ((lambda-list (second binding))
+                           (raw-body (rest (rest binding)))
+                           (k (gensym "K-")))
+                      (cl:multiple-value-bind (binding-body binding-decls)
+                          (peal-off-documentation-string-and-declarations
+                           raw-body)
+                        (let ((*lexical-function-records* binding-walk-records)
+                              (*block-tags*
+                               (cons (list (first binding) k '() t)
+                                     *block-tags*)))
+                          `(,cps-name (,k ,@lambda-list)
+                                      ,@binding-decls
+                                      ,k
+                                      ,(cps-convert-progn
+                                        binding-body k '() t environment))))))
+                  bindings cps-names))
+         (*lexical-function-records*
+          (append lex-records *lexical-function-records*))
+         (converted-body
+          (cps-convert-progn body continuation types value? environment))
+         (form-keyword (if (eq kind :labels) 'labels 'flet)))
+    (if declarations
+        `(,form-keyword ,cps-bindings (declare ,@declarations) ,converted-body)
+        `(,form-keyword ,cps-bindings ,converted-body))))
+
 (defun-compile-time cps-convert-let (bindings
                                      body
                                      declarations
@@ -1780,35 +2992,41 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
                                       types
                                       value?
                                       environment)
-  (if (null bindings)
-      (if (null declarations)
-          (cps-convert-progn body continuation types value? environment)
-          `(let ()
-             ,@declarations
-             ,(cps-convert-progn body continuation types value? environment)))
-      (let* ((binding (first bindings))
-             (binding-variable
-              (if (symbolp binding) binding (first binding)))
-             (binding-form
-              (if (and (consp binding) (= (length binding) 2))
-                  (second binding)
-                  nil))
-             (other-arguments (gensym "OTHER-")))
-        (cps-convert
-         binding-form
-         `#'(lambda (&optional ,binding-variable &rest ,other-arguments)
-              (declare (magic)
-                       (ignore ,other-arguments))
-              ,(cps-convert-let* (rest bindings)
-                                 body
-                                 declarations
-                                 continuation
-                                 types
-                                 value?
-                                 environment))
-         '()
-         t
-         environment))))
+  ;; Per-binding continuation lambdas; DECLARE clauses partitioned by
+  ;; var; surviving non-binding-scoped clauses wrapped via LOCALLY.
+  (cond
+    ((null bindings)
+     (if (null declarations)
+         (cps-convert-progn body continuation types value? environment)
+         `(locally ,@declarations
+            ,(cps-convert-progn body continuation types value? environment))))
+    (t
+     (let* ((binding (first bindings))
+            (binding-variable
+             (if (symbolp binding) binding (first binding)))
+            (binding-form
+             (if (and (consp binding) (= (length binding) 2))
+                 (second binding)
+                 nil))
+            (other-arguments (gensym "OTHER-")))
+       (cl:multiple-value-bind (mine remaining)
+           (partition-declarations-for-variable declarations binding-variable)
+         (cps-convert
+          binding-form
+          `#'(lambda (&optional ,binding-variable &rest ,other-arguments)
+               (declare (magic)
+                        (ignore ,other-arguments)
+                        ,@mine)
+               ,(cps-convert-let* (rest bindings)
+                                  body
+                                  remaining
+                                  continuation
+                                  types
+                                  value?
+                                  environment))
+          '()
+          t
+          environment))))))
 
 (defun-compile-time cps-convert-multiple-value-call-internal
     (nondeterministic? function forms continuation types value? environment
@@ -1957,29 +3175,33 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
     (let ((segments (reverse segments))
           (dummy-argument (gensym "DUMMY-"))
           (other-arguments (gensym "OTHER-")))
-      ;; needs work: The closures created by LABELS functions aren't declared to
-      ;;             have DYNAMIC-EXTENT since I don't know how to do this in
-      ;;             Common Lisp.
-      `(labels ,(mapcar
-                 #'(lambda (segment)
-                     (let ((next (rest (member segment segments :test #'eq))))
-                       `(,(first segment)
-                          (&optional ,dummy-argument &rest ,other-arguments)
-                          (declare (ignore ,dummy-argument ,other-arguments))
-                          ,(cps-convert-progn
-                            (reverse (rest segment))
-                            (if next `#',(first (first next)) continuation)
-                            (if next '() types)
-                            (or next value?)
-                            environment))))
-                 (rest segments))
-         ,(let ((next (rest segments)))
-               (cps-convert-progn
-                (reverse (rest (first segments)))
-                (if next `#',(first (first next)) continuation)
-                (if next '() types)
-                (or next value?)
-                environment))))))
+      ;; Add DYNAMIC-EXTENT declarations for LABELS functions
+      ;; This enables stack allocation instead of heap allocation for closures
+      (let ((function-names (mapcar #'first (rest segments))))
+        `(labels ,(mapcar
+                   #'(lambda (segment)
+                       (let ((next (rest (member segment segments :test #'eq))))
+                         `(,(first segment)
+                            (&optional ,dummy-argument &rest ,other-arguments)
+                            (declare (ignore ,dummy-argument ,other-arguments))
+                            ,(cps-convert-progn
+                              (reverse (rest segment))
+                              (if next `#',(first (first next)) continuation)
+                              (if next '() types)
+                              (or next value?)
+                              environment))))
+                   (rest segments))
+           ;; Add DYNAMIC-EXTENT declaration for all generated functions
+           ,@(when (and function-names *dynamic-extent?*)
+               `((declare (dynamic-extent ,@(mapcar (lambda (name) `#',name)
+                                                   function-names)))))
+           ,(let ((next (rest segments)))
+                 (cps-convert-progn
+                  (reverse (rest (first segments)))
+                  (if next `#',(first (first next)) continuation)
+                  (if next '() types)
+                  (or next value?)
+                  environment)))))))
 
 (defun-compile-time cps-convert-local-setf/setq
     (arguments continuation types value? environment)
@@ -2142,6 +3364,19 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
                           types
                           value?
                           environment)))
+                  ((flet labels)
+                   (cl:multiple-value-bind (body declarations)
+                       (peal-off-documentation-string-and-declarations
+                        (rest (rest form)))
+                     (cps-convert-flet/labels
+                      (second form)
+                      body
+                      declarations
+                      continuation
+                      types
+                      value?
+                      environment
+                      (if (eq form-type 'labels) :labels :flet))))
                   (let* (cl:multiple-value-bind (body declarations)
                             (peal-off-documentation-string-and-declarations
                              (rest (rest form)))
@@ -2153,6 +3388,25 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
                            types
                            value?
                            environment)))
+                  (macrolet
+                   (let ((new-environment
+                          (augment-environment-with-macros environment (second form))))
+                     (cps-convert-progn
+                      (rest (rest form)) continuation types value? new-environment)))
+                  (symbol-macrolet
+                   (let ((new-environment
+                          (augment-environment-with-symbol-macros environment (second form))))
+                     (cps-convert-progn
+                      (rest (rest form)) continuation types value? new-environment)))
+                  (locally
+                   (cl:multiple-value-bind (body declarations)
+                       (peal-off-documentation-string-and-declarations (rest form))
+                     (if (null declarations)
+                         (cps-convert-progn
+                          body continuation types value? environment)
+                         `(locally ,@declarations
+                            ,(cps-convert-progn
+                              body continuation types value? environment)))))
                   (multiple-value-call
                       (cps-convert-multiple-value-call
                        nil
@@ -2245,7 +3499,7 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
                       environment)))
                   ((symbol-call setf-call)
                    (if (function-record-deterministic?
-                        (get-function-record (first form)))
+                        (function-record-or-lexical (first form)))
                        (cps-non-convert-call (first form)
                                              (rest form)
                                              continuation
@@ -2259,9 +3513,9 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
                                          value?
                                          environment)))
                   (otherwise
-                   (screamer-error
-                    "Cannot (currently) handle the special form ~S inside a~%~
-                  nondeterministic context."
+                   (error
+                    "Cannot (currently) handle the special form ~S inside a ~
+                     nondeterministic context."
                     (first form))))))
         nil
         t
@@ -2413,7 +3667,7 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
 
 (defmacro-compile-time defun
     (function-name lambda-list &body body &environment environment)
-  (let ((*nondeterministic-context?* t))
+  (let ((*compiling-nondeterministic-context?* t))
     (check-function-name function-name)
     (let* ((callees (compute-callees body environment))
            (function-record (get-function-record function-name))
@@ -2444,9 +3698,20 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
               function-record-old-deterministic?)
         (setf (function-record-screamer? function-record)
               function-record-screamer?)
+        ;; Force compile of plain CL:DEFUNs (idempotent via compiled-function-p).
         `(eval-when (:compile-toplevel :load-toplevel :execute)
            (cache-definition ',function-name ',lambda-list ',body ',callees)
-           ,@modified-function-definitions
+           ,@(mapcar
+              (lambda (def)
+                (cond
+                  ((and (consp def) (eq (car def) 'cl:defun))
+                   `(progn
+                      ,def
+                      (unless (compiled-function-p
+                               (fdefinition ',(second def)))
+                        (compile ',(second def)))))
+                  (t def)))
+              modified-function-definitions)
            ',function-name)))))
 
 (defmacro-compile-time either (&body alternatives)
@@ -2547,7 +3812,7 @@ contexts. Irrespective of what context the FOR-EFFECTS appears in, BODY are
 always in a nondeterministic context. A FOR-EFFECTS expression is is always
 deterministic."
   `(choice-point
-    ,(let ((*nondeterministic-context?* t))
+    ,(let ((*compiling-nondeterministic-context?* t))
           (cps-convert-progn body '#'fail nil nil environment))))
 
 (defmacro-compile-time one-value (form &optional (default '(fail)))
@@ -2692,6 +3957,183 @@ I."
                             (decf ,counter))))
          ,default))))
 
+(defmacro-compile-time n-values (n &body forms)
+"FROM SMC(PWGL):
+ Copyright (c) 2007, Kilian Sprotte. All rights reserved.
+
+Evaluates FORMS as an implicit PROGN and returns a list of the first N
+nondeterministic values yielded by it.
+
+These values are produced by repeatedly evaluating the body and backtracking to
+produce the next value, until either N values have been collected or the body
+fails and yields no further values.
+
+Accordingly, local side effects performed by the body while producing each value
+are undone before attempting to produce subsequent values, and all local side
+effects performed by the body are undone upon exit from N-VALUES.
+
+Returns a list containing fewer than N elements if the body fails before N values
+are produced.
+
+An N-VALUES expression can appear in both deterministic and nondeterministic
+contexts. Irrespective of what context the N-VALUES appears in, the body is
+always in a nondeterministic context. An N-VALUES expression itself is always
+deterministic.
+
+N-VALUES is analogous to ALL-VALUES, but collects only the first N solutions."
+  (let ((values (gensym "VALUES-"))
+        (last-value-cons  (gensym "LAST-VALUE-CONS-"))
+        (value (gensym "VALUE-"))
+        (number (gensym "NUMBER-")))
+    `(let ((,values '())
+           (,last-value-cons nil)
+           (,number 0))
+       (block n-values
+         (for-effects
+           (let ((,value (progn ,@forms)))
+             (global (cond ((null ,values)
+                            (setf ,last-value-cons (list ,value))
+                            (setf ,values ,last-value-cons))
+                           (t (setf (rest ,last-value-cons) (list ,value))
+                              (setf ,last-value-cons (rest ,last-value-cons))))
+                     (incf ,number))
+             (when (>= ,number ,n) (return-from n-values ,values)))))
+       ,values)))
+
+(defmacro-compile-time nested-for-effects (&rest bodies &environment environment)
+  "Variant of FOR-EFFECTS macro to create N-level nested search from list of bodies.
+  
+BODIES: Variable number of nondeterministic expressions in nesting order
+        (nested-search body1 body2 body3 ... bodyN)
+        
+Nesting Structure:
+- body1: Outermost level (solved first)
+- body2: Nested inside body1 (solved for each body1 solution)  
+- body3: Nested inside body2 (solved for each body1+body2 combination)
+- bodyN: Innermost level (solved for each body1+...+bodyN-1 combination)
+
+Returns: NIL (like FOR-EFFECTS)
+
+Backtracking Order:
+1. Innermost (bodyN) fails first
+2. Tries next bodyN for same outer context
+3. When bodyN exhausted, backtracks to bodyN-1
+4. Continues outward until all combinations explored"
+
+  ;; Generate variable names for each nesting level
+  (let ((level-vars (loop for i from 1 to (length bodies)
+                         collect (gensym (format nil "L~A-" i)))))
+    
+    ;; Recursive function to build nested choice-point structure
+    (labels ((build-nested-structure (remaining-bodies remaining-vars depth)
+               (if (null remaining-bodies)
+                   ;; Base case: all bodies processed, return collected results
+                   `(list ,@level-vars)
+                   
+                   ;; Recursive case: wrap current body in choice-point
+                   (let ((current-body (first remaining-bodies))
+                         (current-var (first remaining-vars)))
+                     `(choice-point
+                       ,(let ((*compiling-nondeterministic-context?* t))
+                          (cps-convert-progn
+                           `((let ((,current-var ,current-body))
+                               
+                               ;; Recursively build next inner level
+                               ,(build-nested-structure (rest remaining-bodies) 
+                                                       (rest remaining-vars)
+                                                       (1+ depth))))
+                           '#'fail nil nil environment)))))))
+      
+      ;; Handle edge cases
+      (cond 
+        ;; No bodies provided
+        ((null bodies) 
+         `'())
+        
+        ;; Single body (no nesting needed)
+        ((= (length bodies) 1)
+         `(list ,(first bodies)))
+        
+        ;; Multiple bodies (build nested structure)
+        (t 
+         (build-nested-structure bodies level-vars 1))))))
+
+(defmacro-compile-time nested-one-value (&rest bodies &environment environment)
+  "Get first solution from NESTED-FOR-EFFECTS."
+  (let ((level-vars (loop for i from 1 to (length bodies)
+                         collect (gensym (format nil "L~A-" i)))))
+    
+    (labels ((build-nested-one (remaining-bodies remaining-vars depth)
+               (if (null remaining-bodies)
+                   ;; Base case: return first complete solution found
+                   `(return-from nested-search-one (list ,@level-vars))
+                   
+                   ;; Recursive case: wrap current body in choice-point
+                   (let ((current-body (first remaining-bodies))
+                         (current-var (first remaining-vars)))
+                     `(choice-point
+                       ,(let ((*compiling-nondeterministic-context?* t))
+                          (cps-convert-progn
+                           `((let ((,current-var ,current-body))
+                               
+                               ;; Continue to next level
+                               ,(build-nested-one (rest remaining-bodies) 
+                                                 (rest remaining-vars)
+                                                 (1+ depth))))
+                           '#'fail nil nil environment)))))))
+      
+      `(block nested-search-one
+         ,(if (null bodies)
+              `nil
+              (build-nested-one bodies level-vars 1))
+         nil))))
+
+(defmacro-compile-time nested-all-values (&rest bodies &environment environment)
+  "Get all solutions from NESTED-FOR-EFFECTS."
+  (let ((solutions (gensym "SOLUTIONS"))
+        (last-cons (gensym "LAST-CONS"))
+        (level-vars (loop for i from 1 to (length bodies)
+                         collect (gensym (format nil "L~A-" i)))))
+    
+    (labels ((build-nested-all (remaining-bodies remaining-vars depth)
+               (if (null remaining-bodies)
+                   ;; Base case: collect this complete solution
+                   `(let ((solution (list ,@level-vars)))
+                      ;; Add to solutions list using GLOBAL
+                      (global (if (null ,solutions)
+                                  (setf ,last-cons (list solution)
+                                        ,solutions ,last-cons)
+                                  (setf (rest ,last-cons) (list solution)
+                                        ,last-cons (rest ,last-cons))))
+                      ;; Force backtracking to find more solutions
+                      (fail))
+                   
+                   ;; Recursive case: wrap current body in choice-point
+                   (let ((current-body (first remaining-bodies))
+                         (current-var (first remaining-vars)))
+                     `(choice-point
+                       ,(let ((*compiling-nondeterministic-context?* t))
+                          (cps-convert-progn
+                           `((let ((,current-var ,current-body))
+                               
+                               ;; Continue to next level
+                               ,(build-nested-all (rest remaining-bodies) 
+                                                 (rest remaining-vars)
+                                                 (1+ depth))))
+                           '#'fail nil nil environment)))))))
+      
+      `(let ((,solutions '())
+             (,last-cons nil))
+         ,(if (null bodies)
+              `'()
+              `(progn
+                 (choice-point
+                  ,(let ((*compiling-nondeterministic-context?* t))
+                     (cps-convert-progn
+                      `(,(build-nested-all bodies level-vars 1))
+                      '#'fail nil nil environment)))
+                 ,solutions))))))
+
 ;;; In classic Screamer TRAIL is unexported and UNWIND-TRAIL is exported. This
 ;;; doesn't seem very safe or sane: while users could conceivably want to use
 ;;; TRAIL to track unwinds, using UNWIND-TRAIL seems inherently dangerous
@@ -2707,15 +4149,12 @@ Functions on the trail are called when unwinding from a nondeterministic
 selection (due to either a normal return, or calling FAIL.)"
   ;; note: Is it really better to use VECTOR-PUSH-EXTEND than CONS for the
   ;;       trail?
-  (when *nondeterministic?*
+  (when *nondeterministic-context*
     (vector-push-extend function *trail* 1024))
   function)
 
 (defun unwind-trail-to (trail-pointer)
   (declare (fixnum trail-pointer))
-  ;; KLUDGE: This loops needs to be kept simple, since in some implementations
-  ;; (eg. Lispworks) non-trivial LOOP generates MACROLETs that can't be
-  ;; supported by WALK.
   (let ((trail *trail*))
     (loop (when (<= (fill-pointer trail) trail-pointer)
             (return-from unwind-trail-to))
@@ -2818,7 +4257,7 @@ PRINT-VALUES is analogous to the standard top-level user interface in Prolog."
   (funcall continuation nil))
 
 (defvar *fail* (lambda ()
-                 (if *nondeterministic?*
+                 (if *nondeterministic-context*
                      (throw '%fail nil)
                      (error "Cannot FAIL: no choice-point to backtrack to."))))
 
@@ -2922,12 +4361,86 @@ function."
     (continuation function argument &rest arguments)
   (let ((function (value-of function)))
     (if (nondeterministic-function? function)
-        ;; note: I don't know how to avoid the consing here.
-        (apply (nondeterministic-function-function function)
-               continuation
-               (apply #'list* (cons argument arguments)))
-        (funcall continuation (apply function argument arguments)))))
+      (apply #'apply (nondeterministic-function-function function)
+                 continuation argument arguments)
+          (funcall continuation (apply #'apply function argument arguments)))))
 
+(defun mapcar-nondeterministic-internal (function args)
+  ;; Stop collecting values if an argument list is empty
+  (unless (some #'null args)
+    (cons
+     ;; Call `function' on the current set of arguments
+     (apply-nondeterministic function (mapcar #'car args))
+     ;; Recurse on the remaining arguments
+     (mapcar-nondeterministic-internal function (mapcar #'cdr args)))))
+
+(defun mapcar-nondeterministic (function arg &rest args)
+  (cond
+    ;; Use `mapcar' in deterministic cases for efficiency
+    ;; and reduced stack-utilization
+    ((not (nondeterministic-function? function)) (apply #'mapcar function arg args))
+    ;; Recurse over the elements to nondeterministically
+    ;; generate a result
+    (t (mapcar-nondeterministic-internal function (cons arg args)))))
+
+(defun map-nondeterministic-internal (function sequences)
+  (unless (some (lambda (seq)
+                  (typecase seq
+                    (list (null seq))
+                    (t (zerop (length seq)))))
+                sequences)
+    (let ((current (mapcar (lambda (seq)
+                            (typecase seq
+                              (list (car seq))
+                              (t (aref seq 0))))
+                           sequences))
+          (rest (mapcar (lambda (seq)
+                          (typecase seq
+                            (list (cdr seq))
+                            (t (subseq seq 1))))
+                        sequences)))
+      (cons (apply-nondeterministic function current)
+            (map-nondeterministic-internal function rest)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline sequencep)))
+(defun-compile-time sequencep (x)
+  "Returns T if X is a sequence, NIL otherwise."
+ (typep x 'sequence))
+
+(defun generic-equal (x y)
+;; note: Should find a better name for this.
+  "Compares two objects for equality considering their types and structures."
+ (the boolean
+  (typecase x
+    (symbol      (and (symbolp y) (eq x y)))
+    (number      (and (numberp y) (eql x y)))
+    (string      (and (stringp y) (string= x y)))
+    (vector      (and (vectorp y) (equalp x y)))
+    (array       (and (arrayp y) (equalp x y)))
+    (cons        (and (consp y) (equal x y)))
+    (hash-table  (and (hash-table-p y) (equalp x y)))
+    (t           (eql x y)))))
+
+(defun map-nondeterministic (result-type function sequence &rest sequences)
+ (unless (subtypep result-type 'sequence)
+  (error "~A is a bad result type specifier for sequences." result-type))
+ (unless (every #'(lambda (seq) (and seq (sequencep seq))) (cons sequence sequences))
+  (error "SEQUENCE must be a sequence"))
+  (cond
+    ((not (nondeterministic-function? function))
+     (apply #'map result-type function sequence sequences))
+    (t
+     (let ((result (map-nondeterministic-internal function (cons sequence sequences))))
+       (coerce result result-type)))))
+
+(defmacro-compile-time lambda-nondeterministic (args &body body)
+  "Defines an unnamed Screamer function-object, e.g. to reuse
+between multiple Screamer forms.
+Note that these MUST be called via `funcall-nondeterministic',
+and are incompatible with the standard `funcall'."
+  `(one-value (lambda ,args ,@body)))
+  
 (cl:defun multiple-value-call-nondeterministic (function-form &rest values-forms)
   "Analogous to the CL:MULTIPLE-VALUE-CALL, except FUNCTION-FORM can evaluate
 to either a nondeterministic function, or an ordinary deterministic function.
@@ -3092,6 +4605,376 @@ either a list or a vector."
              (funcall continuation (aref sequence n))))))
       (t (error "SEQUENCE must be a sequence")))))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declare-nondeterministic 'a-random-member-of))
+
+(cl:defun a-random-member-of (sequence)
+  "Nondeterministically returns an random element of SEQUENCE. The SEQUENCE must be
+either a list or a vector."
+  (declare (ignore sequence))
+  (screamer-error
+   "A-RANDOM-MEMBER-OF is a nondeterministic function. As such, it must be called~%~
+   only from a nondeterministic context."))
+
+(cl:defun a-random-member-of-nondeterministic (continuation sequence)
+ (unless (sequencep sequence)
+  (error "SEQUENCE must be a sequence, got ~A" (type-of sequence)))
+  (let ((sequence (value-of sequence)))
+    (unless (alexandria:emptyp sequence)
+      (choice-point-external
+        (loop
+         (when (alexandria:emptyp sequence) (return))
+         (if (= (length sequence) 1)
+             (return (funcall continuation (alexandria:first-elt sequence))))
+             (let ((random-el (alexandria:random-elt sequence)))
+              (choice-point-internal (funcall continuation random-el))
+               (setf sequence (value-of (remove random-el sequence :test #'generic-equal :count 1)))))))))
+
+;;; NONDETERMINISTIC RATIONAL NUMBERS
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline ratiop)))
+(defun-compile-time ratiop (x)
+  "Returns true iff X is a ratio."
+ (typep x 'ratio))
+
+;;; Farey generators
+  
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline farey-next-value)))
+
+(cl:defun farey-next-value (frac max-denominator)
+  "Returns the next Farey fraction after FRAC with denominator <= max-denominator, starting from high denominators."
+  (declare (type rational frac)
+           (type integer max-denominator))
+  (let* ((a (the integer (numerator frac)))
+         (b (the integer (denominator frac))))
+    (do ((q (the fixnum max-denominator) (the fixnum (1- q))))
+        ((< q 1) nil)
+      (let ((p (the integer (floor (+ (* a q) 1) b))))
+        (when (and (= (gcd p q) 1)
+                   (> (/ p q) (/ a b)))
+          (return (/ p q)))))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline farey-prev-value)))
+
+(cl:defun farey-prev-value (frac max-denominator)
+  "Returns the previous Farey fraction before FRAC with denominator <= max-denominator, starting from high denominators."
+  (let* ((a (numerator frac))
+         (b (denominator frac)))
+    (do ((q max-denominator (1- q)))
+        ((< q 1) nil)
+      (let ((p (ceiling (- (* a q) 1) b)))
+        (when (and (= (gcd p q) 1)
+                   (< (/ p q) (/ a b)))
+          (return (/ p q)))))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline make-farey-generator-start)))
+
+(cl:defun make-farey-generator-start (n start &key (descending nil))
+  "Efficient Farey generator starting at START, then uses fast recurrence."
+  (declare (type fixnum n)
+           (type rational start)
+           (type boolean descending))
+  (let* ((next (if descending
+                   (farey-prev-value start n)
+                   (farey-next-value start n)))
+         (a (numerator start))
+         (b (denominator start))
+         (c (numerator next))
+         (d (denominator next))
+         (done nil))
+    (labels ((farey-next ()
+               (let ((k (floor (+ n b) d)))
+                 (psetq a c
+                        b d
+                        c (- (* k c) a)
+                        d (- (* k d) b)))))
+      (lambda ()
+        (cond
+          (done nil)
+          (t
+           (let ((result (/ a b)))
+             (farey-next)
+             result)))))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline closest-ratio-lower)))
+  
+(defun-compile-time closest-ratio-lower (x max-denom)
+  "Returns the least ratio > x with denominator ≤ max-denom, skipping integers.
+   If x is already a ratio, returns x."
+  (typecase x
+    (ratio x
+     (if (<= (denominator x) max-denom)
+          x
+         (let* ((step (/ 1 max-denom))
+                (result (* (ceiling (/ x step)) step)))
+          (if (integerp result)
+              (+ result (/ 1 max-denom))
+              result))))
+    (integer
+     (+ x (/ 1 max-denom)))
+    (t
+     (let* ((step (/ 1 max-denom))
+            (result (* (ceiling (/ x step)) step)))
+       (if (integerp result)
+           (+ result (/ 1 max-denom))
+           result)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline closest-ratio-upper)))
+
+(defun-compile-time closest-ratio-upper (x max-denom)
+  "Returns the greatest ratio < x with denominator ≤ max-denom, skipping integers.
+   If x is already a ratio, returns x."
+  (typecase x
+    (ratio
+     (if (<= (denominator x) max-denom)
+         x
+         (let* ((step (/ 1 max-denom))
+                (result (* (floor (/ x step)) step)))
+           (if (integerp result)
+               (- result (/ 1 max-denom))
+               result))))
+    (integer
+     (- x (/ 1 max-denom)))
+    (t
+     (let* ((step (/ 1 max-denom))
+            (result (* (floor (/ x step)) step)))
+       (if (integerp result)
+           (- result (/ 1 max-denom))
+           result)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline closest-rational-lower)))
+
+(defun-compile-time closest-rational-lower (x max-denom)
+  "Returns the greatest rational <= x with denominator ≤ max-denom, including integers."
+  (typecase x
+    (rational
+     (if (<= (denominator x) max-denom)
+         x
+         (let* ((step (/ 1 max-denom)))
+          (* (floor (/ x step)) step))))
+    (t
+     (let* ((step (/ 1 max-denom)))
+      (* (floor (/ (rationalize x) step)) step)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline closest-rational-upper)))
+
+(defun-compile-time closest-rational-upper (x max-denom)
+  "Returns the least rational >= x with denominator ≤ max-denom, including integers."
+  (typecase x
+    (rational
+     (if (<= (denominator x) max-denom)
+         x
+         (let* ((step (/ 1 max-denom)))
+          (* (ceiling (/ x step)) step))))
+    (t
+     (let* ((step (/ 1 max-denom)))
+      (* (ceiling (/ (rationalize x) step)) step)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline strict-next-in-domain)))
+  
+(cl:defun strict-next-in-domain (x max-denom)
+  "Smallest rational with denominator <= max-denom strictly greater than x."
+  (if (and (ratiop x) (<= (denominator x) max-denom))
+      (farey-next-value x max-denom)
+      (let* ((step (/ 1 max-denom))
+             (result (* (ceiling (/ x step)) step)))
+        (if (integerp result) (+ result step) result))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline strict-prev-in-domain)))
+  
+(cl:defun strict-prev-in-domain (x max-denom)
+  "Greatest rational with denominator <= max-denom strictly less than x."
+  (if (and (ratiop x) (<= (denominator x) max-denom))
+      (farey-prev-value x max-denom)
+      (let* ((step (/ 1 max-denom))
+             (result (* (floor (/ x step)) step)))
+        (if (integerp result) (- result step) result))))
+        
+(cl:defun rationals-between (low high &optional max-denominator)
+  "Return all reduced rationals in [low, high] with denominator <= max-denominator."
+  (let* ((max-denom (or max-denominator 10))
+         (low (closest-rational-lower low max-denom))
+         (high (closest-rational-upper high max-denom))
+         (gen (make-farey-generator-start max-denom low))
+         (result '()))
+    (do ((cur (funcall gen) (funcall gen)))
+        ((> cur high))
+      (push cur result))
+    (nreverse result)))
+
+(cl:defun ratios-between (low high &optional max-denominator)
+  "Return all reduced ratios (noninteger rationals) in [low, high] with denominator <= max-denominator."
+  (let* ((max-denom (or max-denominator 10))
+         (low (closest-ratio-lower low max-denom))
+         (high (closest-ratio-upper high max-denom))
+         (gen (make-farey-generator-start max-denom low))
+         (result '()))
+    (do ((cur (funcall gen) (funcall gen)))
+        ((> cur high))
+      (when (> (denominator cur) 1)
+        (push cur result)))
+    (nreverse result)))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declare-nondeterministic 'a-rational-between))
+
+(cl:defun a-rational-between (low high &optional max-denominator)
+  "Nondeterministically returns a rational number in the closed interval [LOW, HIGH]
+  with a maximum denominator [MAX-DENOMINATOR]. If LOW or HIGH are not rationals,
+  they are rounded to the closest rational with denominator ≤ MAX-DENOMINATOR.
+  Results are returned in ascending order."
+  (declare (ignore low high max-denominator))
+  (screamer-error
+   "A-RATIONAL-BETWEEN is a nondeterministic function. As such, it must be~%~
+   called only from a nondeterministic context."))
+
+ (cl:defun a-rational-between-nondeterministic (continuation low high &optional max-denominator)
+  (let* ((max-denom (value-of max-denominator))
+         (low (closest-rational-lower (value-of low) max-denom))
+         (high (closest-rational-upper (value-of high) max-denom)))
+  (unless (< high low)
+  (let ((gen (make-farey-generator-start max-denom low)))
+    (choice-point-external
+      (do* ((cur (funcall gen) (funcall gen)))
+           ((= cur high))
+        (choice-point-internal (funcall continuation cur))))
+     (funcall continuation high)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declare-nondeterministic 'a-rational))
+
+(cl:defun a-rational (&optional max-denominator)
+  "Nondeterministically returns a rational number in the interval (-inf, +inf)
+  with a maximum denominator [MAX-DENOMINATOR]. All rationals are reduced and
+  have denominator ≤ MAX-DENOMINATOR. Results are returned in order of increasing
+  denominator. This function may not terminate, as the set of rationals is infinite."
+  (declare (ignore max-denominator))
+  (screamer-error
+   "A-RATIONAL is a nondeterministic function. As such, it must be~%~
+   called only from a nondeterministic context."))
+
+ (cl:defun a-rational-nondeterministic (continuation &optional max-denominator)
+  (let ((max-denom (value-of max-denominator)))
+  (choice-point-external
+    (let* ((gen (make-farey-generator-start max-denom 0))
+           (next (funcall gen)))
+     (loop (choice-point-internal (funcall continuation next))
+       (when (not (zerop next)) (choice-point-internal (funcall continuation (- next))))
+       (setf next (funcall gen)))))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declare-nondeterministic 'a-rational-above))
+
+(cl:defun a-rational-above (low &optional max-denominator)
+  "Nondeterministically returns a rational number greater than or equal to LOW,
+  with a maximum denominator [MAX-DENOMINATOR]. If LOW is not a rational, it is
+  rounded to the closest rational with denominator ≤ MAX-DENOMINATOR. Results are
+  returned in order of increasing denominator. This function may not terminate, as
+  the set of rationals above LOW is infinite."
+  (declare (ignore low max-denominator))
+  (screamer-error
+   "A-RATIONAL-ABOVE is a nondeterministic function. As such, it must be~%~
+   called only from a nondeterministic context."))
+
+(cl:defun a-rational-above-nondeterministic (continuation low &optional max-denominator)
+  (let* ((max-denom (value-of max-denominator))
+         (low (closest-rational-lower (value-of low) max-denom))
+         (gen (make-farey-generator-start max-denom low)))
+    (choice-point-external
+      (do* ((cur (funcall gen) (funcall gen)))
+           ((null cur))
+        (choice-point-internal (funcall continuation cur))))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declare-nondeterministic 'a-rational-below))
+
+(cl:defun a-rational-below (high &optional max-denominator)
+  "Nondeterministically returns a rational number less than or equal to HIGH,
+  with a maximum denominator [MAX-DENOMINATOR]. If HIGH is not a rational, it is
+  rounded to the closest rational with denominator ≤ MAX-DENOMINATOR. Results are
+  returned in order of increasing denominator. This function may not terminate, as
+  the set of rationals below HIGH is infinite."
+  (declare (ignore high max-denominator))
+  (screamer-error
+   "A-RATIONAL-BELOW is a nondeterministic function. As such, it must be~%~
+   called only from a nondeterministic context."))
+
+ (cl:defun a-rational-below-nondeterministic (continuation high &optional max-denominator)
+  (let* ((max-denom (value-of max-denominator))
+         (high (closest-rational-upper (value-of high) max-denom))
+         (gen (make-farey-generator-start max-denom high :descending t)))
+    (choice-point-external
+      (do* ((cur (funcall gen) (funcall gen)))
+           ((null cur))
+        (choice-point-internal (funcall continuation cur))))))
+
+(defun a-ratio-between (low high &optional max-denominator)
+"Nondeterministically returns a ratio (fraction) in the closed interval [LOW, HIGH]
+  with a maximum denominator [MAX-DENOMINATOR]. If LOW or HIGH are not ratios,
+  they are rounded to the closest ratio with denominator ≤ MAX-DENOMINATOR.
+  Results are returned in ascending order."
+  (let* ((max-denom (value-of max-denominator))
+         (low (closest-ratio-lower (value-of low) max-denom))
+         (high (closest-ratio-upper (value-of high) max-denom))
+         (variable (a-rational-between low high max-denom)))
+     (if (integerp variable)
+         (fail)
+         variable)))
+
+(defun a-ratio (&optional max-denominator)
+  "Nondeterministically returns a ratio (noninteger rational) in the interval (-inf, +inf)
+  with a maximum denominator [MAX-DENOMINATOR]. All ratios are reduced and have denominator ≤ MAX-DENOMINATOR.
+  Results are returned in order of increasing denominator. This function may not terminate, as the set of ratios is infinite."
+ (let* ((max-denom (value-of max-denominator))
+        (variable (a-rational max-denom)))
+    (if (integerp variable)
+        (fail))
+        variable))
+
+(defun a-ratio-above (low &optional max-denominator)
+  "Nondeterministically returns a ratio (noninteger rational) greater than or equal to LOW,
+  with a maximum denominator [MAX-DENOMINATOR]. If LOW is not a ratio, it is rounded to the
+  closest ratio with denominator ≤ MAX-DENOMINATOR. Results are returned in order of
+  increasing denominator. This function may not terminate, as the set of ratios above LOW 
+  is infinite."
+  (let* ((max-denom (value-of max-denominator))
+         (low (closest-ratio-lower (value-of low) max-denom))
+         (variable (a-rational-above low max-denom)))
+    (if (integerp variable)
+        (fail)
+        variable)))
+
+(defun a-ratio-below (high &optional max-denominator)
+  "Nondeterministically returns a ratio (noninteger rational) less than or equal to HIGH,
+  with a maximum denominator [MAX-DENOMINATOR]. If HIGH is not a ratio, it is rounded to
+  the closest ratio with denominator ≤ MAX-DENOMINATOR. Results are returned in order of 
+  increasing denominator. This function may not terminate, as the set of ratios below HIGH
+  is infinite."
+  (let* ((max-denom (value-of max-denominator))
+         (high (closest-ratio-upper (value-of high) max-denom))
+         (variable (a-rational-below high max-denom)))
+    (if (integerp variable)
+        (fail)
+        variable)))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline safest-farey-range-size)))
+
+(defun-compile-time safest-farey-range-size (desired-count max-denom)
+  "Returns the maximum interval length for which the Farey sequence with max-denom
+   will contain at most desired-count rationals (approximate, using Farey size formula)."
+  (ith-value (1- desired-count) (a-rational-above 0 max-denom)))
+
 ;;; note: The following two functions work only when Screamer is running under
 ;;;       ILisp/GNUEmacs with iscream.el loaded.
 
@@ -3121,7 +5004,7 @@ output to Emacs, which will be deleted when the current choice is unwound."
 
 (defvar *name* 0 "The counter for anonymous names.")
 
-(defvar *minimum-shrink-ratio* 1e-2
+(defvar *minimum-shrink-ratio* 1e-8
   "Ignore propagations which reduce the range of a variable by less than this
 ratio.")
 
@@ -3133,6 +5016,14 @@ Discretize all integer variables if NIL. Must be an integer or NIL.")
   "Strategy to use for FUNCALLV and APPLYV. Either :GFC for Generalized
 Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
 
+(defvar *maximum-random-domain-size* 88
+  "The maximum size allowed for a random domain.")
+
+(defvar *max-denom* 1000000
+  " When non-NIL, RESTRICT-LOWER-BOUND!, RESTRICT-UPPER-BOUND! and RESTRICT-BOUNDS!
+discretize a REAL variable whose bounds become rational and whose range fits within
+SAFEST-FAREY-RANGE-SIZE under this denominator.")
+
 ;;; note: Enable this to use CLOS instead of DEFSTRUCT for variables.
 #+(or)
 (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -3143,37 +5034,38 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
                                   (:predicate variable?)
                                   (:constructor make-variable-internal))
   name
-  (noticers nil)
-  (enumerated-domain t)
-  (enumerated-antidomain nil)
+  (noticers nil :type list)
+  (dependencies nil :type list)
+  (enumerated-domain t :type (or boolean list))
+  (enumerated-antidomain nil :type (or boolean list))
   value
-  (possibly-integer? t)
-  (possibly-noninteger-real? t)
-  (possibly-nonreal-number? t)
-  (possibly-boolean? t)
-  (possibly-nonboolean-nonnumber? t)
-  (lower-bound nil)
-  (upper-bound nil))
+  (possibly-integer? t :type boolean)
+  (possibly-noninteger-rational? t :type boolean)
+  (max-denom nil :type (or null integer))
+  (possibly-noninteger-real? t :type boolean)
+  (possibly-nonreal-number? t :type boolean)
+  (possibly-boolean? t :type boolean)
+  (possibly-nonboolean-nonnumber? t :type boolean)
+  (lower-bound nil :type (or number null))
+  (upper-bound nil :type (or number null)))
 
 #+screamer-clos
 (defclass variable ()
   ((name :accessor variable-name :initarg :name)
-   (noticers :accessor variable-noticers :initform nil)
-   (enumerated-domain :accessor variable-enumerated-domain :initform t)
-   (enumerated-antidomain :accessor variable-enumerated-antidomain
-                          :initform nil)
+   (noticers :accessor variable-noticers :initform nil :type list)
+   (dependencies :accessor variable-dependencies :initform nil :type list)
+   (enumerated-domain :accessor variable-enumerated-domain :initform t :type (or boolean list))
+   (enumerated-antidomain :accessor variable-enumerated-antidomain :initform nil :type (or boolean list))
    (value :accessor variable-value)
-   (possibly-integer? :accessor variable-possibly-integer? :initform t)
-   (possibly-noninteger-real? :accessor variable-possibly-noninteger-real?
-                              :initform t)
-   (possibly-nonreal-number? :accessor variable-possibly-nonreal-number?
-                             :initform t)
-   (possibly-boolean? :accessor variable-possibly-boolean? :initform t)
-   (possibly-nonboolean-nonnumber?
-    :accessor variable-possibly-nonboolean-nonnumber?
-    :initform t)
-   (lower-bound :accessor variable-lower-bound :initform nil)
-   (upper-bound :accessor variable-upper-bound :initform nil)))
+   (possibly-integer? :accessor variable-possibly-integer? :initform t :type boolean)
+   (possibly-noninteger-rational? :accessor variable-possibly-noninteger-rational? :initform t :type boolean)
+   (max-denom :accessor variable-max-denom :initform nil :type (or null integer))
+   (possibly-noninteger-real? :accessor variable-possibly-noninteger-real? :initform t :type boolean)
+   (possibly-nonreal-number? :accessor variable-possibly-nonreal-number? :initform t :type boolean)
+   (possibly-boolean? :accessor variable-possibly-boolean? :initform t :type boolean)
+   (possibly-nonboolean-nonnumber? :accessor variable-possibly-nonboolean-nonnumber? :initform t :type boolean)
+   (lower-bound :accessor variable-lower-bound :initform nil :type (or number null))
+   (upper-bound :accessor variable-upper-bound :initform nil :type (or number null))))
 
 #+screamer-clos
 (defmethod print-object ((variable variable) stream)
@@ -3184,50 +5076,262 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
 
 (defun integers-between (low high)
   (cond ((and (typep low 'fixnum) (typep high 'fixnum))
-         ;; KLUDGE: Don't change this to a LOOP, since in some implementations
-         ;; (eg. Lispworks) non-trivial LOOP generates MACROLETs that can't be
-         ;; supported by WALK.
          (do ((result nil)
               (i low (1+ i)))
              ((> i high) (nreverse result))
            (declare (type fixnum i))
            (push i result)))
         (t
-         ;; KLUDGE: As above.
          (do ((result nil)
               (i low (1+ i)))
              ((> i high) (nreverse result))
            (push i result)))))
 
-(defun booleanp (x)
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline booleanp)))
+(defun-compile-time booleanp (x)
   "Returns true iff X is T or NIL."
   (typep x 'boolean))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline infinity-min)))
 (defun infinity-min (x y) (and x y (min x y)))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline infinity-max)))
 (defun infinity-max (x y) (and x y (max x y)))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline infinity-+)))
 (defun infinity-+ (x y) (and x y (+ x y)))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline infinity--)))
 (defun infinity-- (x y) (and x y (- x y)))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline infinity-*)))
 (defun infinity-* (x y) (and x y (* x y)))
 
-(defun contains-variables? (x)
+(cl:defun contains-variables? (x)
   (typecase x
     (cons (or (contains-variables? (car x)) (contains-variables? (cdr x))))
     (variable t)
     (otherwise nil)))
 
-(defun eliminate-variables (x)
+(cl:defun eliminate-variables (x)
   (if (contains-variables? x)
       (if (consp x)
           (cons (eliminate-variables (car x)) (eliminate-variables (cdr x)))
           (eliminate-variables (variable-value x)))
       x))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline variable-integer?)))
+(cl:defun variable-integer? (x)
+  (declare (type variable x))
+  (the boolean
+  (and (not (variable-possibly-boolean? x))
+       (not (variable-possibly-nonboolean-nonnumber? x))
+       (not (variable-possibly-nonreal-number? x))
+       (variable-possibly-integer? x)
+       (not (variable-possibly-noninteger-rational? x))
+       (not (variable-possibly-noninteger-real? x)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline variable-noninteger?)))
+(cl:defun variable-noninteger? (x)
+  (declare (type variable x))
+  (the boolean
+  (and (or (variable-possibly-boolean? x)
+            (variable-possibly-nonboolean-nonnumber? x)
+            (variable-possibly-nonreal-number? x)
+            (variable-possibly-noninteger-real? x)
+            (variable-possibly-noninteger-rational? x))
+        (not (variable-possibly-integer? x)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline variable-ratio?)))
+(cl:defun variable-ratio? (x)
+  (declare (type variable x))
+  (the boolean
+  (and (not (variable-possibly-boolean? x))
+        (not (variable-possibly-nonboolean-nonnumber? x))
+        (not (variable-possibly-nonreal-number? x))
+        (not (variable-possibly-integer? x))
+        (not (variable-possibly-noninteger-real? x))
+        (variable-possibly-noninteger-rational? x))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline variable-nonratio?)))
+(cl:defun variable-nonratio? (x)
+  (declare (type variable x))
+  (the boolean
+  (and (or (variable-possibly-noninteger-real? x)
+            (variable-possibly-nonreal-number? x)
+            (variable-possibly-boolean? x)
+            (variable-possibly-nonboolean-nonnumber? x)
+            (variable-possibly-integer? x))
+            (not (variable-possibly-noninteger-rational? x)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline variable-noninteger-real?)))
+(cl:defun variable-noninteger-real? (x)
+  (declare (type variable x))
+  (the boolean
+  (and (not (variable-possibly-boolean? x))
+        (not (variable-possibly-nonboolean-nonnumber? x))
+        (not (variable-possibly-nonreal-number? x))
+        (not (variable-possibly-noninteger-rational? x))
+        (not (variable-possibly-integer? x))
+        (variable-possibly-noninteger-real? x))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline variable-rational?)))
+(cl:defun variable-rational? (x)
+  (declare (type variable x))
+  (the boolean
+  (and (not (variable-possibly-boolean? x))
+        (not (variable-possibly-nonboolean-nonnumber? x))
+        (not (variable-possibly-nonreal-number? x))
+        (not (variable-possibly-noninteger-real? x))
+        (or (variable-possibly-noninteger-rational? x)
+            (variable-possibly-integer? x)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline variable-nonrational?)))
+(cl:defun variable-nonrational? (x)
+  (declare (type variable x))
+  (the boolean
+  (and (or (variable-possibly-noninteger-real? x)
+            (variable-possibly-nonreal-number? x)
+            (variable-possibly-boolean? x)
+            (variable-possibly-nonboolean-nonnumber? x))
+            (not (variable-possibly-noninteger-rational? x))
+            (not (variable-possibly-integer? x)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline variable-float?)))
+(cl:defun variable-float? (x)
+  (declare (type variable x))
+  (the boolean
+  (and (not (variable-possibly-boolean? x))
+        (not (variable-possibly-nonboolean-nonnumber? x))
+        (not (variable-possibly-nonreal-number? x))
+        (not (variable-possibly-noninteger-rational? x))
+        (not (variable-possibly-integer? x))
+        (variable-possibly-noninteger-real? x))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline variable-nonfloat?)))
+(cl:defun variable-nonfloat? (x)
+  (declare (type variable x))
+  (the boolean
+  (and (or (variable-possibly-integer? x)
+            (variable-possibly-noninteger-rational? x)
+            (variable-possibly-nonreal-number? x)
+            (variable-possibly-boolean? x)
+            (variable-possibly-nonboolean-nonnumber? x))
+            (not (variable-possibly-noninteger-real? x)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline variable-real?)))
+(cl:defun variable-real? (x)
+  (declare (type variable x))
+  (the boolean  
+  (and (not (variable-possibly-boolean? x))
+        (not (variable-possibly-nonboolean-nonnumber? x))
+        (not (variable-possibly-nonreal-number? x))
+        (or (variable-possibly-noninteger-real? x)
+            (variable-possibly-integer? x)
+            (variable-possibly-noninteger-rational? x)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline variable-nonreal?)))
+(cl:defun variable-nonreal? (x)
+  (declare (type variable x))
+  (the boolean
+  (and (or (variable-possibly-boolean? x)
+            (variable-possibly-nonboolean-nonnumber? x)
+            (variable-possibly-nonreal-number? x))
+        (not (variable-possibly-noninteger-real? x))
+        (not (variable-possibly-integer? x))
+        (not (variable-possibly-noninteger-rational? x)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline variable-number?)))
+(cl:defun variable-number? (x)
+  (declare (type variable x))
+  (the boolean
+    (and (not (variable-possibly-boolean? x))
+          (not (variable-possibly-nonboolean-nonnumber? x))
+          (or (variable-possibly-nonreal-number? x)
+              (variable-possibly-noninteger-real? x)
+              (variable-possibly-integer? x)
+              (variable-possibly-noninteger-rational? x)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline variable-nonnumber?)))
+(cl:defun variable-nonnumber? (x)
+  (declare (type variable x))
+  (the boolean
+    (and (or (variable-possibly-boolean? x)
+              (variable-possibly-nonboolean-nonnumber? x))
+          (not (variable-possibly-nonreal-number? x))
+          (not (variable-possibly-noninteger-real? x))
+          (not (variable-possibly-integer? x))
+          (not (variable-possibly-noninteger-rational? x)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline variable-boolean?)))
+(cl:defun variable-boolean? (x)
+  (declare (type variable x))
+  (the boolean
+    (and (variable-possibly-boolean? x)
+          (not (variable-possibly-nonboolean-nonnumber? x))
+          (not (variable-possibly-nonreal-number? x))
+          (not (variable-possibly-noninteger-real? x))
+          (not (variable-possibly-integer? x))
+          (not (variable-possibly-noninteger-rational? x)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline variable-nonboolean?)))
+(cl:defun variable-nonboolean? (x)
+  (declare (type variable x))
+  (the boolean
+    (and (not (variable-possibly-boolean? x))
+          (or (variable-possibly-nonboolean-nonnumber? x)
+              (variable-possibly-nonreal-number? x)
+              (variable-possibly-noninteger-real? x)
+              (variable-possibly-integer? x)
+              (variable-possibly-noninteger-rational? x)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline variable-nonboolean-nonnumber?)))
+(cl:defun variable-nonboolean-nonnumber? (x)
+  (declare (type variable x))
+  (the boolean
+    (and (not (variable-possibly-boolean? x))
+          (not (variable-possibly-nonreal-number? x))
+          (not (variable-possibly-noninteger-real? x))
+          (not (variable-possibly-integer? x))
+          (not (variable-possibly-noninteger-rational? x))
+          (variable-possibly-nonboolean-nonnumber? x))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline variable-boolean-or-number?)))
+(cl:defun variable-boolean-or-number? (x)
+  (declare (type variable x))
+  (the boolean
+    (and (not (variable-possibly-nonboolean-nonnumber? x))
+          (or (variable-possibly-boolean? x)
+              (variable-possibly-nonreal-number? x)
+              (variable-possibly-noninteger-real? x)
+              (variable-possibly-integer? x)
+              (variable-possibly-noninteger-rational? x)))))
+
 (defun print-variable (x stream print-level)
-  (declare (ignore print-level))
+   (declare (ignore print-level))
   (let ((x (value-of x)))
     (cond
       ((variable? x)
@@ -3235,34 +5339,51 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
                 (not (null (variable-enumerated-antidomain x))))
            (error "This shouldn't happen"))
        (format stream "[~S" (variable-name x))
-       (format stream "~A"
-               (cond ((variable-boolean? x) " Boolean")
-                     ((variable-integer? x) " integer")
-                     ((variable-real? x)
-                      (if (variable-noninteger? x) " noninteger-real" " real"))
+      (format stream "~A"
+        (cond
+          ((variable-boolean? x) " Boolean")
+          ((variable-real? x)
+          (cond
+            ((variable-rational? x)
+              (cond
+                ((variable-integer? x) " integer")
+                ((variable-ratio? x) " noninteger-rational")
+                (t " rational")))
+            (t
+              (cond
+                ((variable-noninteger? x)
+                 (if (variable-nonrational? x)
+                      " nonrational-real" " noninteger-real"))
+                (t " real")))))
                      ((variable-number? x)
                       (cond ((variable-nonreal? x) " nonreal-number")
                             ((variable-noninteger? x) " noninteger-number")
+                            ((variable-nonrational? x) " nonrational-number")
+                            ((variable-rational? x) " rational-number")
                             (t " number")))
                      ((variable-nonnumber? x) " nonnumber")
                      ((variable-nonreal? x) " nonreal")
                      ((variable-noninteger? x) " noninteger")
                      (t "")))
-       (if (variable-real? x)
-           (if (variable-lower-bound x)
-               (if (variable-upper-bound x)
-                   (format stream " ~D:~D"
-                           (variable-lower-bound x) (variable-upper-bound x))
-                   (format stream " ~D:" (variable-lower-bound x)))
-               (if (variable-upper-bound x)
-                   (format stream " :~D" (variable-upper-bound x)))))
-       (if (and (not (eq (variable-enumerated-domain x) t))
-                (not (variable-boolean? x)))
-           (format stream " enumerated-domain:~S"
-                   (variable-enumerated-domain x)))
-       (if (not (null (variable-enumerated-antidomain x)))
-           (format stream " enumerated-antidomain:~S"
-                   (variable-enumerated-antidomain x)))
+       (when (variable-real? x)
+         (cond ((and (variable-lower-bound x) (variable-upper-bound x))
+                (format stream " ~D:~D"
+                        (variable-lower-bound x) (variable-upper-bound x)))
+               ((variable-lower-bound x)
+                (format stream " ~D:" (variable-lower-bound x)))
+               ((variable-upper-bound x)
+                (format stream " :~D" (variable-upper-bound x)))))
+       (when (and (variable-rational? x)
+                  (variable-possibly-noninteger-rational? x)
+                  (integerp (variable-max-denom x)))
+         (format stream " max-denom:~D" (variable-max-denom x)))
+       (when (and (not (eq (variable-enumerated-domain x) t))
+                  (not (variable-boolean? x)))
+         (format stream " enumerated-domain:~S"
+                 (variable-enumerated-domain x)))
+       (when (not (null (variable-enumerated-antidomain x)))
+         (format stream " enumerated-antidomain:~S"
+                 (variable-enumerated-antidomain x)))
        (format stream "]"))
       (t (format stream "~S" x)))))
 
@@ -3279,62 +5400,6 @@ be any Lisp object."
           (make-instance 'variable :name (if name? name (incf *name*)))))
     (setf (variable-value variable) variable)
     variable))
-
-(defun variable-integer? (x)
-  (and (not (variable-possibly-boolean? x))
-       (not (variable-possibly-nonboolean-nonnumber? x))
-       (not (variable-possibly-nonreal-number? x))
-       (not (variable-possibly-noninteger-real? x))
-       (variable-possibly-integer? x)))
-
-(defun variable-noninteger? (x)
-  (and (or (variable-possibly-boolean? x)
-           (variable-possibly-nonboolean-nonnumber? x)
-           (variable-possibly-nonreal-number? x)
-           (variable-possibly-noninteger-real? x))
-       (not (variable-possibly-integer? x))))
-
-(defun variable-real? (x)
-  (and (not (variable-possibly-boolean? x))
-       (not (variable-possibly-nonboolean-nonnumber? x))
-       (not (variable-possibly-nonreal-number? x))
-       (or (variable-possibly-noninteger-real? x)
-           (variable-possibly-integer? x))))
-
-(defun variable-nonreal? (x)
-  (and (or (variable-possibly-boolean? x)
-           (variable-possibly-nonboolean-nonnumber? x)
-           (variable-possibly-nonreal-number? x))
-       (not (variable-possibly-noninteger-real? x))
-       (not (variable-possibly-integer? x))))
-
-(defun variable-number? (x)
-  (and (not (variable-possibly-boolean? x))
-       (not (variable-possibly-nonboolean-nonnumber? x))
-       (or (variable-possibly-nonreal-number? x)
-           (variable-possibly-noninteger-real? x)
-           (variable-possibly-integer? x))))
-
-(defun variable-nonnumber? (x)
-  (and (or (variable-possibly-boolean? x)
-           (variable-possibly-nonboolean-nonnumber? x))
-       (not (variable-possibly-nonreal-number? x))
-       (not (variable-possibly-noninteger-real? x))
-       (not (variable-possibly-integer? x))))
-
-(defun variable-boolean? (x)
-  (and (variable-possibly-boolean? x)
-       (not (variable-possibly-nonboolean-nonnumber? x))
-       (not (variable-possibly-nonreal-number? x))
-       (not (variable-possibly-noninteger-real? x))
-       (not (variable-possibly-integer? x))))
-
-(defun variable-nonboolean? (x)
-  (and (not (variable-possibly-boolean? x))
-       (or (variable-possibly-nonboolean-nonnumber? x)
-           (variable-possibly-nonreal-number? x)
-           (variable-possibly-noninteger-real? x)
-           (variable-possibly-integer? x))))
 
 (defun variable-true? (x) (eq (variable-value x) t))
 
@@ -3356,6 +5421,7 @@ variable which is shared with X."
      (go loop)))
 
 (defun variablize (x)
+ (the variable
   (if (variable? x)
       (tagbody
        loop
@@ -3364,14 +5430,28 @@ variable which is shared with X."
              (return-from variablize x))
          (setf x (variable-value x))
          (go loop))
-      (let ((y (make-variable))) (restrict-value! y x) y)))
+      (let ((y (make-variable))) (restrict-value! y x) y))))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline bound?)))
 (defun bound? (x)
   "Returns T if X is not a variable or if X is a bound variable. Otherwise
 returns NIL. BOUND? is analogous to the extra-logical predicates `var' and
 `nonvar' typically available in Prolog."
   (not (variable? (value-of x))))
 
+(cl:defun bounded? (x)
+  "Returns true if there are finite possible values for X."
+  (or (bound? x)
+      (or (variable-boolean? x)
+          (not (or (eq (variable-enumerated-domain x) t)
+               (null (variable-enumerated-domain x))))
+          (and (variable-lower-bound x)
+               (variable-upper-bound x)
+               (or (variable-integer? x)
+                   (and (variable-rational? x)
+                        (variable-max-denom x)))))))
+         
 (defun ground? (x)
   "The primitive GROUND? is an extension of the primitive BOUND? which
 can recursively determine whether an entire aggregate object is
@@ -3382,25 +5462,62 @@ Otherwise returns nil."
   (let ((x (value-of x)))
     (and (not (variable? x))
          (or (not (consp x)) (and (ground? (car x)) (ground? (cdr x)))))))
-
+        
 (defun apply-substitution (x)
-  "If X is a CONS, or a variable whose value is a CONS, returns
-a freshly consed copy of the tree with all variables dereferenced.
+  "If X is a SEQUENCE or ARRAY, returns a freshly consed
+copy of the tree with all variables dereferenced.
 Otherwise returns the value of X."
   (let ((x (value-of x)))
-    (if (consp x)
-        (cons (apply-substitution (car x)) (apply-substitution (cdr x)))
-        x)))
+    (etypecase x
+      (cons (if (null (cdr (last x)))
+                ;; If terminates with nil (ie normal list)
+                ;; use mapcar to not consume stack
+                (mapcar #'apply-substitution x)
+                ;; Otherwise recurse on the car and cdr
+                (cons (apply-substitution (car x))
+                      (apply-substitution (cdr x)))))
+      (string x)
+      (simple-vector (map 'vector #'apply-substitution x))
+      (sequence (let ((copy (copy-seq x)))
+                  (dotimes (idx (length x))
+                    (setf (elt copy idx)
+                          (apply-substitution (elt x idx))))
+                  copy))
+      (array (let ((arr (alexandria::copy-array x)))
+               (dotimes (idx (array-total-size arr))
+                 (setf (row-major-aref arr idx)
+                       (apply-substitution (row-major-aref arr idx))))
+               arr))
+      (t x))))
 
-(defun occurs-in? (x value)
-  ;; note: X must be a variable such that (EQ X (VALUE-OF X)).
-  ;; note: Will loop if VALUE is circular.
+(cl:defun occurs-in? (x value)
+  ;; NOTE: X must be a variable such that (EQ X (VALUE-OF X)).
+  ;; NOTE: Will loop if VALUE is circular.
   (cond
     ((eq x value) t)
     ((and (variable? value) (not (eq value (variable-value value))))
      (occurs-in? x (variable-value value)))
     ((consp value) (or (occurs-in? x (car value)) (occurs-in? x (cdr value))))
+    ((sequencep value) (some (lambda (v) (occurs-in? x v)) value))
+    ((arrayp value) (block occurs-in
+                      (dotimes (idx (array-total-size value))
+                        (when (occurs-in? x (row-major-aref value idx))
+                          (return-from occurs-in t)))))
     (t nil)))
+
+ (defun attach-dependencies!-internal (dependencies x)
+   ;; NOTE: Will loop if X is circular.
+   (typecase x
+     (cons
+      (attach-dependencies!-internal dependencies (car x))
+      (attach-dependencies!-internal dependencies (cdr x)))
+   (variable
+     (dolist (dep dependencies)
+       (unless (or (not (variable? dep))
+                 (eql dep x)
+               (member dep (variable-dependencies x) :test #'eq))
+        (setf (variable-dependencies x)
+     (cons dep (variable-dependencies x))))))))
 
 (defun attach-noticer!-internal (noticer x)
   ;; note: Will loop if X is circular.
@@ -3416,9 +5533,14 @@ Otherwise returns the value of X."
                                  (cons noticer (variable-noticers x)))))
                   (attach-noticer!-internal noticer (variable-value x))))))
 
-(defun attach-noticer! (noticer x)
-  (attach-noticer!-internal noticer x)
-  (funcall noticer))
+(defun attach-noticer! (noticer x &key dependencies)
+  ;; Track dependency variables if provided
+  (when dependencies
+    (attach-dependencies!-internal dependencies x))
+
+  (when noticer
+    (attach-noticer!-internal noticer x)
+    (funcall noticer)))
 
 (defun run-noticers (x)
   (dolist (noticer (variable-noticers x)) (funcall noticer)))
@@ -3427,9 +5549,13 @@ Otherwise returns the value of X."
 
 (defun restrict-integer! (x)
   ;; note: X must be a variable.
-  (unless (variable-possibly-integer? x) (fail))
+ (declare (type variable x))
+ (unless (variable-possibly-integer? x) (fail))
   (if (or (eq (variable-value x) x) (not (variable? (variable-value x))))
       (let ((run? nil))
+        (when (variable-possibly-noninteger-rational? x)
+          (local (setf (variable-possibly-noninteger-rational? x) nil))
+          (setf run? t))
         (when (variable-possibly-noninteger-real? x)
           (local (setf (variable-possibly-noninteger-real? x) nil))
           (setf run? t))
@@ -3459,6 +5585,11 @@ Otherwise returns the value of X."
               (fail))
           (local (setf (variable-upper-bound x) (floor (variable-upper-bound x))))
           (setf run? t))
+        (when (or (null (variable-max-denom x))
+                  (and (integerp (variable-max-denom x))
+                       (> (variable-max-denom x) 1)))
+         (local (setf (variable-max-denom x) 1))
+         (setf run? t))
         (when run?
           (cond ((eq (variable-enumerated-domain x) t)
                  (if (and (variable-lower-bound x)
@@ -3472,34 +5603,274 @@ Otherwise returns the value of X."
                          (variable-lower-bound x)
                          (variable-upper-bound x)))))
                 ((not (every #'integerp (variable-enumerated-domain x)))
-                 ;; note: Could do less consing if had LOCAL DELETE-IF.
-                 ;;       This would also allow checking list only once.
                  (set-enumerated-domain!
                   x (remove-if-not #'integerp (variable-enumerated-domain x)))))
           (run-noticers x)))))
 
 (defun restrict-noninteger! (x)
   ;; note: X must be a variable.
-  (unless (or (variable-possibly-noninteger-real? x)
+  (declare (type variable x))
+  (unless (or (variable-possibly-noninteger-rational? x)
+              (variable-possibly-noninteger-real? x)
               (variable-possibly-nonreal-number? x)
               (variable-possibly-boolean? x)
               (variable-possibly-nonboolean-nonnumber? x))
-    (fail))
+     (fail))
   (when (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
              (variable-possibly-integer? x))
     (local (setf (variable-possibly-integer? x) nil))
     (if (and (not (eq (variable-enumerated-domain x) t))
              (some #'integerp (variable-enumerated-domain x)))
-        ;; note: Could do less consing if had LOCAL DELETE-IF.
-        ;;       This would also allow checking list only once.
         (set-enumerated-domain!
          x (remove-if #'integerp (variable-enumerated-domain x))))
     (run-noticers x)))
 
+(defun restrict-ratio! (x)
+  ;; note: X must be a variable.
+  (declare (type variable x))
+  (unless (variable-possibly-noninteger-rational? x) (fail))
+  (if (or (eq (variable-value x) x) (not (variable? (variable-value x))))
+      (let ((run? nil))
+        (when (variable-possibly-integer? x)
+          (local (setf (variable-possibly-integer? x) nil))
+          (setf run? t))
+        (when (variable-possibly-noninteger-real? x)
+          (local (setf (variable-possibly-noninteger-real? x) nil))
+          (setf run? t))
+        (when (variable-possibly-nonreal-number? x)
+          (local (setf (variable-possibly-nonreal-number? x) nil))
+          (setf run? t))
+        (when (variable-possibly-boolean? x)
+          (local (setf (variable-possibly-boolean? x) nil))
+          (setf run? t))
+        (when (variable-possibly-nonboolean-nonnumber? x)
+          (local (setf (variable-possibly-nonboolean-nonnumber? x) nil))
+          (setf run? t))
+        (when (and (variable-lower-bound x)
+                   (not (ratiop (variable-lower-bound x))))
+           (let ((new-lower (if (variable-max-denom x)
+                                (closest-ratio-lower (variable-lower-bound x) (variable-max-denom x))
+                                (rationalize (variable-lower-bound x)))))
+            (if (and (variable-upper-bound x)
+                     (< (variable-upper-bound x) new-lower))
+                (fail))
+            (local (setf (variable-lower-bound x) new-lower))
+         (setf run? t)))
+        (when (and (variable-upper-bound x)
+                   (not (ratiop (variable-upper-bound x))))
+          (let ((new-upper (if (variable-max-denom x)
+                              (closest-ratio-upper (variable-upper-bound x) (variable-max-denom x))
+                              (rationalize (variable-upper-bound x)))))
+            (if (and (variable-lower-bound x)
+                    (> (variable-lower-bound x) new-upper))
+                (fail))
+            (local (setf (variable-upper-bound x) new-upper))
+         (setf run? t)))
+        (when run?
+          (cond
+            ((eq (variable-enumerated-domain x) t)
+            (let ((lb (variable-lower-bound x))
+                  (ub (variable-upper-bound x)))
+              (if (and lb ub (variable-max-denom x)
+                         (<= (- ub lb) (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x))))
+                (set-enumerated-domain!
+                  x (ratios-between lb ub (variable-max-denom x))))))
+            ((not (every #'ratiop (variable-enumerated-domain x)))
+             (if (variable-max-denom x)
+                 (set-enumerated-domain!
+                  x (remove-if-not (lambda (element) (and (ratiop element)
+                                                          (<= (denominator element)
+                                                          (variable-max-denom x))))
+                    (variable-enumerated-domain x)))
+                (set-enumerated-domain!
+                  x (remove-if-not #'ratiop (variable-enumerated-domain x))))))
+          (run-noticers x)))))
+
+(defun restrict-nonratio! (x)
+  ;; note: X must be a variable.
+  (declare (type variable x))
+  (unless (or (variable-possibly-integer? x)
+              (variable-possibly-noninteger-real? x)
+              (variable-possibly-nonreal-number? x)
+              (variable-possibly-boolean? x)
+              (variable-possibly-nonboolean-nonnumber? x))
+     (fail))
+  (when (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
+             (variable-possibly-noninteger-rational? x))
+    (local (setf (variable-possibly-noninteger-rational? x) nil))
+    (if (and (not (eq (variable-enumerated-domain x) t))
+             (some #'ratiop (variable-enumerated-domain x)))
+        (set-enumerated-domain!
+         x (remove-if #'ratiop (variable-enumerated-domain x))))
+    (run-noticers x)))
+
+(defun restrict-rational! (x)
+  ;; note: X must be a variable.
+  (declare (type variable x))
+  (unless (or (variable-possibly-integer? x)
+              (variable-possibly-noninteger-rational? x))
+    (fail))
+  (if (or (eq (variable-value x) x) (not (variable? (variable-value x))))
+      (let ((run? nil))
+        (when (variable-possibly-noninteger-real? x)
+          (local (setf (variable-possibly-noninteger-real? x) nil))
+          (setf run? t))
+        (when (variable-possibly-boolean? x)
+          (local (setf (variable-possibly-boolean? x) nil))
+          (setf run? t))
+        (when (variable-possibly-nonboolean-nonnumber? x)
+          (local (setf (variable-possibly-nonboolean-nonnumber? x) nil))
+          (setf run? t))
+        (when (variable-possibly-nonreal-number? x)
+          (local (setf (variable-possibly-nonreal-number? x) nil))
+          (setf run? t))
+        (when (and (variable-lower-bound x)
+                   (not (rationalp (variable-lower-bound x))))
+           (let ((new-lower (if (variable-max-denom x) 
+                                (closest-rational-lower (variable-lower-bound x) (variable-max-denom x))
+                                (rationalize (variable-lower-bound x)))))
+            (if (and (variable-upper-bound x)
+                     (< (variable-upper-bound x) new-lower))
+                (fail))
+            (local (setf (variable-lower-bound x) new-lower))
+         (setf run? t)))
+        (when (and (variable-upper-bound x)
+                   (not (rationalp (variable-upper-bound x))))
+          (let ((new-upper (if (variable-max-denom x)
+                              (closest-rational-upper (variable-upper-bound x) (variable-max-denom x))
+                              (rationalize (variable-upper-bound x)))))
+            (if (and (variable-lower-bound x)
+                    (> (variable-lower-bound x) new-upper))
+                (fail))
+            (local (setf (variable-upper-bound x) new-upper))
+          (setf run? t)))
+        (when run?
+          (cond
+            ((eq (variable-enumerated-domain x) t)
+             (if (and (variable-lower-bound x)
+                      (variable-upper-bound x))
+                 (cond ((variable-integer? x)
+                         (when (or (null *maximum-discretization-range*)
+                                 (<= (- (variable-upper-bound x)
+                                        (variable-lower-bound x))
+                                  *maximum-discretization-range*))
+                             (set-enumerated-domain!
+                              x (integers-between
+                                (variable-lower-bound x)
+                                (variable-upper-bound x)))))
+                        ((and (variable-ratio? x)
+                              (variable-max-denom x))
+                        (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
+                                  (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x)))       
+                          (set-enumerated-domain!
+                            x (ratios-between (variable-lower-bound x)
+                                              (variable-upper-bound x)
+                                              (variable-max-denom x)))))
+                      ((and (variable-rational? x)
+                            (variable-max-denom x))
+                        (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
+                                  (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x)))
+                          (set-enumerated-domain!
+                          x (rationals-between (variable-lower-bound x)
+                                               (variable-upper-bound x)
+                                               (variable-max-denom x))))))))
+            ((not (every #'rationalp (variable-enumerated-domain x)))
+             (if (variable-max-denom x)
+                 (set-enumerated-domain!
+                  x (remove-if-not (lambda (element) (or (integerp element)
+                                                         (and (ratiop element)
+                                                              (<= (denominator element)
+                                                              (variable-max-denom x)))))
+                    (variable-enumerated-domain x)))
+                (set-enumerated-domain!
+                  x (remove-if-not #'rationalp (variable-enumerated-domain x))))))
+          (run-noticers x)))))
+
+(defun restrict-nonrational! (x)
+  ;; note: X must be a variable.
+  (declare (type variable x))
+  (unless (or (variable-possibly-noninteger-real? x)
+              (variable-possibly-nonreal-number? x)
+              (variable-possibly-boolean? x)
+              (variable-possibly-nonboolean-nonnumber? x))
+    (fail))
+  (if (or (eq (variable-value x) x) (not (variable? (variable-value x))))
+      (let ((run? nil))
+    (when (variable-possibly-integer? x)
+    (local (setf (variable-possibly-integer? x) nil))
+    (setf run? t))
+    (when (variable-possibly-noninteger-rational? x)
+    (local (setf (variable-possibly-noninteger-rational? x) nil))
+    (setf run? t))
+    (when run?
+    (if (and (not (eq (variable-enumerated-domain x) t))
+             (some #'rationalp (variable-enumerated-domain x)))
+        (set-enumerated-domain!
+         x (remove-if #'rationalp (variable-enumerated-domain x))))
+    (run-noticers x)))))
+
+(defun restrict-float! (x)
+  ;; note: X must be a variable.
+(declare (type variable x))
+(unless (variable-possibly-noninteger-real? x) (fail))
+  (if (or (eq (variable-value x) x) (not (variable? (variable-value x))))
+      (let ((run? nil))
+        (when (variable-possibly-integer? x)
+          (local (setf (variable-possibly-integer? x) nil))
+          (setf run? t))
+        (when (variable-possibly-noninteger-rational? x)
+          (local (setf (variable-possibly-noninteger-rational? x) nil))
+          (setf run? t))
+        (when (variable-possibly-nonreal-number? x)
+          (local (setf (variable-possibly-nonreal-number? x) nil))
+          (setf run? t))
+        (when (variable-possibly-boolean? x)  
+          (local (setf (variable-possibly-boolean? x) nil))
+          (setf run? t))
+        (when (variable-possibly-nonboolean-nonnumber? x)
+          (local (setf (variable-possibly-nonboolean-nonnumber? x) nil))
+          (setf run? t))
+        (when (and (variable-lower-bound x)
+              (not (floatp (variable-lower-bound x))))
+          (local (setf (variable-lower-bound x)
+                 (coerce (variable-lower-bound x) 'double-float)))
+          (setf run? t))
+        (when (and (variable-upper-bound x)
+             (not (floatp (variable-upper-bound x))))
+          (local (setf (variable-upper-bound x)
+                 (coerce (variable-upper-bound x) 'double-float)))
+          (setf run? t))
+        (when run?
+          (if (and (not (eq (variable-enumerated-domain x) t))
+                   (not (every #'floatp (variable-enumerated-domain x))))
+              (set-enumerated-domain!
+               x (remove-if-not #'floatp (variable-enumerated-domain x))))
+          (run-noticers x)))))
+
+(defun restrict-nonfloat! (x)
+  ;; note: X must be a variable.
+  (declare (type variable x))
+  (unless (or (variable-possibly-integer? x)
+              (variable-possibly-noninteger-rational? x)
+              (variable-possibly-nonreal-number? x)
+              (variable-possibly-boolean? x)
+              (variable-possibly-nonboolean-nonnumber? x))
+    (fail))
+  (when (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
+              (variable-possibly-noninteger-real? x))
+    (local (setf (variable-possibly-noninteger-real? x) nil))
+    (if (and (not (eq (variable-enumerated-domain x) t))
+              (some #'floatp (variable-enumerated-domain x)))
+        (set-enumerated-domain!
+          x (remove-if #'floatp (variable-enumerated-domain x))))
+    (run-noticers x)))
+
 (defun restrict-real! (x)
   ;; note: X must be a variable.
+  (declare (type variable x))
   (unless (or (variable-possibly-integer? x)
-              (variable-possibly-noninteger-real? x))
+              (variable-possibly-noninteger-real? x)
+              (variable-possibly-noninteger-rational? x))
     (fail))
   (if (or (eq (variable-value x) x) (not (variable? (variable-value x))))
       (let ((run? nil))
@@ -3515,14 +5886,13 @@ Otherwise returns the value of X."
         (when run?
           (if (and (not (eq (variable-enumerated-domain x) t))
                    (not (every #'realp (variable-enumerated-domain x))))
-              ;; note: Could do less consing if had LOCAL DELETE-IF.
-              ;;       This would also allow checking list only once.
               (set-enumerated-domain!
                x (remove-if-not #'realp (variable-enumerated-domain x))))
           (run-noticers x)))))
 
 (defun restrict-nonreal! (x)
   ;; note: X must be a variable.
+  (declare (type variable x))
   (unless (or (variable-possibly-nonreal-number? x)
               (variable-possibly-boolean? x)
               (variable-possibly-nonboolean-nonnumber? x))
@@ -3532,23 +5902,29 @@ Otherwise returns the value of X."
         (when (variable-possibly-integer? x)
           (local (setf (variable-possibly-integer? x) nil))
           (setf run? t))
+        (when (variable-possibly-noninteger-rational? x)
+          (local (setf (variable-possibly-noninteger-rational? x) nil))
+          (setf run? t))  
         (when (variable-possibly-noninteger-real? x)
           (local (setf (variable-possibly-noninteger-real? x) nil))
+          (setf run? t))
+        (when (variable-possibly-noninteger-rational? x)
+          (local (setf (variable-possibly-noninteger-rational? x) nil))
           (setf run? t))
         (when run?
           (if (and (not (eq (variable-enumerated-domain x) t))
                    (some #'realp (variable-enumerated-domain x)))
-              ;; note: Could do less consing if had LOCAL DELETE-IF.
-              ;;       This would also allow checking list only once.
               (set-enumerated-domain!
                x (remove-if #'realp (variable-enumerated-domain x))))
           (run-noticers x)))))
 
 (defun restrict-number! (x)
   ;; note: X must be a variable.
+  (declare (type variable x))
   (unless (or (variable-possibly-integer? x)
               (variable-possibly-noninteger-real? x)
-              (variable-possibly-nonreal-number? x))
+              (variable-possibly-nonreal-number? x)
+              (variable-possibly-noninteger-rational? x))
     (fail))
   (if (or (eq (variable-value x) x) (not (variable? (variable-value x))))
       (let ((run? nil))
@@ -3561,14 +5937,13 @@ Otherwise returns the value of X."
         (when run?
           (if (and (not (eq (variable-enumerated-domain x) t))
                    (not (every #'numberp (variable-enumerated-domain x))))
-              ;; note: Could do less consing if had LOCAL DELETE-IF.
-              ;;       This would also allow checking list only once.
               (set-enumerated-domain!
                x (remove-if-not #'numberp (variable-enumerated-domain x))))
           (run-noticers x)))))
 
 (defun restrict-nonnumber! (x)
   ;; note: X must be a variable.
+  (declare (type variable x))
   (unless (or (variable-possibly-boolean? x)
               (variable-possibly-nonboolean-nonnumber? x))
     (fail))
@@ -3576,6 +5951,9 @@ Otherwise returns the value of X."
       (let ((run? nil))
         (when (variable-possibly-integer? x)
           (local (setf (variable-possibly-integer? x) nil))
+          (setf run? t))
+        (when (variable-possibly-noninteger-rational? x)
+          (local (setf (variable-possibly-noninteger-rational? x) nil))
           (setf run? t))
         (when (variable-possibly-noninteger-real? x)
           (local (setf (variable-possibly-noninteger-real? x) nil))
@@ -3586,19 +5964,21 @@ Otherwise returns the value of X."
         (when run?
           (if (and (not (eq (variable-enumerated-domain x) t))
                    (some #'numberp (variable-enumerated-domain x)))
-              ;; note: Could do less consing if had LOCAL DELETE-IF.
-              ;;       This would also allow checking list only once.
               (set-enumerated-domain!
                x (remove-if #'numberp (variable-enumerated-domain x))))
           (run-noticers x)))))
 
 (defun restrict-boolean! (x)
   ;; note: X must be a variable.
+  (declare (type variable x))
   (unless (variable-possibly-boolean? x) (fail))
   (if (or (eq (variable-value x) x) (not (variable? (variable-value x))))
       (let ((run? nil))
         (when (variable-possibly-integer? x)
           (local (setf (variable-possibly-integer? x) nil))
+          (setf run? t))
+        (when (variable-possibly-noninteger-rational? x)
+          (local (setf (variable-possibly-noninteger-rational? x) nil))
           (setf run? t))
         (when (variable-possibly-noninteger-real? x)
           (local (setf (variable-possibly-noninteger-real? x) nil))
@@ -3608,6 +5988,9 @@ Otherwise returns the value of X."
           (setf run? t))
         (when (variable-possibly-nonboolean-nonnumber? x)
           (local (setf (variable-possibly-nonboolean-nonnumber? x) nil))
+          (setf run? t))
+        (when (variable-possibly-noninteger-rational? x)
+          (local (setf (variable-possibly-noninteger-rational? x) nil))
           (setf run? t))
         (when run?
           (cond
@@ -3628,39 +6011,49 @@ Otherwise returns the value of X."
                     (unless (null (variable-enumerated-antidomain x))
                       (setf (variable-enumerated-antidomain x) '()))))))
             ((not (every #'booleanp (variable-enumerated-domain x)))
-             ;; note: Could do less consing if had LOCAL DELETE-IF.
-             ;;       This would also allow checking list only once.
              (set-enumerated-domain!
               x (remove-if-not #'booleanp (variable-enumerated-domain x)))))
           (run-noticers x)))))
 
 (defun restrict-nonboolean! (x)
   ;; note: X must be a variable.
+  (declare (type variable x))
   (unless (or (variable-possibly-integer? x)
               (variable-possibly-noninteger-real? x)
               (variable-possibly-nonreal-number? x)
-              (variable-possibly-nonboolean-nonnumber? x))
+              (variable-possibly-nonboolean-nonnumber? x)
+              (variable-possibly-noninteger-rational? x))
     (fail))
   (when (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
              (variable-possibly-boolean? x))
     (local (setf (variable-possibly-boolean? x) nil))
     (cond ((eq (variable-enumerated-domain x) t)
            (local (setf (variable-enumerated-antidomain x)
-                        (adjoin t
-                                (adjoin nil (variable-enumerated-antidomain x)
-                                        :test #'eq)
-                                :test #'eq))))
+                             (adjoin t
+                                     (adjoin nil (variable-enumerated-antidomain x)
+                                             :test #'eq)
+                                     :test #'eq))))
           ((some #'booleanp (variable-enumerated-domain x))
-           ;; note: Could do less consing if had LOCAL DELETE-IF.
-           ;;       This would also allow checking list only once.
-           (set-enumerated-domain!
-            x (remove-if #'booleanp (variable-enumerated-domain x)))))
+          (set-enumerated-domain!
+           x (remove-if #'booleanp (variable-enumerated-domain x)))))
     (run-noticers x)))
 
 (defun restrict-lower-bound! (x lower-bound)
   ;; note: X must be a variable.
   ;; note: LOWER-BOUND must be a real constant.
-  (if (variable-integer? x) (setf lower-bound (ceiling lower-bound)))
+  (declare (type variable x))
+  (cond
+    ((variable-integer? x) (setf lower-bound (ceiling lower-bound)))
+    ((variable-ratio? x)
+     (if (variable-max-denom x)
+         (setf lower-bound (closest-ratio-lower lower-bound (variable-max-denom x)))
+         (setf lower-bound (rationalize lower-bound))))
+    ((variable-rational? x)
+     (if (variable-max-denom x)
+         (setf lower-bound (closest-rational-lower lower-bound (variable-max-denom x)))
+         (setf lower-bound (rationalize lower-bound))))
+  ((variable-float? x)
+    (setf lower-bound (coerce lower-bound 'double-float))))
   (when (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
              (or (not (variable-lower-bound x))
                  (> lower-bound (variable-lower-bound x))))
@@ -3668,70 +6061,151 @@ Otherwise returns the value of X."
         (fail))
     (when (or (not (variable-lower-bound x))
               (not (variable-upper-bound x))
+              ;; Note: shrink ratio heuristic only for float variables
+              (variable-nonfloat? x)
               (>= (/ (- lower-bound (variable-lower-bound x))
                      (- (variable-upper-bound x) (variable-lower-bound x)))
                   *minimum-shrink-ratio*))
       (local (setf (variable-lower-bound x) lower-bound))
-      (cond ((eq (variable-enumerated-domain x) t)
-             (if (and lower-bound
-                      (variable-upper-bound x)
-                      (variable-integer? x)
-                      (or (null *maximum-discretization-range*)
-                          (<= (- (variable-upper-bound x) lower-bound)
-                              *maximum-discretization-range*)))
-                 (set-enumerated-domain!
-                  x (integers-between lower-bound
-                                      (variable-upper-bound x)))))
-            ((some #'(lambda (element) (< element lower-bound))
+      (cond
+        ((eq (variable-enumerated-domain x) t)
+          (if (and lower-bound (variable-upper-bound x))
+         (cond
+           ((variable-integer? x)
+            (when (or (null *maximum-discretization-range*)
+              (<= (- (variable-upper-bound x) lower-bound)
+              *maximum-discretization-range*))
+          (set-enumerated-domain!
+           x (integers-between lower-bound (variable-upper-bound x)))))
+           ((and (variable-ratio? x)
+                    (variable-max-denom x))
+                (when (<= (- (variable-upper-bound x) lower-bound)
+                          (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x)))
+                  (set-enumerated-domain!
+                    x (ratios-between lower-bound (variable-upper-bound x) (variable-max-denom x)))))
+           ((and (variable-rational? x)
+                 (variable-max-denom x))
+             (if (<= (- (variable-upper-bound x) lower-bound)
+                     (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x)))
+              (set-enumerated-domain!
+               x (rationals-between lower-bound (variable-upper-bound x) (variable-max-denom x)))))
+          ((variable-real? x)
+           (cond
+             ((zerop (- (variable-upper-bound x) (variable-lower-bound x)))
+              (set-enumerated-domain! x (list (variable-lower-bound x))))
+             ((and *max-denom*
+                   *maximum-discretization-range*
+                   (rationalp (variable-lower-bound x))
+                   (rationalp (variable-upper-bound x))
+                   (<= (- (variable-upper-bound x) (variable-lower-bound x))
+                       (safest-farey-range-size *maximum-discretization-range* *max-denom*)))
+              (set-enumerated-domain!
+                x (rationals-between (variable-lower-bound x)
+                                     (variable-upper-bound x)
+                                     *max-denom*))))))))
+         ((some #'(lambda (element) (< element lower-bound))
                    (variable-enumerated-domain x))
-             ;; note: Could do less consing if had LOCAL DELETE-IF.
-             ;;       This would also allow checking list only once.
              (set-enumerated-domain!
               x (remove-if #'(lambda (element) (< element lower-bound))
                            (variable-enumerated-domain x)))))
       (run-noticers x))))
 
 (defun restrict-upper-bound! (x upper-bound)
-  ;; note: X must be a variable.
-  ;; note: UPPER-BOUND must be a real constant.
-  (when (variable-integer? x)
+;; note: X must be a variable.
+;; note: UPPER-BOUND must be a real constant.
+(declare (type variable x))
+(cond
+  ((variable-integer? x)
     (setf upper-bound (floor upper-bound)))
-  (when (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
-             (or (not (variable-upper-bound x))
-                 (< upper-bound (variable-upper-bound x))))
-    (when (and (variable-lower-bound x) (> (variable-lower-bound x) upper-bound))
-      (fail))
-    (when (or (not (variable-lower-bound x))
-              (not (variable-upper-bound x))
-              (>= (/ (- (variable-upper-bound x) upper-bound)
-                     (- (variable-upper-bound x) (variable-lower-bound x)))
-                  *minimum-shrink-ratio*))
-      (local (setf (variable-upper-bound x) upper-bound))
-      (cond ((eq (variable-enumerated-domain x) t)
-             (when (and (variable-lower-bound x)
-                        upper-bound
-                        (variable-integer? x)
-                        (or (null *maximum-discretization-range*)
-                            (<= (- upper-bound (variable-lower-bound x))
-                                *maximum-discretization-range*)))
-               (set-enumerated-domain!
-                x (integers-between (variable-lower-bound x)
-                                    upper-bound))))
-            ((some #'(lambda (element) (> element upper-bound))
-                   (variable-enumerated-domain x))
-             ;; note: Could do less consing if had LOCAL DELETE-IF.
-             ;;       This would also allow checking list only once.
-             (set-enumerated-domain!
-              x (remove-if #'(lambda (element) (> element upper-bound))
-                           (variable-enumerated-domain x)))))
-      (run-noticers x))))
+  ((variable-ratio? x)
+  (if (variable-max-denom x)
+      (setf upper-bound (closest-ratio-upper upper-bound (variable-max-denom x)))
+      (setf upper-bound (rationalize upper-bound))))
+  ((variable-rational? x)
+    (if (variable-max-denom x)
+        (setf upper-bound (closest-rational-upper upper-bound (variable-max-denom x)))
+        (setf upper-bound (rationalize upper-bound))))
+  ((variable-float? x)
+    (setf upper-bound (coerce upper-bound 'double-float))))
+(when (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
+            (or (not (variable-upper-bound x))
+                (< upper-bound (variable-upper-bound x))))
+  (when (and (variable-lower-bound x) (> (variable-lower-bound x) upper-bound))
+    (fail))
+  (when (or (not (variable-lower-bound x))
+            (not (variable-upper-bound x))
+            ;; Note: shrink ratio heuristic only for float variables
+            (variable-nonfloat? x)
+            (>= (/ (- (variable-upper-bound x) upper-bound)
+                   (- (variable-upper-bound x) (variable-lower-bound x)))
+                *minimum-shrink-ratio*))
+    (local (setf (variable-upper-bound x) upper-bound))
+    (cond
+      ((eq (variable-enumerated-domain x) t)
+        (if (and (variable-lower-bound x) upper-bound)
+            (cond
+              ((variable-integer? x)
+              (when (or (null *maximum-discretization-range*)
+                        (<= (- upper-bound (variable-lower-bound x))
+                            *maximum-discretization-range*))
+                (set-enumerated-domain!
+                  x (integers-between (variable-lower-bound x) upper-bound))))
+              ((and (variable-ratio? x)
+                    (variable-max-denom x))
+                (if (<= (- upper-bound (variable-lower-bound x))
+                          (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x)))
+                  (set-enumerated-domain!
+                    x (ratios-between (variable-lower-bound x) upper-bound (variable-max-denom x)))))
+              ((and (variable-rational? x)
+                    (variable-max-denom x))
+                (if (<= (- upper-bound (variable-lower-bound x))
+                          (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x)))
+                  (set-enumerated-domain!
+                    x (rationals-between (variable-lower-bound x) upper-bound (variable-max-denom x)))))
+              ((variable-real? x)
+               (cond
+                 ((zerop (- (variable-upper-bound x) (variable-lower-bound x)))
+                  (set-enumerated-domain! x (list (variable-lower-bound x))))
+                 ((and *max-denom*
+                       *maximum-discretization-range*
+                       (rationalp (variable-lower-bound x))
+                       (rationalp (variable-upper-bound x))
+                       (<= (- (variable-upper-bound x) (variable-lower-bound x))
+                           (safest-farey-range-size *maximum-discretization-range* *max-denom*)))
+                  (set-enumerated-domain!
+                    x (rationals-between (variable-lower-bound x)
+                                         (variable-upper-bound x)
+                                         *max-denom*))))))))
+      ((some #'(lambda (element) (> element upper-bound))
+              (variable-enumerated-domain x))
+        (set-enumerated-domain!
+        x (remove-if #'(lambda (element) (> element upper-bound))
+                      (variable-enumerated-domain x)))))
+    (run-noticers x))))
 
 (defun restrict-bounds! (x lower-bound upper-bound)
   ;; note: X must be a variable.
   ;; note: LOWER-BOUND and UPPER-BOUND must be real constants.
-  (when (variable-integer? x)
-    (if lower-bound (setf lower-bound (ceiling lower-bound)))
-    (if upper-bound (setf upper-bound (floor upper-bound))))
+  (declare (type variable x))
+  (cond
+    ((variable-integer? x)
+     (when lower-bound (setf lower-bound (ceiling lower-bound)))
+     (when upper-bound (setf upper-bound (floor upper-bound))))
+    ((variable-ratio? x)
+      (cond ((variable-max-denom x)
+            (when lower-bound (setf lower-bound (closest-ratio-lower lower-bound (variable-max-denom x))))
+            (when upper-bound (setf upper-bound (closest-ratio-upper upper-bound (variable-max-denom x)))))
+            (t (when lower-bound (setf lower-bound (rationalize lower-bound)))
+              (when upper-bound (setf upper-bound (rationalize upper-bound))))))
+    ((variable-rational? x)
+      (cond ((variable-max-denom x)
+            (when lower-bound (setf lower-bound (closest-rational-lower lower-bound (variable-max-denom x))))
+            (when upper-bound (setf upper-bound (closest-rational-upper upper-bound (variable-max-denom x)))))
+          (t (when lower-bound (setf lower-bound (rationalize lower-bound)))
+             (when upper-bound (setf upper-bound (rationalize upper-bound))))))
+     ((variable-float? x)
+      (when lower-bound (setf lower-bound (coerce lower-bound 'double-float)))
+      (when upper-bound (setf upper-bound (coerce upper-bound 'double-float)))))
   (if (or (eq (variable-value x) x) (not (variable? (variable-value x))))
       (let ((run? nil))
         (when (and lower-bound
@@ -3742,9 +6216,11 @@ Otherwise returns the value of X."
               (fail))
           (when (or (not (variable-lower-bound x))
                     (not (variable-upper-bound x))
+                    ;; Note: shrink ratio heuristic only for float variables
+                    (variable-nonfloat? x)
                     (>= (/ (- lower-bound (variable-lower-bound x))
                            (- (variable-upper-bound x) (variable-lower-bound x)))
-                        *minimum-shrink-ratio*))
+                    *minimum-shrink-ratio*))
             (local (setf (variable-lower-bound x) lower-bound))
             (setf run? t)))
         (when (and upper-bound
@@ -3755,32 +6231,62 @@ Otherwise returns the value of X."
               (fail))
           (when (or (not (variable-lower-bound x))
                     (not (variable-upper-bound x))
+                    ;; Note: shrink ratio heuristic only for float variables
+                    (variable-nonfloat? x) 
                     (>= (/ (- (variable-upper-bound x) upper-bound)
                            (- (variable-upper-bound x) (variable-lower-bound x)))
-                        *minimum-shrink-ratio*))
+                    *minimum-shrink-ratio*))
             (local (setf (variable-upper-bound x) upper-bound))
             (setf run? t)))
         (when run?
           (cond ((eq (variable-enumerated-domain x) t)
                  (if (and (variable-lower-bound x)
-                          (variable-upper-bound x)
-                          (variable-integer? x)
-                          (or (null *maximum-discretization-range*)
-                              (<= (- (variable-upper-bound x)
-                                     (variable-lower-bound x))
-                                  *maximum-discretization-range*)))
-                     (set-enumerated-domain!
-                      x (integers-between
-                         (variable-lower-bound x)
-                         (variable-upper-bound x)))))
+                          (variable-upper-bound x))
+                  (cond ((variable-integer? x)
+                         (when (or (null *maximum-discretization-range*)
+                                 (<= (- (variable-upper-bound x)
+                                        (variable-lower-bound x))
+                                  *maximum-discretization-range*))
+                             (set-enumerated-domain!
+                              x (integers-between
+                                (variable-lower-bound x)
+                                (variable-upper-bound x)))))
+                        ((and (variable-ratio? x)
+                              (variable-max-denom x))
+                        (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
+                                  (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x)))       
+                          (set-enumerated-domain!
+                            x (ratios-between (variable-lower-bound x)
+                                              (variable-upper-bound x)
+                                              (variable-max-denom x)))))
+                      ((and (variable-rational? x)
+                            (variable-max-denom x))
+                        (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
+                                  (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x)))      
+                          (set-enumerated-domain!
+                          x (rationals-between (variable-lower-bound x)
+                                               (variable-upper-bound x)
+                                               (variable-max-denom x)))))
+                      ((variable-real? x)
+                        (cond
+                          ((zerop (- (variable-upper-bound x) (variable-lower-bound x)))
+                           (set-enumerated-domain! x (list (variable-lower-bound x))))
+                          ((and *max-denom*
+                                *maximum-discretization-range*
+                                (rationalp (variable-lower-bound x))
+                                (rationalp (variable-upper-bound x))
+                                (<= (- (variable-upper-bound x) (variable-lower-bound x))
+                                    (safest-farey-range-size *maximum-discretization-range* *max-denom*)))
+                           (set-enumerated-domain!
+                             x (rationals-between (variable-lower-bound x)
+                                                  (variable-upper-bound x)
+                                                  *max-denom*))))))))
                 ((or (and lower-bound
                           (some #'(lambda (element) (< element lower-bound))
                                 (variable-enumerated-domain x)))
                      (and upper-bound
                           (some #'(lambda (element) (> element upper-bound))
                                 (variable-enumerated-domain x))))
-                 ;; note: Could do less consing if had LOCAL DELETE-IF.
-                 ;;       This would also allow checking list only once.
                  (set-enumerated-domain!
                   x (remove-if #'(lambda (element)
                                    (or (and lower-bound (< element lower-bound))
@@ -3791,11 +6297,16 @@ Otherwise returns the value of X."
 (defun prune-enumerated-domain (x &optional (enumerated-domain (variable-enumerated-domain x)))
   ;; Returns an enumerated domain from which elements what violate
   ;; restrictions on X have been removed.
+  (declare (type variable x))
   (remove-if-not (lambda (elt)
                    (cond ((numberp elt)
                           (if (realp elt)
                               (when (cond ((integerp elt)
                                            (variable-possibly-integer? x))
+                                           ((ratiop elt)
+                                            (and (variable-possibly-noninteger-rational? x)
+                                                  (or (not (variable-max-denom x))
+                                                      (<= (denominator elt) (variable-max-denom x)))))
                                           (t
                                            (variable-possibly-noninteger-real? x)))
                                 (let ((low (variable-lower-bound x))
@@ -3817,6 +6328,8 @@ Otherwise returns the value of X."
 (defun share! (x y)
   ;; note: X and Y must be variables such that (EQ X (VALUE-OF X)) and
   ;;       (EQ Y (VALUE-OF Y)).
+  (declare (type variable x)
+           (type variable y))
   (let ((run? nil)
         (y-lower-bound? nil)
         (y-upper-bound? nil)
@@ -3825,19 +6338,108 @@ Otherwise returns the value of X."
         (y-lower-bound (variable-lower-bound y))
         (y-upper-bound (variable-upper-bound y)))
     ;; Apply all restrictions from X to Y.
-    (cond ((and (variable-integer? y) (not (variable-integer? x)))
-           (if x-lower-bound (setf x-lower-bound (ceiling x-lower-bound)))
-           (if x-upper-bound (setf x-upper-bound (floor x-upper-bound))))
-          ((and (not (variable-integer? y)) (variable-integer? x))
-           (when (and y-lower-bound (not (integerp y-lower-bound)))
-             (setf y-lower-bound (ceiling y-lower-bound))
-             (setf y-lower-bound? t))
-           (when (and y-upper-bound (not (integerp y-upper-bound)))
-             (setf y-upper-bound (floor y-upper-bound))
-             (setf y-upper-bound? t))))
+(cond
+ ;; If y is integer and x is not integer, prune x's bounds to integers
+ ((and (variable-integer? y) (not (variable-integer? x)))
+  (when x-lower-bound
+    (setf x-lower-bound (ceiling x-lower-bound)))
+  (when x-upper-bound
+    (setf x-upper-bound (floor x-upper-bound))))
+ ;; If y is noninteger-rational and x is nonratio, prune x's bounds to ratios
+ ((and (variable-ratio? y) (variable-nonratio? x))
+  (cond
+    ((null (variable-max-denom x))
+     (when x-lower-bound
+       (setf x-lower-bound (rationalize x-lower-bound)))
+     (when x-upper-bound
+       (setf x-upper-bound (rationalize x-upper-bound))))
+    ((variable-max-denom x)
+     (when x-lower-bound
+       (setf x-lower-bound (closest-ratio-lower x-lower-bound (variable-max-denom x))))
+     (when x-upper-bound
+       (setf x-upper-bound (closest-ratio-upper x-upper-bound (variable-max-denom x)))))))
+ ;; If y is rational and x is nonrational, prune x's bounds to rationals
+ ((and (variable-rational? y) (variable-nonrational? x))
+  (cond
+    ((null (variable-max-denom x))
+     (when x-lower-bound
+       (setf x-lower-bound (rationalize x-lower-bound)))
+     (when x-upper-bound
+       (setf x-upper-bound (rationalize x-upper-bound))))
+    ((variable-max-denom x)
+     (when x-lower-bound
+       (setf x-lower-bound (closest-rational-lower x-lower-bound (variable-max-denom x))))
+     (when x-upper-bound
+       (setf x-upper-bound (closest-rational-upper x-upper-bound (variable-max-denom x)))))))
+ ;; If y is not integer and x is integer, prune y's bounds to integers
+ ((and (not (variable-integer? y)) (variable-integer? x))
+  (when (and y-lower-bound (not (integerp y-lower-bound)))
+    (setf y-lower-bound (ceiling y-lower-bound))
+    (setf y-lower-bound? t))
+  (when (and y-upper-bound (not (integerp y-upper-bound)))
+    (setf y-upper-bound (floor y-upper-bound))
+    (setf y-upper-bound? t)))
+ ;; If y is nonratio and x is noninteger-rational, prune y's bounds to ratios
+ ((and (variable-nonratio? y) (variable-ratio? x))
+  (cond
+    ((null (variable-max-denom x))
+     (when y-lower-bound
+       (setf y-lower-bound (rationalize y-lower-bound))
+       (setf y-lower-bound? t))
+     (when y-upper-bound
+       (setf y-upper-bound (rationalize y-upper-bound))
+       (setf y-upper-bound? t)))
+    ((variable-max-denom x)
+     (when y-lower-bound
+       (setf y-lower-bound (closest-ratio-lower y-lower-bound (variable-max-denom x)))
+       (setf y-lower-bound? t))
+     (when y-upper-bound
+       (setf y-upper-bound (closest-ratio-upper y-upper-bound (variable-max-denom x)))
+       (setf y-upper-bound? t)))))
+ ;; If y is nonrational and x is rational, prune y's bounds to rationals
+ ((and (variable-nonrational? y) (variable-rational? x))
+  (cond
+    ((null (variable-max-denom x))
+     (when y-lower-bound
+       (setf y-lower-bound (rationalize y-lower-bound))
+       (setf y-lower-bound? t))
+     (when y-upper-bound
+       (setf y-upper-bound (rationalize y-upper-bound))
+       (setf y-upper-bound? t)))
+    ((variable-max-denom x)
+     (when y-lower-bound
+       (setf y-lower-bound (closest-rational-lower y-lower-bound (variable-max-denom x)))
+       (setf y-lower-bound? t))
+     (when y-upper-bound
+       (setf y-upper-bound (closest-rational-upper y-upper-bound (variable-max-denom x)))
+       (setf y-upper-bound? t)))))
+ ;; If both x and y are rational, use the minimum max-denom for both
+ ((and (variable-rational? x) (variable-rational? y))
+  (let ((min-denom (cond ((variable-max-denom x)
+                           (if (variable-max-denom y)
+                               (min (variable-max-denom x) (variable-max-denom y))
+                               (variable-max-denom x)))
+                          ((variable-max-denom y) (variable-max-denom y)))))
+    (when min-denom
+      (when x-lower-bound
+        (setf x-lower-bound (closest-rational-lower x-lower-bound min-denom)))
+      (when x-upper-bound
+        (setf x-upper-bound (closest-rational-upper x-upper-bound min-denom)))
+      (when y-lower-bound
+        (setf y-lower-bound (closest-rational-lower y-lower-bound min-denom))
+        (setf y-lower-bound? t))
+      (when y-upper-bound
+        (setf y-upper-bound (closest-rational-upper y-upper-bound min-denom))
+        (setf y-upper-bound? t))
+      (local (setf (variable-max-denom x) min-denom))
+      (local (setf (variable-max-denom y) min-denom))))))
     (when (and (not (variable-possibly-integer? x))
                (variable-possibly-integer? y))
       (local (setf (variable-possibly-integer? y) nil))
+      (setf run? t))
+    (when (and (not (variable-possibly-noninteger-rational? x))
+               (variable-possibly-noninteger-rational? y))
+      (local (setf (variable-possibly-noninteger-rational? y) nil))
       (setf run? t))
     (when (and (not (variable-possibly-noninteger-real? x))
                (variable-possibly-noninteger-real? y))
@@ -3856,6 +6458,7 @@ Otherwise returns the value of X."
       (local (setf (variable-possibly-nonboolean-nonnumber? y) nil))
       (setf run? t))
     (unless (or (variable-possibly-integer? y)
+                (variable-possibly-noninteger-rational? y)
                 (variable-possibly-noninteger-real? y)
                 (variable-possibly-nonreal-number? y)
                 (variable-possibly-boolean? y)
@@ -3880,74 +6483,95 @@ Otherwise returns the value of X."
                 (< (variable-lower-bound y) (variable-upper-bound y)))
       (fail))
     (when run?
-      ;; Something has changed: update enumerated domain of Y.
+      ;; Something has changed: update enumerated domain of Y.    
       (let ((lower-bound (variable-lower-bound y))
             (upper-bound (variable-upper-bound y)))
-        (if (eq (variable-enumerated-domain y) t)
-            (if (and lower-bound
-                     upper-bound
-                     (variable-integer? y)
-                     (or (null *maximum-discretization-range*)
-                         (<= (- upper-bound lower-bound)
-                             *maximum-discretization-range*)))
-                (set-enumerated-domain!
-                 y (integers-between lower-bound upper-bound)))
+      (if (eq (variable-enumerated-domain y) t)
+          ;; The case where Y does not have a enumerated-domain
+          (cond
+            ((and lower-bound
+              upper-bound
+              (variable-integer? y))
+              (if (or (null *maximum-discretization-range*)
+                (<= (- upper-bound lower-bound)
+                  *maximum-discretization-range*))
             (set-enumerated-domain!
-             y (prune-enumerated-domain y (variable-enumerated-domain y))))))
-    (local (let* ((enumerated-domain
-                    (cond
-                      ((eq (variable-enumerated-domain x) t)
-                       (if (eq (variable-enumerated-domain y) t)
-                           t
-                           (set-difference (variable-enumerated-domain y)
-                                           (variable-enumerated-antidomain x)
-                                           :test #'equal)))
-                      ((eq (variable-enumerated-domain y) t)
-                       (set-difference (variable-enumerated-domain x)
-                                       (variable-enumerated-antidomain y)
-                                       :test #'equal))
-                      (t (intersection (variable-enumerated-domain x)
-                                       (variable-enumerated-domain y)
-                                       :test #'equal))))
-                  (enumerated-antidomain
-                    (if (eq enumerated-domain t)
-                        (union (variable-enumerated-antidomain x)
-                               (variable-enumerated-antidomain y)
-                               :test #'equal)
-                        '())))
-             (if (null enumerated-domain) (fail))
-             (if (and (not (eq enumerated-domain t))
-                      (or (eq (variable-enumerated-domain y) t)
-                          (< (length enumerated-domain)
-                             (length (variable-enumerated-domain y)))))
-                 (set-enumerated-domain!
-                  y (prune-enumerated-domain y enumerated-domain)))
-             (if (if (eq enumerated-domain t)
-                     (> (length enumerated-antidomain)
-                        (length (variable-enumerated-antidomain y)))
-                     (not (null (variable-enumerated-antidomain y))))
-                 (setf (variable-enumerated-antidomain y) enumerated-antidomain)))
+            y (integers-between lower-bound upper-bound))))
+            ((and lower-bound
+              upper-bound
+              (variable-ratio? y)
+              (and (variable-max-denom y)
+                   (<= (- upper-bound lower-bound)
+                       (safest-farey-range-size *maximum-discretization-range* (variable-max-denom y)))))
+            (set-enumerated-domain!
+            y (ratios-between lower-bound upper-bound (variable-max-denom y))))
+            ((and lower-bound
+              upper-bound
+              (variable-rational? y)
+              (and (variable-max-denom y)
+                   (<= (- upper-bound lower-bound)
+                       (safest-farey-range-size *maximum-discretization-range* (variable-max-denom y)))))
+            (set-enumerated-domain!
+            y (rationals-between lower-bound upper-bound (variable-max-denom y)))))
+            ;; The case where Y has a enumerated-domain
+            (set-enumerated-domain!
+            y (prune-enumerated-domain y (variable-enumerated-domain y))))))
+          (local (let* ((enumerated-domain
+                         (cond
+                           ((eq (variable-enumerated-domain x) t)
+                            (if (eq (variable-enumerated-domain y) t)
+                                t
+                                (set-difference (variable-enumerated-domain y)
+                                                (variable-enumerated-antidomain x)
+                                                :test #'generic-equal)))
+                           ((eq (variable-enumerated-domain y) t)
+                            (set-difference (variable-enumerated-domain x)
+                                            (variable-enumerated-antidomain y)
+                                            :test #'generic-equal))
+                           (t (intersection (variable-enumerated-domain x)
+                                            (variable-enumerated-domain y)
+                                            :test #'generic-equal))))
+                        (enumerated-antidomain
+                         (if (eq enumerated-domain t)
+                             (union (variable-enumerated-antidomain x)
+                                    (variable-enumerated-antidomain y)
+                                    :test #'generic-equal)
+                             '())))
+                 (if (null enumerated-domain) (fail))
+                 (if (and (not (eq enumerated-domain t))
+                          (or (eq (variable-enumerated-domain y) t)
+                              (< (length enumerated-domain)
+                                 (length (variable-enumerated-domain y)))))
+                     (set-enumerated-domain!
+                      y (prune-enumerated-domain y enumerated-domain)))
+                 (if (if (eq enumerated-domain t)
+                         (> (length enumerated-antidomain)
+                            (length (variable-enumerated-antidomain y)))
+                         (not (null (variable-enumerated-antidomain y))))
+                     (setf (variable-enumerated-antidomain y) enumerated-antidomain)))
       (setf (variable-noticers y)
             (append (variable-noticers y) (variable-noticers x)))
       (setf (variable-noticers x) '())
-      (setf (variable-value x) y))
-    (run-noticers y)))
+      (setf (variable-value x) y)))
+    (run-noticers y))
 
 (defun restrict-value! (x value)
   ;; note: X must be a variable such that (EQ X (VALUE-OF X)).
   ;; note: VALUE must not be a variable.
+  (declare (type variable x))
   (if (occurs-in? x value) (fail))
   (typecase value
     (integer (unless (variable-possibly-integer? x) (fail)))
-    (real (unless (variable-possibly-noninteger-real? x) (fail)))
+    (ratio (unless (variable-possibly-noninteger-rational? x) (fail)))
+    (float (unless (variable-possibly-noninteger-real? x) (fail)))
     (number (unless (variable-possibly-nonreal-number? x) (fail)))
     (boolean (unless (variable-possibly-boolean? x) (fail)))
     (otherwise (unless (variable-possibly-nonboolean-nonnumber? x) (fail))))
   ;; needs work: This is sound only if VALUE does not contain any variables.
   (if (eq (variable-enumerated-domain x) t)
-      (if (member value (variable-enumerated-antidomain x) :test #'equal)
+      (if (member value (variable-enumerated-antidomain x) :test #'generic-equal)
           (fail))
-      (unless (member value (variable-enumerated-domain x) :test #'equal)
+      (unless (member value (variable-enumerated-domain x) :test #'generic-equal)
         (fail)))
   (if (and (realp value)
            (or (and (variable-lower-bound x)
@@ -3955,10 +6579,16 @@ Otherwise returns the value of X."
                (and (variable-upper-bound x)
                     (> value (variable-upper-bound x)))))
       (fail))
+  (if (and (ratiop value)
+           (variable-max-denom x) 
+           (> (denominator value) (variable-max-denom x)))
+      (fail))
   (local (setf (variable-value x) value)
          (typecase value
-           (integer (if (variable-possibly-noninteger-real? x)
-                        (setf (variable-possibly-noninteger-real? x) nil))
+           (integer (if (variable-possibly-noninteger-rational? x)
+                        (setf (variable-possibly-noninteger-rational? x) nil))
+                    (if (variable-possibly-noninteger-real? x)
+                        (setf (variable-possibly-noninteger-real? x) nil))                        
                     (if (variable-possibly-nonreal-number? x)
                         (setf (variable-possibly-nonreal-number? x) nil))
                     (if (variable-possibly-boolean? x)
@@ -3972,45 +6602,83 @@ Otherwise returns the value of X."
                     (if (or (null (variable-upper-bound x))
                             (not (integerp (variable-upper-bound x)))
                             (< value (variable-upper-bound x)))
-                        (setf (variable-upper-bound x) value)))
-           (real (if (variable-possibly-integer? x)
-                     (setf (variable-possibly-integer? x) nil))
-                 (if (variable-possibly-nonreal-number? x)
-                     (setf (variable-possibly-nonreal-number? x) nil))
-                 (if (variable-possibly-boolean? x)
-                     (setf (variable-possibly-boolean? x) nil))
-                 (if (variable-possibly-nonboolean-nonnumber? x)
-                     (setf (variable-possibly-nonboolean-nonnumber? x) nil))
-                 (if (or (null (variable-lower-bound x))
+                        (setf (variable-upper-bound x) value))
+                    (if (or (null (variable-max-denom x))
+                            (> (variable-max-denom x) 1))
+                        (setf (variable-max-denom x) 1)))
+            (ratio  (if (variable-possibly-integer? x)
+                        (setf (variable-possibly-integer? x) nil))
+                     (if (variable-possibly-noninteger-real? x)
+                        (setf (variable-possibly-noninteger-real? x) nil))  
+                     (if (variable-possibly-nonreal-number? x)
+                       (setf (variable-possibly-nonreal-number? x) nil))
+                     (if (variable-possibly-boolean? x)
+                       (setf (variable-possibly-boolean? x) nil))
+                     (if (variable-possibly-nonboolean-nonnumber? x)
+                       (setf (variable-possibly-nonboolean-nonnumber? x) nil))
+                     (if (or (null (variable-lower-bound x))
                          (> value (variable-lower-bound x)))
-                     (setf (variable-lower-bound x) value))
-                 (if (or (null (variable-upper-bound x))
+                       (setf (variable-lower-bound x) value))
+                     (if (or (null (variable-upper-bound x))
                          (< value (variable-upper-bound x)))
-                     (setf (variable-upper-bound x) value)))
+                       (setf (variable-upper-bound x) value))
+                      (if (or (null (variable-max-denom x))
+                              (< (denominator value) (variable-max-denom x)))
+                       (setf (variable-max-denom x) (denominator value))))
+           (float (if (variable-possibly-integer? x)
+                     (setf (variable-possibly-integer? x) nil))
+                  (if (variable-possibly-noninteger-rational? x)
+                      (setf (variable-possibly-noninteger-rational? x) nil))
+                  (if (variable-possibly-nonreal-number? x)
+                      (setf (variable-possibly-nonreal-number? x) nil))
+                  (if (variable-possibly-boolean? x)
+                      (setf (variable-possibly-boolean? x) nil))
+                  (if (variable-possibly-nonboolean-nonnumber? x)
+                      (setf (variable-possibly-nonboolean-nonnumber? x) nil))
+                  (if (or (null (variable-lower-bound x))
+                          (> value (variable-lower-bound x)))
+                      (setf (variable-lower-bound x) value))
+                  (if (or (null (variable-upper-bound x))
+                          (< value (variable-upper-bound x)))
+                      (setf (variable-upper-bound x) value))
+                  (if (variable-max-denom x)
+                     (setf (variable-max-denom x) nil)))
            (number (if (variable-possibly-integer? x)
                        (setf (variable-possibly-integer? x) nil))
+                   (if (variable-possibly-noninteger-rational? x)
+                        (setf (variable-possibly-noninteger-rational? x) nil))    
                    (if (variable-possibly-noninteger-real? x)
                        (setf (variable-possibly-noninteger-real? x) nil))
                    (if (variable-possibly-boolean? x)
                        (setf (variable-possibly-boolean? x) nil))
                    (if (variable-possibly-nonboolean-nonnumber? x)
-                       (setf (variable-possibly-nonboolean-nonnumber? x) nil)))
+                       (setf (variable-possibly-nonboolean-nonnumber? x) nil))
+                   (if (variable-max-denom x)
+                       (setf (variable-max-denom x) nil)))
            (boolean (if (variable-possibly-integer? x)
                         (setf (variable-possibly-integer? x) nil))
+                    (if (variable-possibly-noninteger-rational? x)
+                        (setf (variable-possibly-noninteger-rational? x) nil))
                     (if (variable-possibly-noninteger-real? x)
                         (setf (variable-possibly-noninteger-real? x) nil))
                     (if (variable-possibly-nonreal-number? x)
                         (setf (variable-possibly-nonreal-number? x) nil))
                     (if (variable-possibly-nonboolean-nonnumber? x)
-                        (setf (variable-possibly-nonboolean-nonnumber? x) nil)))
+                        (setf (variable-possibly-nonboolean-nonnumber? x) nil))
+                    (if (variable-max-denom x)
+                        (setf (variable-max-denom x) nil)))
            (otherwise (if (variable-possibly-integer? x)
                           (setf (variable-possibly-integer? x) nil))
+                      (if (variable-possibly-noninteger-rational? x)
+                        (setf (variable-possibly-noninteger-rational? x) nil))
                       (if (variable-possibly-noninteger-real? x)
                           (setf (variable-possibly-noninteger-real? x) nil))
                       (if (variable-possibly-nonreal-number? x)
                           (setf (variable-possibly-nonreal-number? x) nil))
                       (if (variable-possibly-boolean? x)
-                          (setf (variable-possibly-boolean? x) nil))))
+                          (setf (variable-possibly-boolean? x) nil))
+                      (if (variable-max-denom x)
+                          (setf (variable-max-denom x) nil))))
          (cond ((eq (variable-enumerated-domain x) t)
                 ;; needs work: This is sound only if VALUE does not contain any
                 ;;             variables.
@@ -4024,6 +6692,7 @@ Otherwise returns the value of X."
 
 (defun restrict-true! (x)
   ;; note: X must be a Boolean variable.
+  (declare (type variable x))
   (if (eq (variable-value x) nil) (fail))
   (when (eq (variable-value x) x)
     (local (setf (variable-value x) t)
@@ -4032,6 +6701,7 @@ Otherwise returns the value of X."
 
 (defun restrict-false! (x)
   ;; note: X must be a Boolean variable.
+  (declare (type variable x))
   (if (eq (variable-value x) t) (fail))
   (when (eq (variable-value x) x)
     (local (setf (variable-value x) nil)
@@ -4042,7 +6712,10 @@ Otherwise returns the value of X."
   ;; note: X must be a variable such that (EQ X (VALUE-OF X)).
   ;; note: All callers must insure that the new ENUMERATED-DOMAIN is a subset
   ;;       of the old one.
-  (if (null enumerated-domain) (fail))
+  (declare (type variable x)
+           (type sequence enumerated-domain))
+ (if (null enumerated-domain) (fail))
+  (the boolean
   (local
     (cond
       ((eq (variable-enumerated-domain x) t)
@@ -4062,9 +6735,11 @@ Otherwise returns the value of X."
                            enumerated-domain)))
            (setf (variable-possibly-nonreal-number? x) nil))
        (if (and (variable-possibly-noninteger-real? x)
-                (not (some #'(lambda (x) (and (not (integerp x)) (realp x)))
-                           enumerated-domain)))
-           (setf (variable-possibly-noninteger-real? x) nil))
+                (not (some #'floatp  enumerated-domain)))
+          (setf (variable-possibly-noninteger-real? x) nil))
+      (if (and (variable-possibly-noninteger-rational? x)
+               (not (some #'ratiop enumerated-domain)))
+          (setf (variable-possibly-noninteger-rational? x) nil))
        (if (and (variable-possibly-integer? x)
                 (not (some #'integerp enumerated-domain)))
            (setf (variable-possibly-integer? x) nil))
@@ -4077,6 +6752,14 @@ Otherwise returns the value of X."
              (if (or (null (variable-upper-bound x))
                      (< upper-bound (variable-upper-bound x)))
                  (setf (variable-upper-bound x) upper-bound))))
+      (if (and (or (variable-possibly-noninteger-rational? x)
+                   (variable-possibly-integer? x))
+               (some #'rationalp enumerated-domain))
+         (let ((max-denom-in-domain
+                (reduce #'max
+                        (remove-if-not #'rationalp enumerated-domain)
+                        :key #'denominator)))
+           (setf (variable-max-denom x) max-denom-in-domain)))
        (if (null (rest enumerated-domain))
            (setf (variable-value x) (first enumerated-domain)))
        t)
@@ -4095,9 +6778,11 @@ Otherwise returns the value of X."
                            enumerated-domain)))
            (setf (variable-possibly-nonreal-number? x) nil))
        (if (and (variable-possibly-noninteger-real? x)
-                (not (some #'(lambda (x) (and (not (integerp x)) (realp x)))
-                           enumerated-domain)))
+                (not (some #'floatp enumerated-domain)))
            (setf (variable-possibly-noninteger-real? x) nil))
+      (if (and (variable-possibly-noninteger-rational? x)
+               (not (some #'ratiop enumerated-domain)))
+          (setf (variable-possibly-noninteger-rational? x) nil))
        (if (and (variable-possibly-integer? x)
                 (not (some #'integerp enumerated-domain)))
            (setf (variable-possibly-integer? x) nil))
@@ -4110,33 +6795,44 @@ Otherwise returns the value of X."
              (if (or (null (variable-upper-bound x))
                      (< upper-bound (variable-upper-bound x)))
                  (setf (variable-upper-bound x) upper-bound))))
-       (if (null (rest enumerated-domain))
-           (setf (variable-value x) (first enumerated-domain)))
+      (if (and (or (variable-possibly-noninteger-rational? x)
+                   (variable-possibly-integer? x))
+               (some #'rationalp enumerated-domain))
+         (let ((max-denom-in-domain
+                (reduce #'max
+                        (remove-if-not #'rationalp enumerated-domain)
+                        :key #'denominator)))
+           (setf (variable-max-denom x) max-denom-in-domain)))
+      (if (null (rest enumerated-domain))
+          (setf (variable-value x) (first enumerated-domain)))
        t)
-      (t nil))))
+      (t nil)))))
 
 (defun restrict-enumerated-domain! (x enumerated-domain)
   ;; note: X must be a variable such that (EQ X (VALUE-OF X)).
   ;; note: ENUMERATED-DOMAIN must not be a variable.
+  (declare (type variable x))
   (unless (typep enumerated-domain 'sequence) (fail))
   (when (every #'ground? enumerated-domain)
-    (setf enumerated-domain
+  (setf enumerated-domain
           (remove-duplicates (map 'list #'eliminate-variables enumerated-domain)
-                             :test #'equal))
+                             :test #'generic-equal))
     (unless (variable-possibly-boolean? x)
-      (setf enumerated-domain (remove-if #'booleanp enumerated-domain)))
+     (setf enumerated-domain (remove-if #'booleanp enumerated-domain)))
     (unless (variable-possibly-nonboolean-nonnumber? x)
-      (setf enumerated-domain
-            (remove-if #'(lambda (x) (and (not (booleanp x)) (not (numberp x))))
-                       enumerated-domain)))
+          (setf enumerated-domain
+                (remove-if #'(lambda (x) (and (not (booleanp x)) (not (numberp x))))
+                           enumerated-domain)))
     (unless (variable-possibly-nonreal-number? x)
       (setf enumerated-domain
             (remove-if #'(lambda (x) (and (not (realp x)) (numberp x)))
                        enumerated-domain)))
     (unless (variable-possibly-noninteger-real? x)
       (setf enumerated-domain
-            (remove-if #'(lambda (x) (and (not (integerp x)) (realp x)))
-                       enumerated-domain)))
+            (remove-if #'floatp enumerated-domain)))                 
+    (unless (variable-possibly-noninteger-rational? x)
+      (setf enumerated-domain
+            (remove-if #'ratiop enumerated-domain)))
     (unless (variable-possibly-integer? x)
       (setf enumerated-domain (remove-if #'integerp enumerated-domain)))
     (if (variable-upper-bound x)
@@ -4149,86 +6845,196 @@ Otherwise returns the value of X."
           (setf enumerated-domain
                 (remove-if #'(lambda (element) (< element lower-bound))
                            enumerated-domain))))
+    (if (and (variable-possibly-noninteger-rational? x)
+             (variable-max-denom x))
+        (setf enumerated-domain
+             (remove-if #'(lambda (element)
+                          (and (ratiop element)
+                               (> (denominator element) (variable-max-denom x))))
+                        enumerated-domain)))
     (setf enumerated-domain
           (if (eq (variable-enumerated-domain x) t)
               (set-difference enumerated-domain
                               (variable-enumerated-antidomain x)
-                              :test #'equal)
+                              :test #'generic-equal)
               (intersection (variable-enumerated-domain x) enumerated-domain
-                            :test #'equal)))
+                            :test #'generic-equal)))
     (if (set-enumerated-domain! x enumerated-domain) (run-noticers x))))
 
 (defun restrict-enumerated-antidomain! (x enumerated-antidomain)
   ;; note: X must be a variable such that (EQ X (VALUE-OF X)).
   ;; note: ENUMERATED-ANTIDOMAIN must not be a variable.
+ (declare (type variable x))
   (unless (typep enumerated-antidomain 'sequence) (fail))
   (when (every #'ground? enumerated-antidomain)
     (setf enumerated-antidomain
           (remove-duplicates
            (map 'list #'eliminate-variables enumerated-antidomain)
-           :test #'equal))
+           :test #'generic-equal))
     (cond
       ((eq (variable-enumerated-domain x) t)
        (setf enumerated-antidomain
              (union (variable-enumerated-antidomain x) enumerated-antidomain
-                    :test #'equal))
+                    :test #'generic-equal))
        (when (> (length enumerated-antidomain)
                 (length (variable-enumerated-antidomain x)))
          (local (setf (variable-enumerated-antidomain x) enumerated-antidomain))
          (run-noticers x)))
       ((set-enumerated-domain!
         x (set-difference (variable-enumerated-domain x) enumerated-antidomain
-                          :test #'equal))
+                          :test #'generic-equal))
        (run-noticers x)))))
+
+(defun restrict-max-denom! (x max-denom)
+  ;; note: X must be a variable.
+  ;; note: MAX-DENOM must not be a variable.
+  (declare (type variable x))
+  (unless (or (variable-possibly-integer? x)
+              (variable-possibly-noninteger-rational? x)
+              (>= max-denom 1))          
+   (fail))
+   (if (variable? max-denom)
+       (error "The current implementation does not allow maximum denominators%~
+              of RATIO/RATIONAL VARIABLES to be an unbound variable"))
+   (when (or (eq (variable-value x) x) (not (variable? (variable-value x))))
+         (cond ((variable-integer? x)
+                 (unless (and (variable-max-denom x)
+                              (= (variable-max-denom x) 1))
+                   (local (setf (variable-max-denom x) 1))))
+               ((or (not (variable-max-denom x))
+                    (< max-denom (variable-max-denom x)))
+               (local (setf (variable-max-denom x) max-denom))))))
 
 ;;; Rules
 
+(defun non-zero-rule (y)
+ (declare (type variable y))
+ (when (and (ground? y) (zerop (value-of y)))
+  (fail)))
+
+(defun max-denominator-/-rule (z x y)
+ (declare (type variable z x y))
+ (cond ((and (variable-integer? x) (variable-integer? y))
+        (let ((max-y-num (cond ((variable-lower-bound y)
+                                (if (variable-upper-bound y)
+                                    (max (abs (variable-lower-bound y))
+                                         (abs (variable-upper-bound y)))
+                                    (abs (variable-lower-bound y))))
+                              ((variable-upper-bound y)
+                               (abs (variable-upper-bound y))))))
+        (when (and max-y-num (> max-y-num 0))       
+         (restrict-max-denom! z max-y-num))))
+      (t (let* ((y-low (variable-lower-bound y))
+                (y-high (variable-upper-bound y))
+                (y-den (variable-max-denom y))
+                ;; Note: max-y-num is the maximum numerator of the
+                ;; closest-ratio-lower and/or closest-ratio-upper
+                ;; of y lower and/or upper bounds, with respect to
+                ;; the denominator of y.
+                (max-y-num (cond (y-low
+                                  (if y-high
+                                    (max (abs (numerator (closest-ratio-lower (floor y-low) y-den)))
+                                         (abs (numerator (closest-ratio-upper (ceiling y-high) y-den))))
+                                    (abs (numerator (closest-ratio-lower (floor y-low) y-den)))))
+                                  (y-high
+                                  (abs (numerator (closest-ratio-upper (ceiling y-high) y-den)))))))                     
+        (when max-y-num
+          ;; Note: denom(z) = denom(x) * max-y-num 
+          (restrict-max-denom! z (* (variable-max-denom x) max-y-num)))))))
+
+(defun max-denominator-min-max-rule (z x y)
+ (declare (type variable z x y))
+ (let ((max-x-y-denom (cond ((variable-max-denom x)
+                             (if (variable-max-denom y)
+                                 (max (variable-max-denom x) (variable-max-denom y))
+                                 (variable-max-denom x)))
+                          ((variable-max-denom y) (variable-max-denom y)))))
+     (when max-x-y-denom
+      (restrict-max-denom! z max-x-y-denom))))
+ 
+(defun max-denominator-rule (z x y op)
+ (declare (type variable z x y)
+          (type symbol op))
+ (when (and (null (variable-max-denom z))
+            (variable-max-denom x)
+            (variable-max-denom y))
+  (cond
+    ((or (eq op '+) (eq op '-))
+      ;; Note: denom(z) = lcm(denom(x), denom(y))
+      (restrict-max-denom! z
+       (lcm (variable-max-denom x) (variable-max-denom y))))
+    ((eq op '*)
+      ;; Note: denom(z) = denom(x) * denom(y)
+      (restrict-max-denom! z
+      (* (variable-max-denom x) (variable-max-denom y))))
+    ((eq op '/)
+    (max-denominator-/-rule z x y))
+    ((eq op 'min-max)
+     (max-denominator-min-max-rule z x y)))))
+
 (defun +-rule-up (z x y)
-  (if (and (variable-integer? x) (variable-integer? y)) (restrict-integer! z))
-  ;; note: We can't assert that Z in not an integer when either X or Y are not
-  ;;       integers since they may be Gaussian integers. But we can if either
-  ;;       X or Y is real. If the Screamer type system could distinguish
-  ;;       Gaussian integers from other complex numbers we could whenever X or
-  ;;       Y was not a Gaussian integer.
-  (if (and (or (variable-noninteger? x) (variable-noninteger? y))
-           (or (variable-real? x) (variable-real? y)))
-      (restrict-noninteger! z))
-  (if (and (variable-real? x) (variable-real? y)) (restrict-real! z))
-  ;; note: Ditto.
-  (if (and (or (variable-nonreal? x) (variable-nonreal? y))
-           (or (variable-real? x) (variable-real? y)))
-      (restrict-nonreal! z))
-  (if (and (variable-real? x) (variable-real? y) (variable-real? z))
-      (restrict-bounds!
-       z
-       (infinity-+ (variable-lower-bound x) (variable-lower-bound y))
-       (infinity-+ (variable-upper-bound x) (variable-upper-bound y))))
-  (let ((x (value-of x))
-        (y (value-of y))
-        (z (value-of z)))
-    (if (and (not (variable? x))
-             (not (variable? y))
-             (not (variable? z))
-             (/= z (+ x y)))
-        (fail))))
+(declare (type variable z x y))
+(if (and (variable-integer? x) (variable-integer? y))
+    (restrict-integer! z))
+(if (and (variable-ratio? x) (variable-ratio? y))
+    (restrict-rational! z))    
+(if (and (or (variable-integer? x) (variable-integer? y))
+         (or (variable-ratio? x) (variable-ratio? y)))
+    (restrict-ratio! z))
+(if (and (variable-rational? x) (variable-rational? y))
+    (restrict-rational! z))    
+(if (or (variable-float? x) (variable-float? y))
+          (unless (not (eq (variable-enumerated-domain z) t))
+      (restrict-nonrational! z)))
+(if (and (variable-real? x) (variable-real? y))
+    (restrict-real! z))
+(if (and (or (variable-nonreal? x) (variable-nonreal? y))
+         (or (variable-real? x) (variable-real? y)))
+    (restrict-nonreal! z))
+(if (and (variable-real? x) (variable-real? y) (variable-real? z))
+    (restrict-bounds!
+     z
+     (infinity-+ (variable-lower-bound x) (variable-lower-bound y))
+     (infinity-+ (variable-upper-bound x) (variable-upper-bound y))))
+  (if (and (variable-rational? x) (variable-rational? y) (variable-rational? z)
+           (or (variable-lower-bound y) (variable-upper-bound y)))
+     (max-denominator-rule z x y '+))
+(let ((x (value-of x))
+      (y (value-of y))
+      (z (value-of z)))
+  (if (and (not (variable? x))
+           (not (variable? y))
+           (not (variable? z))
+           (/= z (+ x y)))
+      (fail))))
 
 (defun +-rule-down (z x y)
-  ;; note: We can't assert that X and Y are integers when Z is an integer since
-  ;;       Z may be an integer when X and Y are Gaussian integers. But we can
-  ;;       make such an assertion if either X or Y is real. If the Screamer
-  ;;       type system could distinguish Gaussian integers from other complex
-  ;;       numbers we could make such an assertion whenever either X or Y was
-  ;;       not a Gaussian integer.
-  (if (and (variable-integer? z) (or (variable-real? x) (variable-real? y)))
+(declare (type variable z x y))
+  (if (and (variable-integer? z) (or (variable-integer? x) (variable-integer? y)))
       (restrict-integer! x))
-  ;; note: Ditto.
+  (if (and (variable-integer? z) (or (variable-ratio? x) (variable-ratio? y)))
+      (restrict-ratio! x))
+  (if (and (variable-ratio? z) (or (variable-integer? x) (variable-integer? y)))
+      (unless (variable-integer? x) (restrict-ratio! x)))   
+  (if (and (variable-rational? z) (or (variable-rational? x) (variable-rational? y)))
+      (restrict-rational! x))
+  (if (or (variable-float? z) (variable-float? y))
+          (unless (not (eq (variable-enumerated-domain x) t))
+            (restrict-nonrational! x)))
   (if (and (variable-real? z) (or (variable-real? x) (variable-real? y)))
       (restrict-real! x))
+  (if (and (variable-nonreal? z)
+      (or (variable-nonreal? x) (variable-nonreal? y))
+      (or (variable-real? x) (variable-real? y)))
+      (restrict-nonreal! x))
   (if (and (variable-real? x) (variable-real? y) (variable-real? z))
       (restrict-bounds!
        x
        (infinity-- (variable-lower-bound z) (variable-upper-bound y))
        (infinity-- (variable-upper-bound z) (variable-lower-bound y))))
+  (if (and (variable-rational? x) (variable-rational? y) (variable-rational? z)
+           (or (variable-lower-bound y) (variable-upper-bound y)))
+     (max-denominator-rule x z y '-))
   (let ((x (value-of x))
         (y (value-of y))
         (z (value-of z)))
@@ -4239,6 +7045,7 @@ Otherwise returns the value of X."
         (fail))))
 
 (defun /-rule (z x y)
+(declare (type variable z x y))
   (when (and (variable-lower-bound x) (plusp (variable-lower-bound x)))
     (cond ((and (variable-upper-bound x) (not (zerop (variable-upper-bound x))))
            (if (variable-lower-bound z)
@@ -4301,23 +7108,17 @@ Otherwise returns the value of X."
                    (t (restrict-upper-bound! y 0))))))))
 
 (defun *-rule-up (z x y)
-  (if (and (variable-integer? x) (variable-integer? y)) (restrict-integer! z))
-  ;; note: We can't assert that Z in not an integer when either X or Y are not
-  ;;       integers since they may be Gaussian integers. But we can if either
-  ;;       X or Y is real. If the Screamer type system could distinguish
-  ;;       Gaussian integers from other complex numbers we could whenever X or
-  ;;       Y was not a Gaussian integer.
-  (if (and (or (variable-noninteger? x) (variable-noninteger? y))
-           (or (variable-real? x) (variable-real? y)))
-      (restrict-noninteger! z))
-  (if (and (variable-real? x) (variable-real? y)) (restrict-real! z))
-  ;; note: Ditto.
-  (if (and (or (variable-nonreal? x) (variable-nonreal? y))
-           (or (variable-real? x) (variable-real? y)))
-      (restrict-nonreal! z))
+(declare (type variable z x y))
+  (if (and (variable-integer? x) (variable-integer? y))
+      (restrict-integer! z))      
+  (if (and (variable-rational? x) (variable-rational? y))
+    (restrict-rational! z))
+(if (or (variable-float? x) (variable-float? y))
+          (unless (not (eq (variable-enumerated-domain z) t))
+      (restrict-nonrational! z)))
+  (if (and (variable-real? x) (variable-real? y))
+      (restrict-real! z))
   (if (and (variable-real? x) (variable-real? y) (variable-real? z))
-      ;; note: Can sometimes do better than the following even when ranges are
-      ;;       not finite.
       (restrict-bounds!
        z
        (infinity-min
@@ -4334,6 +7135,9 @@ Otherwise returns the value of X."
          (infinity-max
           (infinity-* (variable-upper-bound x) (variable-lower-bound y))
           (infinity-* (variable-upper-bound x) (variable-upper-bound y)))))))
+  (if (and (variable-rational? x) (variable-rational? y) (variable-rational? z)
+           (or (variable-lower-bound y) (variable-upper-bound y)))
+     (max-denominator-rule z x y '*))
   (let ((x (value-of x))
         (y (value-of y))
         (z (value-of z)))
@@ -4344,19 +7148,21 @@ Otherwise returns the value of X."
         (fail))))
 
 (defun *-rule-down (z x y)
-  ;; note: We can't assert that X and Y are integers when Z is an integer since
-  ;;       Z may be an integer when X and Y are Gaussian integers. But we can
-  ;;       make such an assertion if either X or Y is real. If the Screamer
-  ;;       type system could distinguish Gaussian integers from other complex
-  ;;       numbers we could make such an assertion whenever either X or Y was
-  ;;       not a Gaussian integer.
-  (if (and (variable-integer? z) (or (variable-real? x) (variable-real? y)))
-      (restrict-integer! x))
-  ;; note: Ditto.
+(declare (type variable z x y))
+  (if (and (variable-ratio? z) (or (variable-integer? x) (variable-integer? y)))
+    (unless (variable-integer? x) (restrict-ratio! x)))
+  (if (and (variable-rational? z) (or (variable-rational? x) (variable-rational? y)))
+      (restrict-rational! x))
+(if (or (variable-float? z) (variable-float? y))
+          (unless (not (eq (variable-enumerated-domain x) t))
+      (restrict-nonrational! x)))
   (if (and (variable-real? z) (or (variable-real? x) (variable-real? y)))
       (restrict-real! x))
   (if (and (variable-real? x) (variable-real? y) (variable-real? z))
       (/-rule z y x))
+  (if (and (variable-rational? x) (variable-rational? y) (variable-rational? z)
+           (or (variable-lower-bound y) (variable-upper-bound y)))
+     (max-denominator-rule x z y '/))
   (let ((x (value-of x))
         (y (value-of y))
         (z (value-of z)))
@@ -4367,7 +7173,13 @@ Otherwise returns the value of X."
         (fail))))
 
 (defun min-rule-up (z x y)
+(declare (type variable z x y))
   (if (and (variable-integer? x) (variable-integer? y)) (restrict-integer! z))
+  (if (and (variable-ratio? x) (variable-ratio? y)) (restrict-ratio! z))
+  (if (and (variable-rational? x) (variable-rational? y)) (restrict-rational! z)) 
+  (if (and (variable-float? x) (variable-float? y)) (restrict-nonrational! z))
+  (if (and (variable-rational? x) (variable-rational? y) (variable-rational? z))
+      (max-denominator-rule z x y 'min-max))
   (restrict-bounds!
    z
    (infinity-min (variable-lower-bound x) (variable-lower-bound y))
@@ -4389,8 +7201,11 @@ Otherwise returns the value of X."
   ;; note: The analog of the following for upper bounds, namely restricting
   ;;       the upper bound of either X or Y to (VARIABLE-UPPER-BOUND Z) is
   ;;       nondeterministic.
+(declare (type variable z x y))  
   (if (variable-lower-bound z)
       (restrict-lower-bound! x (variable-lower-bound z)))
+  (if (and (variable-rational? z) (variable-rational? x) (variable-rational? y))
+      (max-denominator-rule x z y 'min-max))
   (let ((x (value-of x))
         (y (value-of y))
         (z (value-of z)))
@@ -4401,7 +7216,11 @@ Otherwise returns the value of X."
         (fail))))
 
 (defun max-rule-up (z x y)
+(declare (type variable z x y))
   (if (and (variable-integer? x) (variable-integer? y)) (restrict-integer! z))
+  (if (and (variable-ratio? x) (variable-ratio? y)) (restrict-ratio! z))
+  (if (and (variable-rational? x) (variable-rational? y)) (restrict-rational! z))
+  (if (and (variable-float? x) (variable-float? y)) (restrict-nonrational! z))
   (restrict-bounds!
    z
    (if (variable-lower-bound x)
@@ -4410,6 +7229,8 @@ Otherwise returns the value of X."
            (variable-lower-bound x))
        (variable-lower-bound y))
    (infinity-max (variable-upper-bound x) (variable-upper-bound y)))
+     (if (and (variable-rational? z) (variable-rational? x) (variable-rational? y))
+        (max-denominator-rule z x y 'min-max))
   (let ((x (value-of x))
         (y (value-of y))
         (z (value-of z)))
@@ -4423,8 +7244,11 @@ Otherwise returns the value of X."
   ;; note: The analog of the following for lower bounds, namely restricting
   ;;       the lower bound of either X or Y to (VARIABLE-LOWER-BOUND Z) is
   ;;       nondeterministic.
+  (declare (type variable z x y))
   (if (variable-upper-bound z)
       (restrict-upper-bound! x (variable-upper-bound z)))
+  (if (and (variable-rational? z) (variable-rational? x) (variable-rational? y))
+      (max-denominator-rule x z y 'min-max))
   (let ((x (value-of x))
         (y (value-of y))
         (z (value-of z)))
@@ -4441,24 +7265,138 @@ Otherwise returns the value of X."
     ;;       clause is executed.
     ((and (variable-real? x) (variable-real? y))
      (restrict-bounds! x (variable-lower-bound y) (variable-upper-bound y))
-     (restrict-bounds! y (variable-lower-bound x) (variable-upper-bound x)))
-    ((and (not (variable? x)) (not (variable? y)) (/= x y)) (fail))))
+     (restrict-bounds! y (variable-lower-bound x) (variable-upper-bound x))
+     (if (and (variable-rational? x) (variable-rational? y))
+       (let ((min-denom (cond
+                          ((variable-max-denom x) 
+                           (if (variable-max-denom y)
+                               (min (variable-max-denom x) (variable-max-denom y))
+                               (variable-max-denom x)))
+                          ((variable-max-denom y) (variable-max-denom y)))))
+         (when min-denom
+           (restrict-max-denom! x min-denom)
+           (restrict-max-denom! y min-denom)))))
+     ((and (not (variable? (value-of x)))
+	       (not (variable? (value-of y)))
+		   (/= (value-of x) (value-of y)))
+	  (fail)))
+  (let ((x (value-of x))
+        (y (value-of y)))
+  (cond ((and (not (variable? x))
+              (variable? y))
+          (if (and (not (eq (variable-enumerated-domain y) t))
+                  (not (member x (variable-enumerated-domain y) :test #'=)))
+              (fail)))   
+        ((and (not (variable? y))
+                   (variable? x))
+          (if (and (not (eq (variable-enumerated-domain x) t))
+                   (not (member y (variable-enumerated-domain x) :test #'=)))
+              (fail)))
+        ((and (variable? x)
+              (variable? y))
+         (cond ((not (eq (variable-enumerated-domain x) t))
+                (if (and (not (eq (variable-enumerated-domain y) t))
+                         (<= (domain-size (list x y)) *maximum-discretization-range*))
+                    (let ((intersection-of-domains (intersection (variable-enumerated-domain x)
+                                                                 (variable-enumerated-domain y)
+                                                    :test #'=)))
+                    (when (not (every #'(lambda (element)
+                                          (member element intersection-of-domains :test #'=))
+                                      (variable-enumerated-domain x)))
+                          (if (set-enumerated-domain!
+                                x (remove-if-not #'(lambda (element)
+                                                    (member element intersection-of-domains :test #'=))
+                                                (variable-enumerated-domain x)))
+                              (run-noticers x)))
+                    (when (not (every #'(lambda (element)
+                                          (member element intersection-of-domains :test #'=))
+                                      (variable-enumerated-domain y)))
+                          (if (set-enumerated-domain!
+                                y (remove-if-not #'(lambda (element)
+                                                    (member element intersection-of-domains :test #'=))
+                                                (variable-enumerated-domain y)))
+                              (run-noticers y))))
+                    (when (<= (domain-size x) *maximum-discretization-range*)
+                    (let ((x-domain (variable-enumerated-domain x)))
+                    (restrict-enumerated-domain!
+                     y (cond ((variable-rational? y)
+                              (cond ((variable-integer? y)
+                                    (if (not (every #'integerp x-domain))
+                                        (mapcar #'(lambda (element)
+                                                           (typecase element
+                                                           (integer element)
+                                                           (otherwise (round element))))
+                                                x-domain)
+                                         x-domain))
+                                    (t (if (not (every #'rationalp x-domain))
+                                           (mapcar #'(lambda (element)
+                                                      (typecase element
+                                                      (rational element)
+                                                      (otherwise (rationalize element))))
+                                                  x-domain)
+                                            x-domain))))
+                            ((variable-nonrational? y)
+                             (if (not (every #'floatp x-domain))
+                                 (mapcar #'(lambda (element)
+                                              (typecase element
+                                               (float element)
+                                               (integer (float element))
+                                               (otherwise (coerce element 'double-float))))
+                                         x-domain)
+                                  x-domain))
+                            (t x-domain)))))))
+                ((and (not (eq (variable-enumerated-domain y) t))
+                      (<= (domain-size y) *maximum-discretization-range*))
+                 (let ((y-domain (variable-enumerated-domain y)))
+                   (restrict-enumerated-domain!
+                    x (cond ((variable-rational? x)
+                            (cond ((variable-integer? x)
+                                   (if (not (every #'integerp y-domain))
+                                       (mapcar #'(lambda (element)
+                                                      (typecase element
+                                                      (integer element)
+                                                      (otherwise (round element))))
+                                                  y-domain)
+                                        y-domain))
+                                  (t (if (not (every #'rationalp y-domain))
+                                     (mapcar #'(lambda (element)
+                                                    (typecase element
+                                                    (rational element)
+                                                    (otherwise (rationalize element))))
+                                              y-domain)
+                                      y-domain))))
+                            ((variable-nonrational? x)
+                             (if (not (every #'floatp y-domain))
+                                 (mapcar #'(lambda (element)
+                                              (typecase element
+                                               (float element)
+                                               (integer (float element))
+                                               (otherwise (coerce element 'double-float))))
+                                           y-domain)
+                                  y-domain))
+                            (t y-domain))))))))))
 
 (defun <=-rule (x y)
+(declare (type variable x y))
   (if (variable-lower-bound x)
       (restrict-lower-bound! y (variable-lower-bound x)))
   (if (variable-upper-bound y)
       (restrict-upper-bound! x (variable-upper-bound y))))
 
 (defun <-rule (x y)
+(declare (type variable x y))
   (if (variable-lower-bound x)
-      (restrict-lower-bound! y (if (variable-integer? y)
-                                   (1+ (floor (variable-lower-bound x)))
-                                   (variable-lower-bound x))))
+      (restrict-lower-bound! y (cond ((variable-integer? y)
+                                      (1+ (floor (variable-lower-bound x))))
+                                     ((variable-rational? y)
+                                      (strict-next-in-domain (variable-lower-bound x) (variable-max-denom y)))
+                                     (t (variable-lower-bound x)))))
   (if (variable-upper-bound y)
-      (restrict-upper-bound! x (if (variable-integer? x)
-                                   (1- (ceiling (variable-upper-bound y)))
-                                   (variable-upper-bound y))))
+      (restrict-upper-bound! x (cond ((variable-integer? x)
+                                      (1- (ceiling (variable-upper-bound y))))
+                                     ((variable-rational? x)
+                                      (strict-prev-in-domain (variable-upper-bound y) (variable-max-denom x)))
+                                     (t (variable-upper-bound y)))))
   (let ((x (value-of x))
         (y (value-of y)))
     (if (and (not (variable? x)) (not (variable? y)) (>= x y)) (fail))))
@@ -4482,12 +7420,14 @@ Otherwise returns the value of X."
         (t (let ((x (variablize x))
                  (y (variablize y))
                  (z (a-numberv)))
+            (declare (type variable x y z))
              (attach-noticer!
               #'(lambda () (+-rule-up z x y) (+-rule-down z y x)) x)
              (attach-noticer!
               #'(lambda () (+-rule-up z x y) (+-rule-down z x y)) y)
              (attach-noticer!
-              #'(lambda () (+-rule-down z x y) (+-rule-down z y x)) z)
+              #'(lambda () (+-rule-down z x y) (+-rule-down z y x)) z
+        :dependencies (list x y))
              z))))
 
 (defun -v2 (x y)
@@ -4500,12 +7440,14 @@ Otherwise returns the value of X."
         (t (let ((x (variablize x))
                  (y (variablize y))
                  (z (a-numberv)))
+            (declare (type variable x y z))
              (attach-noticer!
               #'(lambda () (+-rule-down x y z) (+-rule-down x z y)) x)
              (attach-noticer!
               #'(lambda () (+-rule-up x y z) (+-rule-down x z y)) y)
              (attach-noticer!
-              #'(lambda () (+-rule-up x y z) (+-rule-down x y z)) z)
+              #'(lambda () (+-rule-up x y z) (+-rule-down x y z)) z
+        :dependencies (list x y))
              z))))
 
 (defun *v2 (x y)
@@ -4521,12 +7463,14 @@ Otherwise returns the value of X."
         (t (let ((x (variablize x))
                  (y (variablize y))
                  (z (a-numberv)))
+            (declare (type variable x y z))
              (attach-noticer!
               #'(lambda () (*-rule-up z x y) (*-rule-down z y x)) x)
              (attach-noticer!
               #'(lambda () (*-rule-up z x y) (*-rule-down z x y)) y)
              (attach-noticer!
-              #'(lambda () (*-rule-down z x y) (*-rule-down z y x)) z)
+              #'(lambda () (*-rule-down z x y) (*-rule-down z y x)) z
+        :dependencies (list x y))
              z))))
 
 (defun /v2 (x y)
@@ -4541,12 +7485,14 @@ Otherwise returns the value of X."
         (t (let ((x (variablize x))
                  (y (variablize y))
                  (z (a-numberv)))
+            (declare (type variable x y z))
              (attach-noticer!
-              #'(lambda () (*-rule-down x y z) (*-rule-down x z y)) x)
+              #'(lambda () (*-rule-down x y z) (*-rule-down x z y) (non-zero-rule y)) x)
              (attach-noticer!
-              #'(lambda () (*-rule-up x y z) (*-rule-down x z y)) y)
+              #'(lambda () (*-rule-up x y z) (*-rule-down x z y) (non-zero-rule y)) y)
              (attach-noticer!
-              #'(lambda () (*-rule-up x y z) (*-rule-down x y z)) z)
+              #'(lambda () (*-rule-up x y z) (*-rule-down x y z) (non-zero-rule y)) z
+        :dependencies (list x y))
              z))))
 
 (defun minv2 (x y)
@@ -4557,12 +7503,14 @@ Otherwise returns the value of X."
         (t (let ((x (variablize x))
                  (y (variablize y))
                  (z (a-realv)))
+            (declare (type variable x y z))
              (attach-noticer!
               #'(lambda () (min-rule-up z x y) (min-rule-down z y x)) x)
              (attach-noticer!
               #'(lambda () (min-rule-up z x y) (min-rule-down z x y)) y)
              (attach-noticer!
-              #'(lambda () (min-rule-down z x y) (min-rule-down z y x)) z)
+              #'(lambda () (min-rule-down z x y) (min-rule-down z y x)) z
+        :dependencies (list x y))
              z))))
 
 (defun maxv2 (x y)
@@ -4573,12 +7521,14 @@ Otherwise returns the value of X."
         (t (let ((x (variablize x))
                  (y (variablize y))
                  (z (a-realv)))
+            (declare (type variable x y z))
              (attach-noticer!
               #'(lambda () (max-rule-up z x y) (max-rule-down z y x)) x)
              (attach-noticer!
               #'(lambda () (max-rule-up z x y) (max-rule-down z x y)) y)
              (attach-noticer!
-              #'(lambda () (max-rule-down z x y) (max-rule-down z y x)) z)
+              #'(lambda () (max-rule-down z x y) (max-rule-down z y x)) z
+        :dependencies (list x y))
              z))))
 
 ;;; Lifted Type Functions (KNOWN? optimized)
@@ -4595,6 +7545,48 @@ Otherwise returns the value of X."
     (typecase x
       (integer nil)
       (variable (variable-noninteger? x))
+      (otherwise t))))
+
+(defun known?-rationalpv (x)
+  (let ((x (value-of x)))
+    (typecase x
+      (rational t)
+      (variable (variable-rational? x))
+      (otherwise nil))))
+
+(defun known?-notv-rationalpv (x)
+  (let ((x (value-of x)))
+    (typecase x
+      (rational nil)
+      (variable (variable-nonrational? x))
+      (otherwise t))))
+
+(defun known?-ratiopv (x)
+  (let ((x (value-of x)))
+    (typecase x
+      (ratio t)
+      (variable (variable-ratio? x))
+      (otherwise nil))))
+
+(defun known?-notv-ratiopv (x)
+  (let ((x (value-of x)))
+    (typecase x
+      (ratio nil)
+      (variable (variable-nonratio? x))
+      (otherwise t))))
+
+(defun known?-floatpv (x)
+  (let ((x (value-of x)))
+    (typecase x
+      (float t)
+      (variable (variable-float? x))
+      (otherwise nil))))
+
+(defun known?-notv-floatpv (x)
+  (let ((x (value-of x)))
+    (typecase x
+      (float nil)
+      (variable (variable-nonfloat? x))
       (otherwise t))))
 
 (defun known?-realpv (x)
@@ -4642,16 +7634,19 @@ Otherwise returns the value of X."
 ;;; Lifted Arithmetic Comparison Functions (Two argument KNOWN? optimized)
 
 (defun known?-<=v2-variable (x y)
+(declare (type variable x y))
   (and (variable-upper-bound x)
        (variable-lower-bound y)
        (<= (variable-upper-bound x) (variable-lower-bound y))))
 
 (defun known?-<v2-variable (x y)
+(declare (type variable x y))
   (and (variable-upper-bound x)
        (variable-lower-bound y)
        (< (variable-upper-bound x) (variable-lower-bound y))))
 
 (defun known?-=v2-variable (x y)
+(declare (type variable x y))
   (or (and (variable-real? x)
            (variable-real? y)
            (known?-<=v2-variable x y)
@@ -4661,6 +7656,7 @@ Otherwise returns the value of X."
            (= (variable-value x) (variable-value y)))))
 
 (defun known?-/=v2-variable (x y)
+(declare (type variable x y))
   (or (and (variable-real? x)
            (variable-real? y)
            (or (known?-<v2-variable x y) (known?-<v2-variable y x)))
@@ -4716,6 +7712,48 @@ Otherwise returns the value of X."
       (variable (restrict-noninteger! x))
       (otherwise))))
 
+(defun assert!-rationalpv (x)
+  (let ((x (value-of x)))
+    (typecase x
+      (rational)
+      (variable (restrict-rational! x))
+      (otherwise (fail)))))
+
+(defun assert!-notv-rationalpv (x)
+  (let ((x (value-of x)))
+    (typecase x
+      (rational (fail))
+      (variable (restrict-nonrational! x))
+      (otherwise))))
+
+(defun assert!-ratiopv (x)
+  (let ((x (value-of x)))
+    (typecase x
+      (ratio)
+      (variable (restrict-ratio! x))
+      (otherwise (fail)))))
+
+(defun assert!-notv-ratiopv (x)
+  (let ((x (value-of x)))
+    (typecase x
+      (ratio (fail))
+      (variable (restrict-nonratio! x))
+      (otherwise))))
+
+(defun assert!-floatpv (x)
+  (let ((x (value-of x)))
+    (typecase x
+      (float)
+      (variable (restrict-float! x))
+      (otherwise (fail)))))
+
+(defun assert!-notv-floatpv (x)
+  (let ((x (value-of x)))
+    (typecase x
+      (float (fail))
+      (variable (restrict-nonfloat! x))
+      (otherwise))))
+
 (defun assert!-realpv (x)
   (let ((x (value-of x)))
     (typecase x
@@ -4765,6 +7803,9 @@ Otherwise returns the value of X."
   (assert!-numberpv y)
   (let ((x (variablize x))
         (y (variablize y)))
+    (declare (type variable x y))
+    (cond ((variable-real? x) (assert!-realpv y))
+          ((variable-real? y) (assert!-realpv x)))
     (attach-noticer! #'(lambda () (=-rule x y)) x)
     (attach-noticer! #'(lambda () (=-rule x y)) y)))
 
@@ -4773,6 +7814,7 @@ Otherwise returns the value of X."
   (assert!-realpv y)
   (let ((x (variablize x))
         (y (variablize y)))
+  (declare (type variable x y))
     (attach-noticer! #'(lambda () (<=-rule x y)) x)
     (attach-noticer! #'(lambda () (<=-rule x y)) y)))
 
@@ -4781,6 +7823,7 @@ Otherwise returns the value of X."
   (assert!-realpv y)
   (let ((x (variablize x))
         (y (variablize y)))
+  (declare (type variable x y))
     (attach-noticer! #'(lambda () (<-rule x y)) x)
     (attach-noticer! #'(lambda () (<-rule x y)) y)))
 
@@ -4789,6 +7832,7 @@ Otherwise returns the value of X."
   (assert!-numberpv y)
   (let ((x (variablize x))
         (y (variablize y)))
+   (declare (type variable x y))
     ;; note: Got rid of the nondeterministic version that called the
     ;;       nondeterministic version of /=-RULE.
     (attach-noticer! #'(lambda () (/=-rule x y)) x)
@@ -4818,6 +7862,7 @@ NIL then a noticer attached to V restricts X to be non-integer valued."
         ((known?-notv-integerpv x) nil)
         (t (let ((x (variablize x))
                  (z (a-booleanv)))
+            (declare (type variable x z))
              (attach-noticer!
               #'(lambda ()
                   (cond ((variable-integer? x) (restrict-true! z))
@@ -4827,6 +7872,106 @@ NIL then a noticer attached to V restricts X to be non-integer valued."
               #'(lambda ()
                   (cond ((variable-true? z) (restrict-integer! x))
                         ((variable-false? z) (restrict-noninteger! x))))
+              z)
+             z))))
+
+(defun rationalpv (x)
+  "Returns T if X is known to be rational valued, NIL if X is known to be non-rational,
+and otherwise returns a new boolean variable V.
+
+The values of X and V are mutually constrained via noticers so that V is equal
+to T if and only if X is known to be rational and V is equal to NIL if and only if
+X is known to be non-rational.
+
+If X later becomes known to be rational, a noticer attached to X restricts V to
+equal T. Likewise, if X later becomes known to be non-rational, a noticer attached
+to X restricts V to equal NIL.
+
+Furthermore, if V ever becomes known to equal T then a noticer attached to V
+restricts X to be rational valued. Likewise, if V ever becomes known to equal NIL
+then a noticer attached to V restricts X to be non-rational valued."
+  (cond ((known?-rationalpv x) t)
+        ((known?-notv-rationalpv x) nil)
+        (t (let ((x (variablize x))
+                 (z (a-booleanv)))
+            (declare (type variable x z))
+             (attach-noticer!
+              #'(lambda ()
+                  (cond ((variable-rational? x) (restrict-true! z))
+                        ((variable-nonrational? x) (restrict-false! z))))
+              x)
+             (attach-noticer!
+              #'(lambda ()
+                  (cond ((variable-true? z) (restrict-rational! x))
+                        ((variable-false? z) (restrict-nonrational! x))))
+              z)
+             z))))
+
+(defun ratiopv (x)
+  "Returns T if X is known to be a ratio (noninteger rational), NIL if X is known to be not a ratio,
+and otherwise returns a new boolean variable V.
+
+The values of X and V are mutually constrained via noticers so that V is equal
+to T if and only if X is known to be a ratio and V is equal to NIL if and only if
+X is known not to be a ratio.
+
+If X later becomes known to be a ratio, a noticer attached to X restricts V to
+equal T. Likewise, if X later becomes known not to be a ratio, a noticer attached
+to X restricts V to equal NIL.
+
+Furthermore, if V ever becomes known to equal T then a noticer attached to V
+restricts X to be a ratio. Likewise, if V ever becomes known to equal NIL
+then a noticer attached to V restricts X to be not a ratio."
+  (cond ((known?-ratiopv x) t)
+        ((known?-notv-ratiopv x) nil)
+        (t (let ((x (variablize x))
+                 (z (a-booleanv)))
+            (declare (type variable x z))
+             (attach-noticer!
+              #'(lambda ()
+                  (cond ((variable-ratio? x) (restrict-true! z))
+                        ((variable-nonratio? x) (restrict-false! z))))
+              x)
+             (attach-noticer!
+              #'(lambda ()
+                  (cond ((variable-true? z)
+                         (restrict-ratio! x))
+                        ((variable-false? z)
+                         (restrict-nonratio! x))))
+              z)
+             z))))
+
+(defun floatpv (x)
+  "Returns T if X is known to be a float, NIL if X is known to be not a float,
+and otherwise returns a new boolean variable V.
+
+The values of X and V are mutually constrained via noticers so that V is equal
+to T if and only if X is known to be a ratio and V is equal to NIL if and only if
+X is known not to be a ratio.
+
+If X later becomes known to be a ratio, a noticer attached to X restricts V to
+equal T. Likewise, if X later becomes known not to be a ratio, a noticer attached
+to X restricts V to equal NIL.
+
+Furthermore, if V ever becomes known to equal T then a noticer attached to V
+restricts X to be a float. Likewise, if V ever becomes known to equal NIL
+then a noticer attached to V restricts X to be not a float."
+  (cond ((known?-floatpv x) t)
+        ((known?-notv-floatpv x) nil)
+        (t (let ((x (variablize x))
+                 (z (a-booleanv)))
+            (declare (type variable x z))
+             (attach-noticer!
+              #'(lambda ()
+                  (cond ((variable-float? x) (restrict-true! z))
+                        ((variable-nonfloat? x) (restrict-false! z))))
+              x)
+             (attach-noticer!
+              #'(lambda ()
+                  (cond ((variable-true? z)
+                         (restrict-float! x))
+                        ((variable-false? z)
+                         (restrict-nonfloat! x))))
               z)
              z))))
 
@@ -4849,6 +7994,7 @@ X is known to be non-real.
         ((known?-notv-realpv x) nil)
         (t (let ((x (variablize x))
                  (z (a-booleanv)))
+            (declare (type variable x z))
              (attach-noticer!
               #'(lambda ()
                   (cond ((variable-real? x) (restrict-true! z))
@@ -4881,6 +8027,7 @@ if X is known to be non-numeric.
         ((known?-notv-numberpv x) nil)
         (t (let ((x (variablize x))
                  (z (a-booleanv)))
+            (declare (type variable x z))
              (attach-noticer!
               #'(lambda ()
                   (cond ((variable-number? x) (restrict-true! z))
@@ -4899,6 +8046,7 @@ if X is known to be non-numeric.
         ((known?-notv-booleanpv x) nil)
         (t (let ((x (variablize x))
                  (z (a-booleanv)))
+            (declare (type variable x z))
              (attach-noticer!
               #'(lambda ()
                   (cond ((variable-boolean? x) (restrict-true! z))
@@ -5064,6 +8212,7 @@ vector."
         ((known?-notv-memberv x sequence) nil)
         (t (let ((x (variablize x))
                  (z (a-booleanv)))
+           (declare (type variable x z))
              (attach-noticer!
               #'(lambda ()
                   (cond ((known?-memberv x sequence) (restrict-true! z))
@@ -5085,8 +8234,65 @@ vector."
               #'(lambda ()
                   (cond ((variable-true? z) (assert!-memberv x sequence))
                         ((variable-false? z) (assert!-notv-memberv x sequence))))
-              z)
+              z
+        :dependencies (list x))
              z))))
+
+; Lifted ALL-DIFFERENTV
+
+(defun known?-all-differentv (x)
+  (if (null x)
+       t
+      (and (known?-notv-memberv (car x) (cdr x))
+           (known?-all-differentv (cdr x)))))
+
+(defun known?-notv-all-differentv (x)
+  (cond ((or (null x) (= (length x) 1)) nil)
+        ((= (length x) 2)
+         (known?-equalv (car x) (cadr x)))
+        (t (or (known?-memberv (car x) (cdr x))
+               (known?-notv-all-differentv (cdr x))))))
+
+(defun assert!-all-differentv (x)
+  "Assert that all elements of X are different."
+  (if (null x)
+       nil
+      (progn (assert!-notv-memberv (car x) (cdr x))
+             (assert!-all-differentv (cdr x)))))
+
+(defun assert!-notv-all-differentv (x)
+  "Assert that NOT all elements of X are different (i.e., at least one pair is equal)."
+  (labels ((pairs (lst)
+           (if (null lst)
+                nil
+               (append (mapcar (lambda (y)
+                                (equalv (car lst) y)) (cdr lst))
+                        (pairs (cdr lst))))))
+   (apply #'assert!-orv (pairs x))))
+
+(defun all-differentv (x)
+  "Returns T if the elements of the list X are known to be all different,
+NIL if the elements of X are known not to be all different, and otherwise
+returns a boolean variable that will be true if the elements are all different
+and false if they are not."
+  (let ((x (value-of x)))
+  (cond ((known?-all-differentv x) t)
+        ((known?-notv-all-differentv x) nil)
+        (t (let ((x (mapcar #'variablize x))
+                 (z (a-booleanv)))
+           (declare (type variable z))
+             (dolist (xi x)
+               (attach-noticer!
+                #'(lambda ()
+                    (cond ((known?-all-differentv x) (restrict-true! z))
+                          ((known?-notv-all-differentv x) (restrict-false! z))))
+                xi))
+             (attach-noticer!
+              #'(lambda ()
+                  (cond ((variable-true? z) (assert!-all-differentv x))
+                        ((variable-false? z) (assert!-notv-all-differentv x))))
+              z :dependencies x)
+             z)))))
 
 ;;; Lifted Arithmetic Comparison Functions (Two argument optimized)
 
@@ -5098,6 +8304,7 @@ vector."
         (t (let ((x (variablize x))
                  (y (variablize y))
                  (z (a-booleanv)))
+            (declare (type variable x y z))
              (attach-noticer!
               #'(lambda ()
                   (cond ((known?-=v2-variable x y) (restrict-true! z))
@@ -5112,7 +8319,8 @@ vector."
               #'(lambda ()
                   (cond ((variable-true? z) (assert!-=v2 x y))
                         ((variable-false? z) (assert!-/=v2 x y))))
-              z)
+              z
+        :dependencies (list x y))
              z))))
 
 (defun <=v2 (x y)
@@ -5123,6 +8331,7 @@ vector."
         (t (let ((x (variablize x))
                  (y (variablize y))
                  (z (a-booleanv)))
+            (declare (type variable x y z))
              (attach-noticer!
               #'(lambda ()
                   (cond ((known?-<=v2-variable x y) (restrict-true! z))
@@ -5137,7 +8346,8 @@ vector."
               #'(lambda ()
                   (cond ((variable-true? z) (assert!-<=v2 x y))
                         ((variable-false? z) (assert!-<v2 y x))))
-              z)
+              z
+        :dependencies (list x y))
              z))))
 
 (defun <v2 (x y)
@@ -5148,6 +8358,7 @@ vector."
         (t (let ((x (variablize x))
                  (y (variablize y))
                  (z (a-booleanv)))
+            (declare (type variable x y z))
              (attach-noticer!
               #'(lambda ()
                   (cond ((known?-<v2-variable x y) (restrict-true! z))
@@ -5162,7 +8373,8 @@ vector."
               #'(lambda ()
                   (cond ((variable-true? z) (assert!-<v2 x y))
                         ((variable-false? z) (assert!-<=v2 y x))))
-              z)
+              z
+        :dependencies (list x y))
              z))))
 
 (defun /=v2 (x y)
@@ -5173,6 +8385,7 @@ vector."
         (t (let ((x (variablize x))
                  (y (variablize y))
                  (z (a-booleanv)))
+            (declare (type variable x y z))
              (attach-noticer!
               #'(lambda ()
                   (cond ((known?-/=v2-variable x y) (restrict-true! z))
@@ -5187,7 +8400,8 @@ vector."
               #'(lambda ()
                   (cond ((variable-true? z) (assert!-/=v2 x y))
                         ((variable-false? z) (assert!-=v2 x y))))
-              z)
+              z
+        :dependencies (list x y))
              z))))
 
 ;;; Lifted NOTV, ANDV and ORV
@@ -5209,6 +8423,7 @@ boolean."
     (cond ((eq x t) nil)
           ((eq x nil) t)
           (t (let ((z (a-booleanv)))
+             (declare (type variable z))
                (attach-noticer!
                 #'(lambda ()
                     (cond ((variable-true? x) (restrict-false! z))
@@ -5218,7 +8433,8 @@ boolean."
                 #'(lambda ()
                     (cond ((variable-true? z) (restrict-false! x))
                           ((variable-false? z) (restrict-true! x))))
-                z)
+                z
+        :dependencies (list x))
                z)))))
 
 (defun andv-internal (xs)
@@ -5232,13 +8448,14 @@ boolean."
             ((zerop count) t)
             ((= count 1) (first xs))
             (t (let ((z (a-booleanv)))
-                 (attach-noticer!-internal
+                (declare (type variable z))
+                 (attach-noticer!
                   #'(lambda ()
                       (cond ((variable-true? z) (dolist (x xs) (restrict-true! x)))
                             ((and (= count 1) (variable-false? z))
                              (dolist (x xs)
                                (unless (variable-true? x) (restrict-false! x))))))
-                  z)
+                  z :dependencies xs)
                  (dolist (x xs)
                    (let ((x x))
                      (attach-noticer!-internal
@@ -5457,6 +8674,7 @@ arguments. Secondly, any non-boolean argument causes it to fail."
         lower
         (let ((z (an-integer-betweenv lower upper))
               (xs (remove-if #'bound? xs)))
+          (declare (type variable z))
           (attach-noticer!
            #'(lambda ()
                (if (= upper (variable-lower-bound z))
@@ -5465,7 +8683,8 @@ arguments. Secondly, any non-boolean argument causes it to fail."
                (if (= lower (variable-upper-bound z))
                    (dolist (x xs)
                      (unless (variable-true? x) (restrict-false! x)))))
-           z)
+           z
+       :dependencies xs)
           (dolist (x xs)
             (let ((x x))
               (attach-noticer!
@@ -5495,16 +8714,6 @@ V and arguments are mutually constrained:
  * If Upper bound of V is constrained to be equal to number of arguments known
    to be T, all arguments not known to be T are constrained to be NIL."
   (count-truesv-internal xs))
-
-;;; Lifted FUNCALLV and APPLYV
-
-(defun finite-domain? (variable)
-  (let ((variable (value-of variable)))
-    (or (not (variable? variable))
-        (not (eq (variable-enumerated-domain variable) t))
-        (and (variable-integer? variable)
-             (variable-lower-bound variable)
-             (variable-upper-bound variable)))))
 
 ;;; note: SOLUTION, LINEAR-FORCE and STATIC-ORDERING were moved here to be
 ;;;       before KNOWN?-CONSTRAINT to avoid forward references to
@@ -5562,35 +8771,137 @@ when there remain no untried alternatives.
 Since the set of potential values is required only to be countable, not
 finite, the set of untried alternatives may never be exhausted and
 backtracking need not terminate. This can happen, for instance, when X is
-known to be an integer but lacks either an upper of lower bound.
+known to be an integer but lacks either an upper of lower bound. Also when
+X is known to be a rational but lacks upper or lower bound.
 
 The order in which the nondeterministic alternatives are tried is left
 unspecified to give future implementations leeway in incorporating heuristics
 in the process of determining a good search order."
+(let ((variable (value-of x)))
+    (if (variable? variable) 
+        (restrict-value!
+         variable
+         (cond
+           ((not (eq (variable-enumerated-domain variable) t))
+            (a-member-of (variable-enumerated-domain variable)))
+           ((variable-integer? variable)
+            (if (variable-lower-bound variable)
+                (if (variable-upper-bound variable)
+                    (an-integer-between
+                     (variable-lower-bound variable)
+                     (variable-upper-bound variable))
+                    (an-integer-above (variable-lower-bound variable)))
+                (if (variable-upper-bound variable)
+                    (an-integer-below (variable-upper-bound variable))
+                    (an-integer))))
+           ((and (variable-rational? variable)
+                 (variable-max-denom variable))
+             (cond
+               ((variable-ratio? variable)
+                 (cond
+                   ((and (variable-lower-bound variable)
+                         (variable-upper-bound variable))
+                   (a-ratio-between (variable-lower-bound variable)
+                                    (variable-upper-bound variable)
+                                    (variable-max-denom variable)))
+                   ((and (variable-lower-bound variable)
+                         (not (variable-upper-bound variable)))
+                   (a-ratio-above (variable-lower-bound variable)
+                                  (variable-max-denom variable)))
+                   ((and (not (variable-lower-bound variable))
+                         (variable-upper-bound variable))
+                   (a-ratio-below (variable-upper-bound variable)
+                                  (variable-max-denom variable)))))
+               ((and (variable-lower-bound variable)
+                     (variable-upper-bound variable))
+                 (a-rational-between (variable-lower-bound variable)
+                                   (variable-upper-bound variable)
+                                   (variable-max-denom variable)))
+               ((and (variable-lower-bound variable)
+                     (not (variable-upper-bound variable)))
+                 (a-rational-above (variable-lower-bound variable)
+                                   (variable-max-denom variable)))
+               ((and (not (variable-lower-bound variable))
+                     (variable-upper-bound variable))
+                 (a-rational-below (variable-upper-bound variable)
+                                   (variable-max-denom variable)))))
+           ((and (variable-real? variable)
+                 (variable-lower-bound variable)
+                 (variable-upper-bound variable)
+                 (zerop (- (variable-upper-bound variable)
+                           (variable-lower-bound variable))))
+            (variable-lower-bound variable))
+           (t (error "It is only possible to linear force a variable that~%~
+                        has a countable domain")))))
+    (value-of variable)))
+
+(defun random-force (x)
+  "Returns X if it is not a variable. If X is a bound variable then returns
+  its value.
+
+  If X is an unbound variable then it must be known to have a countable set of 
+  potential values and a finite range. In this case, X is nondeterministically
+  restricted to be equal to a value in a random permutation of this countable
+  set, thus forcing X to be bound. The dereferenced value of X is then returned.
+
+  An unbound variable is known to have a countable set of potential values
+  if it is known to have a finite domain, if it is known to be integer
+  valued with a finite range or a rational valued with a maximum denominator
+  and a finite range.
+
+  An error is signalled if X is not known to have a finite domain and is not
+  known to be integer or rational valued with finite range and a maximum
+  denominator.
+
+  Upon backtracking X will be bound to each potential value in turn, failing
+  when there remain no untried alternatives."
   (let ((variable (value-of x)))
     (if (variable? variable)
         (restrict-value!
          variable
-         (cond ((not (eq (variable-enumerated-domain variable) t))
-                (a-member-of (variable-enumerated-domain variable)))
-               ((variable-integer? variable)
-                (if (variable-lower-bound variable)
-                    (if (variable-upper-bound variable)
-                        (an-integer-between
-                         (variable-lower-bound variable)
-                         (variable-upper-bound variable))
-                        (an-integer-above (variable-lower-bound variable)))
-                    (if (variable-upper-bound variable)
-                        (an-integer-below (variable-upper-bound variable))
-                        (an-integer))))
-               (t (error "It is only possible to linear force a variable that~%~
-                        has a countable domain"))))))
-  (value-of variable))
+         (cond
+           ((not (eq (variable-enumerated-domain variable) t))
+            (a-random-member-of (variable-enumerated-domain variable)))
+           ((and (variable-lower-bound variable)
+                 (variable-upper-bound variable))
+            (cond
+              ((and (variable-integer? variable)
+                    (<= (- (variable-upper-bound variable)
+                           (variable-lower-bound variable))
+                        *maximum-random-domain-size*))
+               (a-random-member-of
+                (integers-between (variable-lower-bound variable)
+                                  (variable-upper-bound variable))))
+              ((and (variable-max-denom variable)
+                    (<= (estimate-farey-domain-size (variable-max-denom variable)
+                                                    (variable-lower-bound variable)
+                                                    (variable-upper-bound variable))
+                         *maximum-random-domain-size*))
+               (cond ((variable-ratio? variable)
+                      (a-random-member-of
+                      (ratios-between (variable-lower-bound variable)
+                                      (variable-upper-bound variable)
+                                      (variable-max-denom variable))))
+                     ((variable-rational? variable)
+                     (a-random-member-of
+                         (rationals-between (variable-lower-bound variable)
+                                            (variable-upper-bound variable)
+                                            (variable-max-denom variable))))
+                    (t (error "It is only possible to random force a rational variable with~%~
+                                a maximum denominator and a small finite range."))))))
+           (t (error "It is only possible to random force a variable that~%~
+                      has a finite range.")))))
+    (value-of variable)))
 
 (defun static-ordering-internal (variables force-function)
+  (declare (type list variables))
   (if variables
       (let ((variable (value-of (first variables))))
         (cond ((variable? variable)
+               (when (and (not (bounded? variable))
+                          (variable-dependencies variable)
+                          (not (deep-bound? (variable-dependencies variable))))
+                     (static-ordering-internal (variable-dependencies variable) force-function))
                (funcall-nondeterministic force-function variable)
                (static-ordering-internal variables force-function))
               (t (static-ordering-internal (rest variables) force-function))))))
@@ -5617,7 +8928,65 @@ may provide additional ones. \(The defined Screamer protocol does not provide
 sufficient hooks for the user to define her own force functions.)"
   ;; note: This closure will heap cons.
   (let ((force-function (value-of force-function)))
-    #'(lambda (variables) (static-ordering-internal variables force-function))))
+    #'(lambda (variables)
+     (static-ordering-internal variables force-function))))
+
+;;; Lifted FUNCALLV and APPLYV
+
+(defun finite-domain? (variable)
+  (let ((variable (value-of variable)))
+    (or (not (variable? variable))
+        (not (eq (variable-enumerated-domain variable) t))
+        (and (variable-lower-bound variable)
+             (variable-upper-bound variable)
+             (or (variable-integer? variable)
+                 (and (variable-rational? variable)
+                      (variable-max-denom variable)))))))
+  
+(defun deep-value-of (x)
+  (let ((x (value-of x)))
+    (typecase x
+      (null nil)
+      (variable (value-of x))
+      (cons (cons (deep-value-of (car x))
+                  (deep-value-of (cdr x))))
+      (otherwise x))))
+
+(defun deep-bound? (x)
+  (the boolean
+  (let ((x (value-of x)))
+    (typecase x
+      (null t)
+      (variable (bound? x))
+      (cons (and (deep-bound? (car x))
+                 (deep-bound? (cdr x))))
+      (otherwise t)))))
+
+(defun deep-bounded? (x)
+  (the boolean
+  (let ((x (value-of x)))
+    (typecase x
+      (null t)
+      (variable (bounded? x))
+      (cons (and (deep-bounded? (car x))
+                 (deep-bounded? (cdr x))))
+      (otherwise t)))))
+
+(defun deep-finite-domain? (x)
+  (the boolean
+  (let ((x (value-of x)))
+    (typecase x
+      (null t)
+      (variable (finite-domain? x))
+      (cons (and (deep-finite-domain? (car x))
+                 (deep-finite-domain? (cdr x))))
+      (otherwise t)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline enumerated-domain-p)))
+(defun enumerated-domain-p (x)
+ (and (not (eq (variable-enumerated-domain x) t))
+      (listp (variable-enumerated-domain x))))
 
 (defun known?-constraint (f polarity? x)
   (let ((f (value-of f)))
@@ -5627,71 +8996,71 @@ sufficient hooks for the user to define her own force functions.)"
     (unless (functionp f)
       (error "The first argument to FUNCALLV or APPLYV must be a deterministic~%~
            function"))
-    (and (every #'finite-domain? x)
-         (block exit
-           (for-effects
-             (if (if polarity?
-                     (not (apply f (solution x (static-ordering #'linear-force))))
-                     (apply f (solution x (static-ordering #'linear-force))))
-                 (return-from exit nil)))
-           t))))
+        (and (deep-finite-domain? x)
+             (block exit
+               (for-effects
+                 (if (if polarity?
+                         (not (apply f (solution x (static-ordering #'linear-force))))
+                         (apply f (solution x (static-ordering #'linear-force))))
+                     (return-from exit nil)))
+               t))))
+
+(defun substitute-variable (structure target value)
+  "Recursively substitute TARGET variable with VALUE in STRUCTURE."
+  (if (eq structure target)
+      value
+    (typecase structure
+      (null nil)
+      (cons (cons (substitute-variable (car structure) target value)
+                  (substitute-variable (cdr structure) target value)))
+      (otherwise structure))))
 
 (defun propagate-gfc (predicate polarity? variables unassigned-variable)
   ;; note: UNASSIGNED-VARIABLE must be a variable which is not bound and
   ;;       all of the VARIABLES except the UNASSIGNED-VARIABLE must be bound.
-  (let ((unassigned-variable (value-of unassigned-variable)))
+  (let ((unassigned-variable (deep-value-of unassigned-variable)))
     ;; There is no way to propagate a value to a variable that doesn't have an
-    ;; enumerated domain.
+      ;; enumerated domain.
     (if (and (not (eq (variable-enumerated-domain unassigned-variable) t))
              (not (null (rest (variable-enumerated-domain
                                unassigned-variable)))))
-        ;; note: Could do less consing if had LOCAL DELETE-IF-NOT.
         ;; note: Consing.
-        (let* ((variable-values (mapcar #'value-of variables))
+        (let* ((variable-values (deep-value-of variables))
                (new-enumerated-domain
                 (if polarity?
                     (remove-if-not
                      #'(lambda (value)
                          (apply predicate
                                 ;; note: Consing.
-                                (mapcar #'(lambda (variable variable-value)
-                                            (if (eq variable unassigned-variable)
-                                                value
-                                                variable-value))
-                                        variables
-                                        variable-values)))
+                                (substitute-variable variable-values unassigned-variable value)))
                      (variable-enumerated-domain unassigned-variable))
                     (remove-if
                      #'(lambda (value)
                          (apply predicate
                                 ;; note: Consing.
-                                (mapcar #'(lambda (variable variable-value)
-                                            (if (eq variable unassigned-variable)
-                                                value
-                                                variable-value))
-                                        variables
-                                        variable-values)))
+                                (substitute-variable variable-values unassigned-variable value)))
                      (variable-enumerated-domain unassigned-variable)))))
           (if (set-enumerated-domain! unassigned-variable new-enumerated-domain)
               (run-noticers unassigned-variable))))))
 
-(defun a-tuple (variables variable value)
-  (if (null variables)
-      nil
-      (cons (cond ((eq (first variables) variable) value)
-                  ((variable? (first variables))
-                   (a-member-of (variable-enumerated-domain (first variables))))
-                  (t (first variables)))
-            (a-tuple (rest variables) variable value))))
+(defun a-tuple (structure variable value)
+  "Recursively build a tuple for arc consistency, preserving structure."
+  (if (eq structure variable)
+      value
+    (typecase structure
+      (null nil)
+      (variable (a-member-of (variable-enumerated-domain structure)))
+      (cons (cons (a-tuple (car structure) variable value)
+                  (a-tuple (cdr structure) variable value)))      
+      (otherwise structure))))
 
 (defun propagate-ac (predicate polarity? variables)
   (unless (some #'(lambda (variable)
-                    (and (variable? variable)
-                         (eq (variable-enumerated-domain variable) t)))
-                variables)
-    (dolist (variable variables)
-      ;; note: Could do less consing if had LOCAL DELETE-IF-NOT.
-      (if (variable? variable)
+                        (and (variable? variable)
+                             (eq (variable-enumerated-domain variable) t)))
+                (variables-in variables))
+    (dolist (variable (variables-in variables))
+      (if (not (deep-bound? variable))
           (let ((new-enumerated-domain
                  (if polarity?
                      (remove-if-not
@@ -5719,33 +9088,33 @@ sufficient hooks for the user to define her own force functions.)"
     (unless (functionp predicate)
       (error "The first argument to FUNCALLV or APPLYV must be a deterministic~%~
            function"))
-    (dolist (variable variables)
-      (unless (bound? variable)
+    (dolist (variable (variables-in (copy-list variables)))
+      (unless (deep-bound? variable)
         (if unassigned-variable (setf multiple-unassigned-variables? t))
         (setf unassigned-variable variable)))
     (cond
       (multiple-unassigned-variables?
        ;; The case where two or more variables are unbound
        (let ((variables (copy-list variables)))
-         (dolist (variable variables)
-           (unless (bound? variable)
+         (dolist (variable (variables-in variables))
+           (unless (deep-bound? variable)
              (let ((variable variable))
                (attach-noticer!
                 #'(lambda ()
                     (global
                       (block exit
                         (let ((unassigned-variable nil))
-                          (dolist (variable variables)
-                            (unless (bound? variable)
+                          (dolist (variable (variables-in variables))
+                            (unless (deep-bound? variable)
                               (if unassigned-variable (return-from exit))
                               (setf unassigned-variable variable)))
                           (if unassigned-variable
                               (propagate-gfc
                                predicate polarity? variables unassigned-variable)
                               (unless (if polarity?
-                                          (apply predicate (mapcar #'value-of variables))
+                                          (apply predicate (deep-value-of variables))
                                           (not (apply predicate
-                                                      (mapcar #'value-of variables))))
+                                                      (deep-value-of variables))))
                                 (fail)))))))
                 variable))))))
       (unassigned-variable
@@ -5754,8 +9123,8 @@ sufficient hooks for the user to define her own force functions.)"
       ;; The case where all variables are bound
       ;; note: Consing.
       (t (unless (if polarity?
-                     (apply predicate (mapcar #'value-of variables))
-                     (not (apply predicate (mapcar #'value-of variables))))
+                     (apply predicate (deep-value-of variables))
+                     (not (apply predicate (deep-value-of variables))))
            (fail))))))
 
 (defun assert!-constraint-ac (predicate polarity? variables)
@@ -5766,7 +9135,7 @@ sufficient hooks for the user to define her own force functions.)"
     (unless (functionp predicate)
       (error "The first argument to FUNCALLV or APPLYV must be a deterministic~%~
            function"))
-    (dolist (variable variables)
+    (dolist (variable (variables-in variables))
       (attach-noticer!
        #'(lambda () (propagate-ac predicate polarity? variables))
        variable))
@@ -5786,33 +9155,26 @@ sufficient hooks for the user to define her own force functions.)"
 (defun assert!-notv-funcallv (f &rest x) (assert!-constraint f nil x))
 
 (defun funcallv (f &rest x)
-  "F must be a deterministic function. If all arguments X are bound, returns
-the result of calling F on the dereferenced values of arguments.
-
-Otherwise returns a fresh variable V, constrained to be equal to the result
-of calling F on the dereferenced values of arguments.
-
-Additionally, if all but one of V and the argument variables become known, and
-the remaining variable has a finite domain, then that domain is further
-restricted to be consistent with other arguments."
   (let ((f (value-of f)))
     (if (variable? f)
         (error "The current implementation does not allow the first argument~%~
               of FUNCALLV to be an unbound variable"))
     (unless (functionp f)
       (error "The first argument to FUNCALLV must be a deterministic function"))
-    (if (every #'bound? x)
-        (apply f (mapcar #'value-of x))
-        (let ((z (make-variable)))
-          (assert!-constraint
-           #'(lambda (&rest x) (equal (first x) (apply f (rest x)))) t (cons z x))
-          (dolist (argument x)
-            (attach-noticer!
-             #'(lambda ()
-                 (if (every #'bound? x)
-                     (assert!-equalv z (apply f (mapcar #'value-of x)))))
-             argument))
-          z))))
+        (if (deep-bound? x)
+            (apply f (deep-value-of x))
+            (let ((z (make-variable)))
+              (attach-noticer! nil z :dependencies (variables-in x))
+              (assert!-constraint
+                #'(lambda (&rest x) (generic-equal (first x) (apply f (rest x))))
+                t (cons z x))
+              (dolist (argument (variables-in x))
+                (attach-noticer!
+                  #'(lambda ()
+                      (if (deep-bound? x)
+                          (assert!-equalv z (apply f (deep-value-of x)))))
+                  argument))
+              z))))
 
 (defun arguments-for-applyv (x xs)
   (unless (bound? (first (last (cons x xs))))
@@ -5833,41 +9195,34 @@ restricted to be consistent with other arguments."
   (assert!-constraint f nil (arguments-for-applyv x xs)))
 
 (defun applyv (f x &rest xs)
-  "F must be a deterministic function. If all arguments X are bound, returns
-the result of calling F on the dereferenced values of spread arguments.
-
-Otherwise returns a fresh variable V, constrained to be equal to the result
-of calling F on the dereferenced values of arguments.
-
-Additionally, if all but one of V and the argument variables become known, and
-the remaining variable has a finite domain, then that domain is further
-restricted to be consistent with other arguments."
   (let ((f (value-of f)))
     (if (variable? f)
         (error "The current implementation does not allow the first argument~%~
               of APPLYV to be an unbound variable"))
     (unless (functionp f)
       (error "The first argument to APPLYV must be a deterministic function"))
-    (let ((arguments (arguments-for-applyv x xs)))
-      (if (every #'bound? arguments)
-          (apply f (mapcar #'value-of arguments))
-          (let ((z (make-variable)))
-            (assert!-constraint
-             #'(lambda (&rest x) (equal (first x) (apply f (rest x))))
-             t
-             (cons z arguments))
-            (dolist (argument arguments)
-              (attach-noticer!
-               #'(lambda ()
-                   (if (every #'bound? arguments)
-                       (assert!-equalv z (apply f (mapcar #'value-of arguments)))))
-               argument))
-            z)))))
+    (let ((arguments (apply #'list* (mapcar #'value-of (cons x xs)))))
+          (if (deep-bound? arguments)
+              (apply f (deep-value-of arguments))
+              (let ((z (make-variable)))
+                (attach-noticer! nil z :dependencies (variables-in arguments))
+                (assert!-constraint
+                  #'(lambda (&rest x) (generic-equal (first x) (apply f (rest x))))
+                  t
+                  (cons z arguments))
+                (dolist (argument (variables-in arguments))
+                  (attach-noticer!
+                    #'(lambda ()
+                        (if (deep-bound? arguments)
+                            (assert!-equalv z (apply f (deep-value-of arguments)))))
+                    argument))
+                z)))))
+
 
 ;;; Lifted EQUALV
 
 (defun known?-equalv (x y)
-  (or (eql x y)
+  (or (generic-equal x y)
       (cond ((variable? x)
              (and (not (eq (variable-value x) x))
                   (known?-equalv (variable-value x) y)))
@@ -5880,7 +9235,7 @@ restricted to be consistent with other arguments."
                     (known?-equalv (cdr x) (cdr y)))))))
 
 (defun assert!-equalv (x y)
-  (unless (eql x y)
+  (unless (generic-equal x y)
     (cond ((variable? x)
            (cond ((not (eq (variable-value x) x))
                   (assert!-equalv (variable-value x) y))
@@ -5901,14 +9256,18 @@ restricted to be consistent with other arguments."
 (defun known?-notv-equalv (x y) (one-value (progn (assert!-equalv x y) nil) t))
 
 (defun assert!-notv-equalv (x y)
-  ;; note: Can be made more efficient so that if you later find out that
-  ;;       X and Y are KNOWN?-NUMBERPV you can then ASSERT!-/=V2.
-  (if (known?-equalv x y) (fail))
-  (unless (known?-notv-equalv x y)
-    (let ((x (variablize x))
-          (y (variablize y)))
-      (attach-noticer! #'(lambda () (if (known?-equalv x y) (fail))) x)
-      (attach-noticer! #'(lambda () (if (known?-equalv x y) (fail))) y))))
+ (cond
+   ((known?-equalv x y) (fail))
+   ((not (known?-notv-equalv x y))
+    (let* ((x (variablize x))
+           (y (variablize y))
+           (noticer #'(lambda ()
+                        (cond ((and (known?-numberpv x)
+                                    (known?-numberpv y))
+                               (/=-rule x y))
+                              ((known?-equalv x y) (fail))))))
+      (attach-noticer! noticer x)
+      (attach-noticer! noticer y)))))
 
 (defun equalv (x y)
   "Returns T if the aggregate object X is known to equal the aggregate object
@@ -6518,6 +9877,7 @@ restrictions and fail when any assertion causes X1 to be known to be equal to
 X2."
   (/=v-internal x xs))
 
+
 ;;; The Optimizer Macros for ASSERT!, KNOWN? and DECIDE
 
 (defun known?-true (x) (assert!-booleanpv x) (eq (value-of x) t))
@@ -6539,12 +9899,15 @@ X2."
                (mapcar #'(lambda (form) (transform-known? form polarity?))
                        (rest form))))
         ((member (first form)
-                 '(integerpv realpv numberpv memberv booleanpv
-                   =v <v <=v >v >=v /=v funcallv applyv equalv)
+                 '(integerpv rationalpv ratiopv floatpv realpv numberpv
+                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv all-differentv)
                  :test #'eq)
          (cons (cdr (assoc (first form)
                            (if polarity?
                                '((integerpv . known?-integerpv)
+                                 (rationalpv . known?-rationalpv)
+                                 (ratiopv . known?-ratiopv)
+                                 (floatpv . known?-floatpv)
                                  (realpv . known?-realpv)
                                  (numberpv . known?-numberpv)
                                  (memberv . known?-memberv)
@@ -6557,8 +9920,12 @@ X2."
                                  (/=v . known?-/=v)
                                  (funcallv . known?-funcallv)
                                  (applyv . known?-applyv)
-                                 (equalv . known?-equalv))
+                                 (equalv . known?-equalv)
+                                 (all-differentv . known?-all-differentv))
                                '((integerpv . known?-notv-integerpv)
+                                 (rationalpv . known?-notv-rationalpv)
+                                 (ratiopv . known?-notv-ratiopv)
+                                 (floatpv . known?-notv-floatpv)
                                  (realpv . known?-notv-realpv)
                                  (numberpv . known?-notv-numberpv)
                                  (memberv . known?-notv-memberv)
@@ -6571,12 +9938,14 @@ X2."
                                  (/=v . known?-=v)
                                  (funcallv . known?-notv-funcallv)
                                  (applyv . known?-notv-applyv)
-                                 (equalv . known?-notv-equalv)))
+                                 (equalv . known?-notv-equalv)
+                                 (all-differentv . known?-notv-all-differentv)))
                            :test #'eq))
                (rest form)))
         (polarity? `(known?-true ,form))
         (t `(known?-false ,form)))
       (if polarity? `(known?-true ,form) `(known?-false ,form))))
+
 
 (defmacro-compile-time known? (x)
   "Restricts X to be a boolean. If X is equal to T after being restricted to
@@ -6633,12 +10002,15 @@ nested in a call to KNOWN?, are similarly transformed."
                         #'(lambda (form) (transform-assert! form polarity?))
                         (rest form)))))
         ((member (first form)
-                 '(integerpv realpv numberpv memberv booleanpv
-                   =v <v <=v >v >=v /=v funcallv applyv equalv)
+                 '(integerpv rationalpv ratiopv floatpv realpv numberpv
+                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv all-differentv)
                  :test #'eq)
          (cons (cdr (assoc (first form)
                            (if polarity?
                                '((integerpv . assert!-integerpv)
+                                 (rationalpv . assert!-rationalpv)
+                                 (ratiopv . assert!-ratiopv)
+                                 (floatpv . assert!-floatpv)
                                  (realpv . assert!-realpv)
                                  (numberpv . assert!-numberpv)
                                  (memberv . assert!-memberv)
@@ -6651,8 +10023,12 @@ nested in a call to KNOWN?, are similarly transformed."
                                  (/=v . assert!-/=v)
                                  (funcallv . assert!-funcallv)
                                  (applyv . assert!-applyv)
-                                 (equalv . assert!-equalv))
+                                 (equalv . assert!-equalv)
+                                 (all-differentv . assert!-all-differentv))
                                '((integerpv . assert!-notv-integerpv)
+                                 (rationalpv . assert!-notv-rationalpv)
+                                 (ratiopv . assert!-notv-ratiopv)
+                                 (floatpv . assert!-notv-floatpv)
                                  (realpv . assert!-notv-realpv)
                                  (numberpv . assert!-notv-numberpv)
                                  (memberv . assert!-notv-memberv)
@@ -6665,7 +10041,8 @@ nested in a call to KNOWN?, are similarly transformed."
                                  (/=v . assert!-=v)
                                  (funcallv . assert!-notv-funcallv)
                                  (applyv . assert!-notv-applyv)
-                                 (equalv . assert!-notv-equalv)))
+                                 (equalv . assert!-notv-equalv)
+                                 (all-differentv . assert!-notv-all-differentv)))
                            :test #'eq))
                (rest form)))
         (polarity? `(assert!-true ,form))
@@ -6724,8 +10101,8 @@ directly nested in a call to ASSERT!, are similarly transformed."
                    (cons (if polarity? 'progn 'either)
                          (mapcar #'third result)))))
         ((member (first form)
-                 '(integerpv realpv numberpv memberv booleanpv
-                   =v <v <=v >v >=v /=v funcallv applyv equalv)
+                 '(integerpv rationalpv ratiopv floatpv realpv numberpv
+                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv all-differentv)
                  :test #'eq)
          (let ((arguments (mapcar #'(lambda (argument)
                                       (declare (ignore argument))
@@ -6735,6 +10112,9 @@ directly nested in a call to ASSERT!, are similarly transformed."
                    (cons (cdr (assoc (first form)
                                      (if polarity?
                                          '((integerpv . assert!-integerpv)
+                                           (rationalpv . assert!-rationalpv)
+                                           (ratiopv . assert!-ratiopv)
+                                           (floatpv . assert!-floatpv)
                                            (realpv . assert!-realpv)
                                            (numberpv . assert!-numberpv)
                                            (memberv . assert!-memberv)
@@ -6747,8 +10127,12 @@ directly nested in a call to ASSERT!, are similarly transformed."
                                            (/=v . assert!-/=v)
                                            (funcallv . assert!-funcallv)
                                            (applyv . assert!-applyv)
-                                           (equalv . assert!-equalv))
+                                           (equalv . assert!-equalv)
+                                           (all-differentv . assert!-all-differentv))
                                          '((integerpv . assert!-notv-integerpv)
+                                           (rationalpv . assert!-notv-rationalpv)
+                                           (ratiopv . assert!-notv-ratiopv)
+                                           (floatpv . assert!-notv-floatpv)
                                            (realpv . assert!-notv-realpv)
                                            (numberpv . assert!-notv-numberpv)
                                            (memberv . assert!-notv-memberv)
@@ -6761,7 +10145,8 @@ directly nested in a call to ASSERT!, are similarly transformed."
                                            (/=v . assert!-=v)
                                            (funcallv . assert!-notv-funcallv)
                                            (applyv . assert!-notv-applyv)
-                                           (equalv . assert!-notv-equalv)))
+                                           (equalv . assert!-notv-equalv)
+                                           (all-differentv . assert!-notv-all-differentv)))
                                      :test #'eq))
                          arguments)
                    (cons (cdr (assoc (first form)
@@ -6779,7 +10164,8 @@ directly nested in a call to ASSERT!, are similarly transformed."
                                            (/=v . assert!-=v)
                                            (funcallv . assert!-notv-funcallv)
                                            (applyv . assert!-notv-applyv)
-                                           (equalv . assert!-notv-equalv))
+                                           (equalv . assert!-notv-equalv)
+                                           (all-differentv . assert!-notv-all-differentv))
                                          '((integerpv . assert!-integerpv)
                                            (realpv . assert!-realpv)
                                            (numberpv . assert!-numberpv)
@@ -6793,7 +10179,8 @@ directly nested in a call to ASSERT!, are similarly transformed."
                                            (/=v . assert!-/=v)
                                            (funcallv . assert!-funcallv)
                                            (applyv . assert!-applyv)
-                                           (equalv . assert!-equalv)))
+                                           (equalv . assert!-equalv)
+                                           (all-differentv . assert!-all-differentv)))
                                      :test #'eq))
                          arguments))))
         (t (let ((argument (gensym "ARGUMENT-")))
@@ -6809,6 +10196,7 @@ directly nested in a call to ASSERT!, are similarly transformed."
          (list (list argument form))
          (if polarity? `(assert!-true ,argument) `(assert!-false ,argument))
          (if polarity? `(assert!-false ,argument) `(assert!-true ,argument))))))
+
 
 (defmacro-compile-time decide (x)
   "Restricts X to a be boolean. After X is restricted a nondeterministic
@@ -6895,6 +10283,108 @@ The expression \(AN-INTEGER-BETWEENV LOW HIGH) is an abbreviation for:
     (assert! (andv (integerpv v) (>=v v low) (<=v v high)))
     (value-of v)))
 
+(defun a-rationalv (&optional max-denom name)
+  "Returns a variable constrained to be a rational number. If MAX-DENOM is provided,
+the variable is further constrained to have denominator ≤ MAX-DENOM. If NAME is
+provided, it is used as the variable's name."
+  (let ((v (if name (make-variable name) (make-variable))))
+    (when max-denom (restrict-max-denom! v max-denom))
+    (assert! (rationalpv v))
+    v))
+
+(defun a-rational-abovev (low &optional max-denom name)
+  "Returns a variable constrained to be a rational number greater than or equal to LOW.
+If MAX-DENOM is provided, the denominator is constrained to ≤ MAX-DENOM. If NAME is
+provided, it is used as the variable's name."
+  (let ((v (if name (make-variable name) (make-variable))))
+    (when max-denom (restrict-max-denom! v max-denom))
+    (assert! (andv (rationalpv v) (>=v v low)))
+    v))
+
+(defun a-rational-belowv (high &optional max-denom name)
+  "Returns a variable constrained to be a rational number less than or equal to HIGH.
+If MAX-DENOM is provided, the denominator is constrained to ≤ MAX-DENOM. If NAME is
+provided, it is used as the variable's name."
+  (let ((v (if name (make-variable name) (make-variable))))
+    (when max-denom (restrict-max-denom! v max-denom))
+    (assert! (andv (rationalpv v) (<=v v high)))
+    v))
+
+(defun a-rational-betweenv (low high &optional max-denom name)
+  "Returns a variable constrained to be a rational number in the closed interval
+[LOW, HIGH]. If MAX-DENOM is provided, the denominator is constrained to ≤ MAX-DENOM.
+If NAME is provided, it is used as the variable's name. Fails if there is no rational
+between LOW and HIGH at the time of call."
+  (let ((v (if name (make-variable name) (make-variable))))
+    (when max-denom (restrict-max-denom! v max-denom))
+    (assert! (andv (rationalpv v) (>=v v low) (<=v v high)))
+    v))
+
+(defun a-ratiov (&optional max-denom name)
+  "Returns a variable constrained to be a ratio (noninteger rational). If MAX-DENOM is
+provided, the denominator is constrained to ≤ MAX-DENOM. If NAME is provided, it is
+used as the variable's name."
+  (let ((v (if name (make-variable name) (make-variable))))
+    (when max-denom (restrict-max-denom! v max-denom))
+    (assert! (ratiopv v))
+    v))
+
+(defun a-ratio-betweenv (low high &optional max-denom name)
+  "Returns a variable constrained to be a ratio (noninteger rational) in the closed
+interval [LOW, HIGH]. If MAX-DENOM is provided, the denominator is constrained to
+≤ MAX-DENOM. If NAME is provided, it is used as the variable's name. Fails if there
+is no ratio between LOW and HIGH at the time of call."
+  (let ((v (if name (make-variable name) (make-variable))))
+    (when max-denom (restrict-max-denom! v max-denom))
+    (assert! (andv (ratiopv v) (>=v v low) (<=v v high)))
+    v))
+
+(defun a-ratio-abovev (low &optional max-denom name)
+  "Returns a variable constrained to be a ratio (noninteger rational) greater than or
+equal to LOW. If MAX-DENOM is provided, the denominator is constrained to ≤ MAX-DENOM.
+If NAME is provided, it is used as the variable's name."
+  (let ((v (if name (make-variable name) (make-variable))))
+    (when max-denom (restrict-max-denom! v max-denom))
+    (assert! (andv (ratiopv v) (>=v v low)))
+    v))
+
+(defun a-ratio-belowv (high &optional max-denom name)
+  "Returns a variable constrained to be a ratio (noninteger rational) less than or
+equal to HIGH. If MAX-DENOM is provided, the denominator is constrained to ≤ MAX-DENOM.
+If NAME is provided, it is used as the variable's name."
+  (let ((v (if name (make-variable name) (make-variable))))
+    (when max-denom (restrict-max-denom! v max-denom))
+    (assert! (andv (ratiopv v) (<=v v high)))
+    v))
+
+(defun a-floatv (&optional (name nil name?))
+  "Returns a variable constrained to be a float. If NAME is provided, it is used as
+the variable's name."
+  (let ((v (if name? (make-variable name) (make-variable))))
+    (assert! (floatpv v))
+    v))
+
+(defun a-float-abovev (low &optional (name nil name?))
+  "Returns a variable constrained to be a float greater than or equal to LOW.
+If NAME is provided, it is used as the variable's name."
+  (let ((v (if name? (make-variable name) (make-variable))))
+    (assert! (andv (floatpv v) (>=v v low)))
+    v))
+
+(defun a-float-belowv (high &optional (name nil name?))
+  "Returns a variable constrained to be a float less than or equal to HIGH.
+If NAME is provided, it is used as the variable's name."
+  (let ((v (if name? (make-variable name) (make-variable))))
+    (assert! (andv (floatpv v) (<=v v high)))
+    v))
+
+(defun a-float-betweenv (low high &optional (name nil name?))
+  "Returns a variable constrained to be a float between LOW and HIGH (inclusive).
+If NAME is provided, it is used as the variable's name."
+  (let ((v (if name? (make-variable name) (make-variable))))
+    (assert! (andv (floatpv v) (>=v v low) (<=v v high)))
+    v))
+
 (defun a-realv (&optional (name nil name?))
   "Returns a real variable."
   (let ((v (if name? (make-variable name) (make-variable))))
@@ -6944,13 +10434,54 @@ VALUES can be either a vector or a list designator."
     (assert! (memberv v values))
     (value-of v)))
 
+(defun a-random-member-ofv (values &optional (name nil name?))
+  "Returns a variable whose value is constrained to be one of a
+random permutation of VALUES.
+VALUES can be either a vector or a list designator."
+  (let ((v (if name? (make-variable name) (make-variable))))
+    (assert! (memberv v (alexandria::shuffle (copy-list values))))
+    (value-of v)))
+
+(defmacro-compile-time n-variables (n var-fn &rest args)
+  "Generate N variables using VAR-FN and ARGS.
+  Ex.: (n-variables 3 'an-integer-betweenv 0 10)."
+  (let ((variables (gensym "VARIABLES")))
+   `(let ((,variables nil))
+     (dotimes (i ,n)
+      (push (apply ,var-fn (list ,@args)) ,variables))
+      ,variables)))
+
+(defmacro-compile-time n-lists-of-variables (sizes var-fn &rest args)
+  "Generate lists of variables. SIZES is a list, each element is the number of variables in that list.
+VAR-FN and ARGS are used to construct each variable.
+  Ex.: (n-lists-of-variables '(2 3) 'an-integer-betweenv 0 10)."
+  (let ((lists (gensym "LISTS")))
+    `(let ((,lists nil))
+       (dolist (size ,sizes)
+         (let ((vars nil))
+           (dotimes (i size)
+             (push (apply ,var-fn (list ,@args)) vars))
+           (push (nreverse vars) ,lists)))
+       (nreverse ,lists))))
+
 ;;; Search Control
 
-(defun variables-in (x)
-  (typecase x
-    (cons (append (variables-in (car x)) (variables-in (cdr x))))
-    (variable (list x))
-    (otherwise nil)))
+ (defun variables-in (x)
+  ;; Get initial variable list from `x'
+  (the list
+       (typecase x
+         (variable (list x))
+         (cons (append (variables-in (value-of (car x)))
+                       (variables-in (cdr x))))
+         (string nil)
+         (sequence (apply #'append (map 'list #'variables-in x)))
+         (array (flet ((mappend-arr (arr f)
+                         (let (coll)
+                           (dotimes (idx (array-total-size arr))
+                             (alexandria::appendf coll (funcall f (row-major-aref arr idx))))
+                           coll)))
+                  (mappend-arr x #'variables-in)))
+         (otherwise nil))))
 
 ;;; note: SOLUTION and LINEAR-FORCE used to be here but was moved to be before
 ;;;       KNOWN?-CONSTRAINT to avoid forward references to nondeterministic
@@ -7000,19 +10531,67 @@ domain size is odd, the halves differ in size by at most one."
           ((and (variable-real? variable)
                 (variable-lower-bound variable)
                 (variable-upper-bound variable))
-           (if (variable-integer? variable)
-               (let ((midpoint (floor (+ (variable-lower-bound variable)
-                                         (variable-upper-bound variable))
-                                      2)))
-                 (either (let ((old-bound (variable-upper-bound variable)))
-                           (restrict-upper-bound! variable midpoint)
-                           (if (= old-bound (variable-upper-bound variable))
-                               (fail)))
-                         (let ((old-bound (variable-lower-bound variable)))
-                           (restrict-lower-bound! variable (1+ midpoint))
-                           (if (= old-bound (variable-lower-bound variable))
-                               (fail)))))
-               (let ((midpoint (/ (+ (variable-lower-bound variable)
+           (cond 
+                ((zerop (- (variable-upper-bound variable)
+                           (variable-lower-bound variable)))
+                  (cond ((variable-rational? variable)
+                         (set-enumerated-domain!
+                          variable
+                         (list (variable-lower-bound variable)))
+                         (run-noticers variable))
+                        (t (set-enumerated-domain!
+                            variable
+                           (either (list (variable-lower-bound variable))
+                                   (list (variable-upper-bound variable))))
+                          (run-noticers variable))))
+                ((variable-integer? variable)
+                 (let ((midpoint (floor (+ (variable-lower-bound variable)
+                                           (variable-upper-bound variable))
+                                        2)))
+                   (either 
+                           (let ((old-bound (variable-upper-bound variable)))
+                             (restrict-upper-bound! variable midpoint)
+                             (if (= old-bound (variable-upper-bound variable))
+                                 (fail)))
+                           (let ((old-bound (variable-lower-bound variable)))
+                             (restrict-lower-bound! variable (1+ midpoint))
+                             (if (= old-bound (variable-lower-bound variable))
+                                 (fail))))))
+              ((and (variable-ratio? variable)
+                    (variable-max-denom variable))
+               (let* ((midpoint (/ (+ (variable-lower-bound variable)
+                                 (variable-upper-bound variable))
+                              2)))
+                 (either
+                  (let ((old-bound (variable-upper-bound variable)))
+                    (restrict-upper-bound! variable
+                      (closest-ratio-upper midpoint (variable-max-denom variable)))
+                    (if (= old-bound (variable-upper-bound variable))
+                        (fail)))
+                  (let ((old-bound (variable-lower-bound variable)))
+                    (restrict-lower-bound! variable
+                     (closest-ratio-lower midpoint (variable-max-denom variable)))
+                    (if (= old-bound (variable-lower-bound variable))
+                        (fail))))))    
+                ((and (variable-rational? variable)
+                      (variable-max-denom variable))
+                  (let* ((midpoint (/ (+ (variable-lower-bound variable)
+                                    (variable-upper-bound variable))
+                                    2)))
+                    (either
+                      (let ((old-bound (variable-upper-bound variable)))
+                        (if (integerp midpoint)
+                            (restrict-upper-bound! variable midpoint)
+                            (restrict-upper-bound! variable (closest-ratio-upper midpoint (variable-max-denom variable))))
+                        (if (= old-bound (variable-upper-bound variable))
+                            (fail)))
+                      (let ((old-bound (variable-lower-bound variable)))
+                        (if (integerp midpoint)
+                            (restrict-lower-bound! variable (+ (/ 1 (variable-max-denom variable)) midpoint))
+                            (restrict-lower-bound! variable (closest-rational-lower midpoint (variable-max-denom variable))))
+                        (if (= old-bound (variable-lower-bound variable))
+                            (fail))))))
+               (t (let ((midpoint (/ (+ (variable-lower-bound variable)
                                      (variable-upper-bound variable))
                                   2)))
                  (either (let ((old-bound (variable-upper-bound variable)))
@@ -7022,7 +10601,7 @@ domain size is odd, the halves differ in size by at most one."
                          (let ((old-bound (variable-lower-bound variable)))
                            (restrict-lower-bound! variable midpoint)
                            (if (= old-bound (variable-lower-bound variable))
-                               (fail)))))))
+                               (fail))))))))
           (t (error "It is only possible to divide and conquer force a~%~
                   variable that has a countable domain or a finite range")))))
   (value-of variable))
@@ -7031,12 +10610,25 @@ domain size is odd, the halves differ in size by at most one."
 ;;;       KNOWN?-CONSTRAINT to avoid a forward reference to a nondeterministic
 ;;;       function.
 
+(defun estimate-farey-domain-size (max-denom lower-bound upper-bound)
+  "Estimate the number of Farey rationals in [lower-bound, upper-bound] with denominator <= max-denom."
+  (declare (type integer max-denom)
+           (type number lower-bound upper-bound))
+  (cond ((= lower-bound upper-bound) 1)
+        (t (let* ((interval (- upper-bound lower-bound))
+                  (farey-count (/ (* 3 (expt max-denom 2)) (expt pi 2))))
+            (round (* farey-count interval))))))
+ 
 (defun domain-size (x)
   "Returns the domain size of X.
 
 If X is an integer variable with an upper and lower bound, its domain size
 is the one greater than the difference of its bounds. Eg. [integer 1:2] has
 domain size 2.
+
+If X is a rational variable with a maximum denominator and both an upper and
+lower bound, its domain-size is an estimation of the number of all possible
+reduced rational numbers between those bounds.
 
 If X is a variable with an enumerated domain, its domain size is the size of
 that domain.
@@ -7054,8 +10646,14 @@ have domain size of 1."
               (length (variable-enumerated-domain x)))
              ((and (variable-lower-bound x)
                    (variable-upper-bound x)
-                   (variable-integer? x))
-              (1+ (- (variable-upper-bound x) (variable-lower-bound x))))
+                   (variable-rational? x))
+              (cond ((variable-integer? x)
+                     (1+ (- (variable-upper-bound x) (variable-lower-bound x))))
+                     ((variable-max-denom x)
+                      (estimate-farey-domain-size (variable-max-denom x)
+                                                  (variable-lower-bound x) (variable-upper-bound x)))))
+             ((variable-dependencies x)
+              (domain-size (variable-dependencies x)))
              (t nil)))
       (otherwise 1))))
 
@@ -7074,6 +10672,7 @@ Other types of objects and variables have range size NIL."
   (let ((x (value-of x)))
     (typecase x
       (integer 0)
+      (ratio 0)
       (real 0.0)
       (variable (and (variable-real? x)
                      (variable-lower-bound x)
@@ -7105,12 +10704,17 @@ Other types of objects and variables have range size NIL."
 
 (defun reorder-internal
     (variables cost-function terminate? order force-function)
+  (declare (type list variables))
   (let ((variable (find-best cost-function order variables)))
     (when (and variable
                (not (funcall terminate? (funcall cost-function variable))))
-      (funcall-nondeterministic force-function (value-of variable))
-      (reorder-internal
-       variables cost-function terminate? order force-function))))
+      (when (and (not (bounded? variable))
+                 (variable-dependencies variable)
+                 (not (deep-bound? (variable-dependencies variable))))
+            (reorder-internal (variable-dependencies variable)
+                           cost-function terminate? order force-function))
+     (funcall-nondeterministic force-function (value-of variable))
+     (reorder-internal variables cost-function terminate? order force-function))))
 
 (defun reorder (cost-function terminate? order force-function)
   "Returns an ordering force function based on arguments.
@@ -7150,10 +10754,6 @@ sufficient hooks for the user to define her own force functions.)"
         (reorder-internal
          variables cost-function terminate? order force-function))))
 
-;;; FIXME: This doesn't make any sense. See branch "maybe" for an alternative
-;;; expression. Also: why are we trying to increase the upper bound, and not
-;;; the lower bound? Should the API also not allow us to minimize a variable
-;;; towards either zero or negative infinity? --ns 2011-11-01
 (defmacro-compile-time best-value
     (form1 objective-form &optional (form2 nil form2?))
   "First evaluates OBJECTIVE-FORM, which should evaluate to constraint variable V.
@@ -7190,6 +10790,58 @@ nikodemus@random-state.net."
        (for-effects
          (let ((value ,form1))
            (global (setf ,bound (variable-upper-bound ,objective))
+                   (setf ,best value))))
+       (if ,bound (list ,best ,bound) ,(if form2? form2 '(fail))))))
+
+(defmacro-compile-time optimize-value (bound-type form1 objective-form &optional (form2 nil form2?))
+  "Generalized optimization macro for Screamer.
+Evaluates OBJECTIVE-FORM, which should yield a Screamer constraint variable.
+
+BOUND-TYPE should be the symbol 'max or 'min, determining whether to maximize or minimize.
+
+Repeatedly evaluates FORM1 in a nondeterministic context until failure.
+After each round, applies the appropriate bound function (max or min) to the lower and
+upper bounds of the objective variable.
+
+If an improved bound is found (according to the correct comparison), the next round
+requires a strictly better bound; otherwise, the search fails.
+
+If the last successful evaluation produced a bound for the objective variable,
+returns a list of two elements: the primary value of FORM1 from that round,
+and the best bound found.
+
+If FORM2 is provided, returns its value on failure; otherwise, calls fail."
+  (let ((bound (gensym "BOUND-"))
+        (best (gensym "BEST-"))
+        (objective (gensym "OBJECTIVE-"))
+        (bound-fn (gensym "BOUNDFN-"))
+        (compare-fn (gensym "COMPAREFN-")))
+    `(let* ((,bound nil)
+            (,best nil)
+            (,objective (variablize ,objective-form))
+            (,bound-fn (ecase ,bound-type
+                         (max #'max)
+                         (min #'min)))
+            (,compare-fn (ecase ,bound-type
+                           (max #'<=)
+                           (min #'>=))))
+       (attach-noticer!
+        (lambda ()
+          (let* ((lower (variable-lower-bound ,objective))
+                 (upper (variable-upper-bound ,objective))
+                 (best-bound (cond (lower (if upper (funcall ,bound-fn lower upper) lower))
+                                   (upper upper))))
+            (when (and best-bound ,bound (funcall ,compare-fn best-bound ,bound))
+              (fail))))
+        ,objective)
+       (for-effects
+         (let ((value ,form1))
+           (global (setf ,bound
+                         (let* ((lower (variable-lower-bound ,objective))
+                                (upper (variable-upper-bound ,objective))
+                                (best-bound (cond (lower (if upper (funcall ,bound-fn lower upper) lower))
+                                                  (upper upper))))
+                           best-bound))
                    (setf ,best value))))
        (if ,bound (list ,best ,bound) ,(if form2? form2 '(fail))))))
 

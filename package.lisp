@@ -38,10 +38,17 @@
            #:necessarily?
            #:all-values
            #:ith-value
+           #:n-values
            #:print-values
+           #:nested-for-effects
+           #:nested-one-value
+           #:nested-all-values
            #:nondeterministic-function?
            #:funcall-nondeterministic
            #:apply-nondeterministic
+           #:mapcar-nondeterministic
+           #:map-nondeterministic
+           #:lambda-nondeterministic
            #:unwind-trail
            #:trail
            #:purge
@@ -52,17 +59,30 @@
            #:an-integer-above
            #:an-integer-below
            #:an-integer-between
+           #:a-rational
+           #:a-rational-above
+           #:a-rational-below
+           #:a-rational-between
+           #:a-ratio
+           #:a-ratio-above
+           #:a-ratio-below
+           #:a-ratio-between
            #:a-member-of
+           #:a-random-member-of
            #:when-failing
            #:count-failures
            #:boolean
            #:booleanp
            #:make-variable
            #:numberpv
+           #:ratiopv
+           #:rationalpv
+           #:floatpv
            #:realpv
            #:integerpv
            #:booleanpv
            #:memberv
+           #:all-differentv
            #:assert!
            #:known?
            #:decide
@@ -77,12 +97,27 @@
            #:an-integer-abovev
            #:an-integer-belowv
            #:an-integer-betweenv
+           #:a-rationalv
+           #:a-rational-abovev
+           #:a-rational-belowv
+           #:a-rational-betweenv
+           #:a-ratiov
+           #:a-ratio-abovev
+           #:a-ratio-belowv
+           #:a-ratio-betweenv
+           #:a-floatv
+           #:a-float-abovev
+           #:a-float-belowv
+           #:a-float-betweenv
            #:a-realv
            #:a-real-abovev
            #:a-real-belowv
            #:a-real-betweenv
            #:a-numberv
            #:a-member-ofv
+           #:a-random-member-ofv
+           #:n-variables
+           #:n-lists-of-variables
            #:notv
            #:andv
            #:orv
@@ -103,12 +138,14 @@
            #:apply-substitution
            #:linear-force
            #:divide-and-conquer-force
+           #:random-force
            #:static-ordering
            #:domain-size
            #:range-size
            #:reorder
            #:solution
            #:best-value
+           #:optimize-value
            #:template
            #:define-screamer-package
            #:*screamer-version*
@@ -116,4 +153,9 @@
            #:*iscream?*
            #:*minimum-shrink-ratio*
            #:*maximum-discretization-range*
-           #:*strategy*))
+           #:*strategy*
+           #:*maximum-random-domain-size*))
+
+(in-package :screamer)
+;;; Avoid warnings when compiling screamer.lisp in LispWorks
+#+lispworks(declaim (declaration magic))

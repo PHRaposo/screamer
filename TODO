@@ -8,12 +8,13 @@
 ******* TODO Don't talk about noticers: they're an implementation detail.
 ***** TODO Simplify the language in the constraint section.
 * TODO Make iscream.el work under Slime.
-* TODO Rewrite dynamic-extent continuations using FLET
-    At least SBCL cannot currently stack-allocate a let-bound lambda,
-    but manages FLET and LABELS just fine.
+* DONE Rewrite dynamic-extent continuations using FLET
+    POSSIBLY-BETA-REDUCE-FUNCALL emits FLET for magic-cont/null-types
+    sites and aliases the original cvar via LET to #'helper, enabling
+    stack-allocation of continuation closures. *dynamic-extent?*
+    removed: optimisation is now unconditional.
 * DONE Dynamic-extent in CPS-CONVERT-TAGBODY.
-    LABELS-bound continuations declared (dynamic-extent ...) when
-    *dynamic-extent?* is true.
+    LABELS-bound continuations declared (dynamic-extent ...).
 * WIP Split the system into logical pieces.
     Most of the DEFUN-COMPILE-TIME functions should probably go
     to a file of their own, loaded before the main screamer code

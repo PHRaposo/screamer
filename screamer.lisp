@@ -86,15 +86,6 @@ to DEFPACKAGE, and automatically injects two additional options:
 (defparameter *screamer-version* (asdf:component-version (asdf:find-system :screamer))
   "The version of Screamer which is loaded.")
 
-(defvar-compile-time *dynamic-extent?*
-    ;; SBCL cannot stack-allocate LET-bound lambdas that screamer
-    ;; currently uses, so setting dynamic-extent to T will only
-    ;; generate compiler notes about it inability to do so.
-    #-sbcl t
-    #+sbcl nil
-    "Set to T to enable the dynamic extent optimization, NIL to
-disable it. Default is platform dependent.")
-
 (defvar *iscream?* nil
   "T if Screamer is running under ILisp/GNUEmacs with iscream.el loaded.")
 
@@ -2791,23 +2782,28 @@ model cannot propagate through helper parameters."
                        ;; Peal off LAMBDA, arguments, and DECLARE.
                        ,@(rest (rest (rest (second continuation)))))))
                (t
-                ;; Materialise continuation arg as LET binding, not SUBST
-                ;; (gensym aliasing corrupts accumulators).
-                (if (null types)
-                    `(let ((,(magic-continuation-argument continuation) ,form))
-                       ,@(if (and *dynamic-extent?* (is-magic-continuation? form))
-                             `((declare
-                                (dynamic-extent
-                                 ,(magic-continuation-argument continuation)))))
-                       ;; Peal off LAMBDA, arguments, and DECLARE.
-                       ,@(rest (rest (rest (second continuation)))))
-                    `(let ((,(magic-continuation-argument continuation)
-                            (the (and ,@types) ,form)))
-                       (declare
-                        (type (and ,@types)
-                              ,(magic-continuation-argument continuation)))
-                       ;; Peal off LAMBDA, arguments, and DECLARE.
-                       ,@(rest (rest (rest (second continuation)))))))))
+                (cond
+                  ((and (null types)
+                        (is-magic-continuation? form))
+                   (let* ((cvar (magic-continuation-argument continuation))
+                          (helper (gensym "CONTINUATION-FN-")))
+                     `(flet ((,helper ,@(rest (second form))))
+                        (declare (dynamic-extent #',helper))
+                        (let ((,cvar #',helper))
+                          ;; Peal off LAMBDA, arguments, and DECLARE.
+                          ,@(rest (rest (rest (second continuation))))))))
+                  ((null types)
+                   `(let ((,(magic-continuation-argument continuation) ,form))
+                      ;; Peal off LAMBDA, arguments, and DECLARE.
+                      ,@(rest (rest (rest (second continuation))))))
+                  (t
+                   `(let ((,(magic-continuation-argument continuation)
+                           (the (and ,@types) ,form)))
+                      (declare
+                       (type (and ,@types)
+                             ,(magic-continuation-argument continuation)))
+                      ;; Peal off LAMBDA, arguments, and DECLARE.
+                      ,@(rest (rest (rest (second continuation))))))))))
            (progn
              (unless (null (second (second continuation)))
                (error "Please report this bug; This shouldn't happen (C)"))
@@ -3182,7 +3178,7 @@ flag and emit a regular cl function for det-only ones."
                               environment))))
                    (rest segments))
            ;; Add DYNAMIC-EXTENT declaration for all generated functions
-           ,@(when (and function-names *dynamic-extent?*)
+           ,@(when function-names
                `((declare (dynamic-extent ,@(mapcar (lambda (name) `#',name)
                                                    function-names)))))
            ,(let ((next (rest segments)))

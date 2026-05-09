@@ -1,6 +1,26 @@
 -*- mode: org -*-
 * WIP Complete manual
-***** DONE All exported symbols documented.
+      Manual infrastructure (sb-texinfo + makeinfo) lives in master.
+      Per-symbol .texinfo files in doc/include/ are auto-generated
+      from docstrings; screamer.texinfo references them via @include.
+      Build: cd doc && make clean && make all.
+***** WIP All exported symbols documented.
+        Was DONE on master. 4.0.1 added ~19 symbols that still need
+        @include lines in screamer.texinfo: n-values, n-variables,
+        n-lists-of-variables, mapcar-nondeterministic,
+        map-nondeterministic, lambda-nondeterministic, optimize-value,
+        a-rational{,-above,-below,-between},
+        a-ratio{,-above,-below,-between}, a-rationalv, a-ratiov,
+        a-floatv, a-random-member-of, a-random-member-ofv,
+        rationalpv, ratiopv, floatpv, all-differentv, random-force.
+        Docstrings already exist; only the @include lines are missing.
+***** TODO 4.0.1 narrative updates
+        Section 2.4 Side-Effects: document the defstruct-slot LOCAL
+        limitation confirmed by test-local-side-effects.lisp (INCF/
+        DECF/PUSH/POP/PUSHNEW on slots escape the trail).
+        Limitations chapter: replace stale entries with the 4 items
+        from manual-limitations.lisp.
+        Examples chapter: add rational/float/random-force examples.
 ***** WIP Cleanups
 ******* DONE Some docstrings talk of EXPRESSIONS, some of FORMS.
 ******* DONE "Yields" vs "returns" a value.

@@ -36,6 +36,14 @@
 ;; before running the search and watch the text grow and shrink in real
 ;; time.
 ;;
+;; Performance: LOCAL-OUTPUT is a debug / demonstration tool, not a
+;; production hot-path facility. Even with fire-and-forget swank calls,
+;; placing LOCAL-OUTPUT inside a deeply recursive search function adds
+;; significant overhead per node (allocation, capture stream, RPC volume,
+;; trail entries). For real workloads, place LOCAL-OUTPUT only at the
+;; high-level steps of interest, not on every recursion or every choice
+;; point.
+;;
 ;; With small ranges (e.g. an-integer-between 1 3) the search finishes
 ;; in fractions of a second; the buffer flickers too fast to see. Use
 ;; larger ranges to observe the live behaviour:
@@ -101,6 +109,19 @@ The text inserted here is what gets deleted on backtrack by
 `screamer-slime-pop-end-marker'."
   (with-current-buffer (screamer-slime-output-buffer)
     (goto-char (point-max))
+    (insert str)
+    (display-buffer (current-buffer)))
+  nil)
+
+(defun screamer-slime-push-and-insert (str)
+  "Record current point-max as a backtrack location and insert STR.
+Combines `screamer-slime-push-end-marker' and an explicit insert in
+one round-trip from Lisp, used by `local-output' for the common path
+where the body emits non-empty text. Pairs with
+`screamer-slime-pop-end-marker' on backtrack."
+  (with-current-buffer (screamer-slime-output-buffer)
+    (goto-char (point-max))
+    (push (point) screamer-slime-backtrack-locations)
     (insert str)
     (display-buffer (current-buffer)))
   nil)

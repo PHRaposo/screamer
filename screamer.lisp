@@ -4815,21 +4815,25 @@ either a list or a vector."
 ;;; with screamer-slime.el loaded on the Emacs side. The user opts in by
 ;;; setting *iscream?* to T after loading both ends.
 
-(defun emacs-eval (expression)
+(defun emacs-eval (expression &optional nowait)
   "Evaluate EXPRESSION on the Emacs side via SLIME's swank protocol.
-Requires *iscream?* to be T and SLIME's swank package to be loaded."
+When NOWAIT is non-nil, return immediately without waiting for the
+Emacs reply (fire-and-forget). Requires *iscream?* to be T and SLIME's
+swank package to be loaded."
   (unless *iscream?*
     (error "Cannot do EMACS-EVAL unless *ISCREAM?* is T (Screamer~%~
             running under SLIME with screamer-slime.el loaded)."))
   (let ((eval-fn (find-symbol "EVAL-IN-EMACS" :swank)))
     (unless eval-fn
       (error "Cannot do EMACS-EVAL: SLIME's swank package is not loaded."))
-    (funcall eval-fn expression)))
+    (funcall eval-fn expression nowait)))
 
 (defmacro-compile-time local-output (&body forms)
   "Run FORMS with *standard-output* captured and sent to the *Screamer
 Output* buffer in Emacs. The captured text is deleted automatically
-when the current choice is unwound. Requires *ISCREAM?* to be T and
+when the current choice is unwound. When FORMS produce no output, no
+Emacs-side work happens. Otherwise a single fire-and-forget RPC
+combines the marker push and insert. Requires *ISCREAM?* to be T and
 SLIME with screamer-slime.el loaded on the Emacs side."
   (let ((out (gensym "OUT-"))
         (text (gensym "TEXT-")))
@@ -4837,15 +4841,14 @@ SLIME with screamer-slime.el loaded on the Emacs side."
        (unless *iscream?*
          (error "Cannot do LOCAL-OUTPUT unless *ISCREAM?* is T (Screamer~%~
                  running under SLIME with screamer-slime.el loaded)."))
-       (trail #'(lambda () (emacs-eval '(screamer-slime-pop-end-marker))))
-       (emacs-eval '(screamer-slime-push-end-marker))
        (let* ((,out (make-string-output-stream))
               (*standard-output* ,out))
          (unwind-protect
               (progn ,@forms)
            (let ((,text (get-output-stream-string ,out)))
              (when (plusp (length ,text))
-               (emacs-eval (list 'screamer-slime-insert-output ,text)))))))))
+               (emacs-eval (list 'screamer-slime-push-and-insert ,text) t)
+               (trail #'(lambda () (emacs-eval '(screamer-slime-pop-end-marker) t))))))))))
 
 ;;; Constraints
 

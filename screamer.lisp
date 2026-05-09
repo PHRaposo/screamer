@@ -87,7 +87,8 @@ to DEFPACKAGE, and automatically injects two additional options:
   "The version of Screamer which is loaded.")
 
 (defvar *iscream?* nil
-  "T if Screamer is running under ILisp/GNUEmacs with iscream.el loaded.")
+  "Set to T to enable Emacs integration (LOCAL-OUTPUT, EMACS-EVAL).
+Requires Screamer running under SLIME with screamer-slime.el loaded.")
 
 (defvar-compile-time *nondeterministic-context* nil
   "Hash-table storing context information for the current nondeterministic search.
@@ -4029,29 +4030,9 @@ Screamer."
 
 (defun y-or-n-p
     (&optional (format-string nil format-string?) &rest format-args)
-  (cond
-    (*iscream?*
-     (let ((query (if format-string?
-                      (format nil "~A (Y or N): "
-                              (apply #'format nil format-string format-args))
-                      "(Y or N): ")))
-       (emacs-eval '(y-or-n-p-begin))
-       (unwind-protect
-            (tagbody
-             loop
-               (format *query-io* "~%~A" query)
-               (let ((char (read-char *query-io*)))
-                 (when (or (char= char #\y) (char= char #\Y))
-                   (format *query-io* "Y")
-                   (return-from y-or-n-p t))
-                 (when (or (char= char #\n) (char= char #\N))
-                   (format *query-io* "N")
-                   (return-from y-or-n-p nil)))
-               (format *query-io* "Please type a single character, Y or N")
-               (go loop))
-         (emacs-eval '(y-or-n-p-end)))))
-    (format-string? (apply #'cl:y-or-n-p format-string format-args))
-    (t (cl:y-or-n-p))))
+  (if format-string?
+      (apply #'cl:y-or-n-p format-string format-args)
+      (cl:y-or-n-p)))
 
 (defmacro-compile-time print-values (&body body)
   "Evaluates BODY as an implicit PROGN and prints each of the nondeterministic
@@ -4830,30 +4811,41 @@ either a list or a vector."
    will contain at most desired-count rationals (approximate, using Farey size formula)."
   (ith-value (1- desired-count) (a-rational-above 0 max-denom)))
 
-;;; note: The following two functions work only when Screamer is running under
-;;;       ILisp/GNUEmacs with iscream.el loaded.
+;;; The following two functions work when Screamer is running under SLIME
+;;; with screamer-slime.el loaded on the Emacs side. The user opts in by
+;;; setting *iscream?* to T after loading both ends.
 
 (defun emacs-eval (expression)
+  "Evaluate EXPRESSION on the Emacs side via SLIME's swank protocol.
+Requires *iscream?* to be T and SLIME's swank package to be loaded."
   (unless *iscream?*
-    (error "Cannot do EMACS-EVAL unless Screamer is running under~%~
-          ILisp/GNUEmacs with iscream.el loaded."))
-  (format *terminal-io* "~A~A~A"
-          (format nil "~A" (code-char 27))
-          (string-downcase (format nil "~A" expression))
-          (format nil "~A" (code-char 29))))
+    (error "Cannot do EMACS-EVAL unless *ISCREAM?* is T (Screamer~%~
+            running under SLIME with screamer-slime.el loaded)."))
+  (let ((eval-fn (find-symbol "EVAL-IN-EMACS" :swank)))
+    (unless eval-fn
+      (error "Cannot do EMACS-EVAL: SLIME's swank package is not loaded."))
+    (funcall eval-fn expression)))
 
 (defmacro-compile-time local-output (&body forms)
-  "Currently unsupported.
-
-When running under ILisp with iscream.el loaded, does non-determinism aware
-output to Emacs, which will be deleted when the current choice is unwound."
-  `(progn
-     (unless *iscream?*
-       (error "Cannot do LOCAL-OUTPUT unless Screamer is running under~%~
-            ILisp/GNUEmacs with iscream.el loaded."))
-     (trail #'(lambda () (emacs-eval '(pop-end-marker))))
-     (emacs-eval '(push-end-marker))
-     ,@forms))
+  "Run FORMS with *standard-output* captured and sent to the *Screamer
+Output* buffer in Emacs. The captured text is deleted automatically
+when the current choice is unwound. Requires *ISCREAM?* to be T and
+SLIME with screamer-slime.el loaded on the Emacs side."
+  (let ((out (gensym "OUT-"))
+        (text (gensym "TEXT-")))
+    `(progn
+       (unless *iscream?*
+         (error "Cannot do LOCAL-OUTPUT unless *ISCREAM?* is T (Screamer~%~
+                 running under SLIME with screamer-slime.el loaded)."))
+       (trail #'(lambda () (emacs-eval '(screamer-slime-pop-end-marker))))
+       (emacs-eval '(screamer-slime-push-end-marker))
+       (let* ((,out (make-string-output-stream))
+              (*standard-output* ,out))
+         (unwind-protect
+              (progn ,@forms)
+           (let ((,text (get-output-stream-string ,out)))
+             (when (plusp (length ,text))
+               (emacs-eval (list 'screamer-slime-insert-output ,text)))))))))
 
 ;;; Constraints
 

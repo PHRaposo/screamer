@@ -37,14 +37,19 @@
       Constraint-section docstrings condensed: redundant per-direction
       noticer paragraphs replaced with concise "mutually constrained"
       statements. Manual texinfo prose was already clean.
-* TODO Port LOCAL-OUTPUT to SLIME.
-    iscream.el targets ILisp/bridge.el (abandoned ~2005). SLIME already
-    handles Y-OR-N-P natively, and EMACS-EVAL is redundant with
-    SWANK:EVAL-IN-EMACS. Only LOCAL-OUTPUT (backtrack-aware Emacs buffer
-    output) is worth porting: write a screamer-slime.el using
-    SWANK:EVAL-IN-EMACS for push-end-marker/pop-end-marker, and gate the
-    macro on swank presence. iscream.el and the *iscream?* path can be
-    dropped at that point.
+* DONE Port LOCAL-OUTPUT to SLIME.
+    New screamer-slime.el replaces iscream.el for the Emacs side and
+    auto-enables slime-enable-evaluate-in-emacs on load.
+    EMACS-EVAL now uses SWANK:EVAL-IN-EMACS instead of escape codes.
+    LOCAL-OUTPUT now captures *standard-output* during the body and
+    sends the text to the *Screamer Output* buffer via
+    screamer-slime-insert-output; trail closures call
+    screamer-slime-pop-end-marker on backtrack to delete the inserted
+    text. Live-observation tool only; the buffer is fully unwound
+    when the search exits (ALL-VALUES exhaustion or ONE-VALUE return).
+    *ISCREAM?* kept as the explicit gate. Y-OR-N-P simplified to
+    delegate to CL:Y-OR-N-P (SLIME routes to the minibuffer
+    natively). iscream.el deleted.
 * DONE Rewrite dynamic-extent continuations using FLET
     POSSIBLY-BETA-REDUCE-FUNCALL emits FLET for magic-cont/null-types
     sites and aliases the original cvar via LET to #'helper, enabling

@@ -124,10 +124,12 @@ available without manual shadowing.
   this file, then `(in-package :screams)`.
 - **`equations.lisp`** — equations for testing the numeric constraint
   solver. Load Screamer + this file, then `(in-package :screams)`.
-- **`iscream.el`** — Emacs Lisp integration for ILisp. Required if you
-  want `local-output` (backtrack-aware Emacs buffer output) or the
-  ILisp-aware `y-or-n-p`. ILisp itself has been abandoned for ~20 years;
-  the SLIME port of `local-output` is on the TODO.
+- **`screamer-slime.el`** — Emacs Lisp integration for SLIME. Provides
+  the Emacs-side hooks for `local-output` (live-observation text in
+  the *Screamer Output* buffer that is automatically deleted on
+  backtrack). To use: add this file's directory to `load-path`,
+  `(require 'screamer-slime)` from your Emacs init, then on the Lisp
+  side set `screamer:*iscream?*` to `T` after Screamer loads.
 
 ## Papers
 

@@ -4,10 +4,27 @@
 ***** WIP Cleanups
 ******* DONE Some docstrings talk of EXPRESSIONS, some of FORMS.
 ******* DONE "Yields" vs "returns" a value.
-******* TODO Restricts vs constrains.
-******* TODO Don't talk about noticers: they're an implementation detail.
-***** TODO Simplify the language in the constraint section.
-* TODO Make iscream.el work under Slime.
+******* DONE Restricts vs constrains.
+        Public docstrings normalised to "constrain"; "restrict-X!"
+        function names retained as internal API.
+******* DONE Don't talk about noticers: they're an implementation detail.
+        Noticer mentions removed from public docstrings (integerpv,
+        rationalpv, ratiopv, floatpv, realpv, numberpv, memberv, notv,
+        andv, orv, equalv, =v, <v, /=v, known?, assert!, decide).
+        Bidirectional propagation now described as "mutually
+        constrained" without exposing the noticer mechanism.
+***** DONE Simplify the language in the constraint section.
+      Constraint-section docstrings condensed: redundant per-direction
+      noticer paragraphs replaced with concise "mutually constrained"
+      statements. Manual texinfo prose was already clean.
+* TODO Port LOCAL-OUTPUT to SLIME.
+    iscream.el targets ILisp/bridge.el (abandoned ~2005). SLIME already
+    handles Y-OR-N-P natively, and EMACS-EVAL is redundant with
+    SWANK:EVAL-IN-EMACS. Only LOCAL-OUTPUT (backtrack-aware Emacs buffer
+    output) is worth porting: write a screamer-slime.el using
+    SWANK:EVAL-IN-EMACS for push-end-marker/pop-end-marker, and gate the
+    macro on swank presence. iscream.el and the *iscream?* path can be
+    dropped at that point.
 * DONE Rewrite dynamic-extent continuations using FLET
     POSSIBLY-BETA-REDUCE-FUNCALL emits FLET for magic-cont/null-types
     sites and aliases the original cvar via LET to #'helper, enabling
@@ -20,9 +37,11 @@
     to a file of their own, loaded before the main screamer code
     is compiled.
 * TODO Cleanups
-*** TODO #:DUMMY-N gensyms used all over the place
-    This makes macro-expansions harder to read than they need to be.
-    Use differently named gensyms for different things.
+*** DONE #:DUMMY-N gensyms used all over the place
+    Renamed by role across CPS sites: OLD-/NEW- (trail save vs new
+    value), TEST- (IF antecedent), LET-VALUE- (LET binding),
+    MV- (multi-value &rest list), FN-VALUE- (multiple-value-call
+    function), ARG- (call argument), IGNORED- (discarded args).
 *** DONE DEFMACRO-COMPILE-TIME
       Check if Allegro still needs this.
       Used across all 4 supported impls (SBCL, CCL, LispWorks, Allegro).

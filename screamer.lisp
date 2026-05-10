@@ -2369,7 +2369,14 @@ so the user sees exactly which clause is missing."
                                                     (t (list user-var)))))
                                         (dolist (rv record-targets)
                                           (walk-loop-record-var ir rv "FOR/AS"))
-                                        (when init
+                                        ;; Push iterator when the clause
+                                        ;; supplies any of init/step/term.
+                                        ;; Edge case: `for x in nil' has
+                                        ;; init=NIL (the literal) but
+                                        ;; step/term are non-NIL -- still
+                                        ;; a valid iterator that yields
+                                        ;; zero iterations.
+                                        (when (or init step term)
                                           (push (list var init step term)
                                                 (loop-ir-iterators ir)))
                                         (when for-let

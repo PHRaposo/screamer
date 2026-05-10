@@ -8,131 +8,133 @@
 ;; rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
 ;; sell copies of the Software.
 
-;; This file replaces the older iscream.el, which targeted the abandoned
-;; ILisp + bridge.el stack. It provides the Emacs-side hooks needed by
-;; Screamer's LOCAL-OUTPUT macro under SLIME.
+;; Replaces the classic iscream.el (ILisp/bridge.el-based). Provides the
+;; Emacs-side hooks for Screamer's LOCAL-OUTPUT macro under SLIME.
 ;;
 ;; Setup:
-;;   1. Add the directory containing this file to your `load-path'.
+;;   1. Add this directory to `load-path'.
 ;;   2. (require 'screamer-slime) in your Emacs init.
 ;;   3. Connect to a Lisp with SLIME, load Screamer.
 ;;   4. On the Lisp side: (setf screamer:*iscream?* t)
 ;;
-;; How it works:
+;; The Lisp side creates a swank channel on the first LOCAL-OUTPUT call
+;; and asks Emacs to register a mirror via `swank:ed-rpc-no-wait' -- a
+;; permission gated by `defslimefun', NOT by `slime-enable-evaluate-in-
+;; emacs'. After registration, LOCAL-OUTPUT sends `(:channel-send ID ...)'
+;; events that are dispatched directly to the channel methods below; no
+;; READ or EVAL runs on the Emacs side.
 ;;
-;; LOCAL-OUTPUT captures the body's *standard-output* and inserts the
-;; captured text at the end of the *Screamer Output* buffer. A trail
-;; closure registered at LOCAL-OUTPUT entry deletes that text on
-;; backtrack. The result: while the search runs, the buffer shows
-;; whatever path Screamer is currently exploring, and the text vanishes
-;; the moment Screamer backtracks past that point. After the search
-;; finishes (whether via ALL-VALUES exhausting or ONE-VALUE returning a
-;; result), Screamer unwinds the entire trail to its starting point, so
-;; ALL the text inserted during the search is removed. The buffer ends
-;; up empty.
-;;
-;; This means LOCAL-OUTPUT is for LIVE OBSERVATION of the search, not
-;; for persistent logging. Open *Screamer Output* in a visible window
-;; before running the search and watch the text grow and shrink in real
-;; time.
-;;
-;; Performance: LOCAL-OUTPUT is a debug / demonstration tool, not a
-;; production hot-path facility. Even with fire-and-forget swank calls,
-;; placing LOCAL-OUTPUT inside a deeply recursive search function adds
-;; significant overhead per node (allocation, capture stream, RPC volume,
-;; trail entries). For real workloads, place LOCAL-OUTPUT only at the
-;; high-level steps of interest, not on every recursion or every choice
-;; point.
-;;
-;; With small ranges (e.g. an-integer-between 1 3) the search finishes
-;; in fractions of a second; the buffer flickers too fast to see. Use
-;; larger ranges to observe the live behaviour:
-;;
-;;   ;; Open the output buffer in another window first.
-;;   (screamer::emacs-eval '(switch-to-buffer-other-window "*Screamer Output*"))
-;;   (screamer-slime-clear-output)
-;;
-;;   ;; Run a search slow enough to watch.
-;;   (all-values
-;;     (let ((x (an-integer-between 0 100)))
-;;       (local-output (format t "VALUE: ~A~%" x))
-;;       x))
-;;   ;; => (0 1 2 ... 100), and the *Screamer Output* buffer shows each
-;;   ;; line appearing and disappearing as the search backtracks.
-;;   ;; After the search completes, the buffer is empty again.
+;; LOCAL-OUTPUT semantics: the body's *standard-output* is captured in
+;; Lisp and shipped here as a single string per call. The text appears
+;; in the *Screamer Output* buffer and vanishes when Screamer backtracks
+;; past the LOCAL-OUTPUT entry. After a search completes, the trail
+;; unwinds entirely and the buffer ends empty -- LOCAL-OUTPUT is a live
+;; observation tool, not a persistent log.
 
 (require 'slime)
-
-;; LOCAL-OUTPUT and EMACS-EVAL go through `swank:eval-in-emacs', which
-;; SLIME guards behind `slime-enable-evaluate-in-emacs' (NIL by default).
-;; Loading this file is itself an explicit opt-in to the integration, so
-;; we enable the flag here. Users who do not want global eval-in-emacs
-;; should not (require 'screamer-slime) -- the legacy iscream.el path
-;; works without this flag (but is otherwise abandoned).
-(setq slime-enable-evaluate-in-emacs t)
 
 (defvar screamer-slime-output-buffer-name "*Screamer Output*"
   "Name of the buffer where LOCAL-OUTPUT writes.")
 
 (defvar screamer-slime-backtrack-locations nil
-  "Stack of buffer positions saved by `screamer-slime-push-end-marker',
-popped (and the region from each marker to point-max deleted) by
-`screamer-slime-pop-end-marker' on backtrack.")
+  "Stack of buffer positions saved by `:insert' channel messages,
+popped (with the region from each marker to point-max deleted) by
+`:pop' messages on backtrack.")
+
+(defvar screamer-slime--buffer-shown-p nil
+  "Non-nil once the *Screamer Output* buffer has been displayed in
+a window during the current session, so subsequent inserts skip the
+`display-buffer' call.")
 
 (defun screamer-slime-output-buffer ()
   "Return (creating if needed) the *Screamer Output* buffer."
   (get-buffer-create screamer-slime-output-buffer-name))
 
-(defun screamer-slime-push-end-marker ()
-  "Record the current end-of-buffer point as a backtrack location.
-Called by Screamer at the entry of a LOCAL-OUTPUT block via
-`swank:eval-in-emacs'."
-  (with-current-buffer (screamer-slime-output-buffer)
-    (goto-char (point-max))
-    (push (point) screamer-slime-backtrack-locations))
-  nil)
+(defun screamer-slime--ensure-shown ()
+  "Make the output buffer visible on the first insert of a session.
+After the buffer is in a window, subsequent calls short-circuit."
+  (unless screamer-slime--buffer-shown-p
+    (display-buffer (screamer-slime-output-buffer))
+    (setq screamer-slime--buffer-shown-p t)))
 
-(defun screamer-slime-pop-end-marker ()
-  "Pop the most recent backtrack location and delete the region from
-that location to point-max. Called by Screamer's trail closure on
-backtrack."
+(defun screamer-slime-clear-output ()
+  "Clear the *Screamer Output* buffer and reset the backtrack stack."
+  (interactive)
   (with-current-buffer (screamer-slime-output-buffer)
-    (when screamer-slime-backtrack-locations
-      (let ((loc (pop screamer-slime-backtrack-locations)))
-        (delete-region loc (point-max)))))
-  nil)
+    (let ((inhibit-read-only t))
+      (erase-buffer)))
+  (setq screamer-slime-backtrack-locations nil
+        screamer-slime--buffer-shown-p nil))
 
-(defun screamer-slime-insert-output (str)
-  "Insert STR at the end of the *Screamer Output* buffer and display it.
-Called by Screamer's LOCAL-OUTPUT to emit captured *standard-output* text.
-The text inserted here is what gets deleted on backtrack by
-`screamer-slime-pop-end-marker'."
-  (with-current-buffer (screamer-slime-output-buffer)
-    (goto-char (point-max))
-    (insert str)
-    (display-buffer (current-buffer)))
-  nil)
-
-(defun screamer-slime-push-and-insert (str)
-  "Record current point-max as a backtrack location and insert STR.
-Combines `screamer-slime-push-end-marker' and an explicit insert in
-one round-trip from Lisp, used by `local-output' for the common path
-where the body emits non-empty text. Pairs with
-`screamer-slime-pop-end-marker' on backtrack."
+(defsubst screamer-slime--insert (str)
+  "Insert STR at point-max of the output buffer and push the
+pre-insert position onto the backtrack stack. Pops the buffer into
+a window on the first call of the session; subsequent calls skip
+the `display-buffer' overhead."
+  (screamer-slime--ensure-shown)
   (with-current-buffer (screamer-slime-output-buffer)
     (goto-char (point-max))
     (push (point) screamer-slime-backtrack-locations)
-    (insert str)
-    (display-buffer (current-buffer)))
-  nil)
+    (let ((inhibit-read-only t))
+      (insert str))))
 
-(defun screamer-slime-clear-output ()
-  "Clear the *Screamer Output* buffer and reset the backtrack stack.
-Useful between independent Screamer searches."
-  (interactive)
+(defsubst screamer-slime--pop ()
+  "Pop the most recent backtrack location and delete the region from
+that location to point-max."
   (with-current-buffer (screamer-slime-output-buffer)
-    (erase-buffer))
-  (setq screamer-slime-backtrack-locations nil))
+    (when screamer-slime-backtrack-locations
+      (let ((loc (pop screamer-slime-backtrack-locations))
+            (inhibit-read-only t))
+        (delete-region loc (point-max))))))
+
+(slime-define-channel-type screamer)
+
+(slime-define-channel-method screamer :insert (str)
+  (screamer-slime--insert str))
+
+(slime-define-channel-method screamer :pop ()
+  (screamer-slime--pop))
+
+;; `defslimefun' marks the function as RPC-callable from Lisp via
+;; `swank:ed-rpc-no-wait'. The permission check on the Emacs side is
+;; `slime-rpc-allowed-p', which is independent of
+;; `slime-enable-evaluate-in-emacs'.
+(defslimefun screamer-slime-register-channel (id)
+  "Create the Emacs-side mirror channel for the Lisp screamer-output
+channel with ID. Called once per session by the Lisp side during the
+first LOCAL-OUTPUT firing; subsequent traffic goes through
+`(:channel-send ...)' events without any RPC. Refuses to overwrite an
+existing channel binding -- a Lisp side that already registered would
+otherwise shadow another channel and divert its messages."
+  (when (slime-find-channel id)
+    (error "screamer-slime: refusing to register; channel id %s already in use"
+           id))
+  (let ((ch (slime-make-channel% slime-screamer-channel-methods
+                                 "screamer-output"
+                                 id
+                                 nil)))
+    (push (cons id ch) (slime-channels))
+    id))
+
+(defun screamer-slime--on-connect ()
+  "Reset both sides on a fresh SLIME connection (initial connect or
+reconnect):
+  - Emacs-side: forget the buffer-shown flag and clear the backtrack
+    stack so the next insert pops the output buffer into a window
+    again and starts with no leftover markers from the dead session.
+  - Lisp-side: forget the cached channel ID, so the next LOCAL-OUTPUT
+    re-handshakes against this connection. The form is a no-op when
+    the Lisp image hasn't loaded Screamer."
+  (setq screamer-slime--buffer-shown-p nil
+        screamer-slime-backtrack-locations nil)
+  (when (slime-connected-p)
+    (slime-eval-async
+     '(cl:when (cl:find-package "SCREAMER")
+        (cl:let ((fn (cl:find-symbol "RESET-SCREAMER-OUTPUT-CHANNEL"
+                                     "SCREAMER")))
+          (cl:when fn (cl:funcall fn)))))))
+
+(add-hook 'slime-connected-hook 'screamer-slime--on-connect)
 
 (provide 'screamer-slime)
 ;;; screamer-slime.el ends here

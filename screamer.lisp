@@ -5847,40 +5847,87 @@ either a list or a vector."
 ;;; with screamer-slime.el loaded on the Emacs side. The user opts in by
 ;;; setting *iscream?* to T after loading both ends.
 
-(defun emacs-eval (expression &optional nowait)
-  "Evaluate EXPRESSION on the Emacs side via SLIME's swank protocol.
-When NOWAIT is non-nil, return immediately without waiting for the
-Emacs reply (fire-and-forget). Requires *iscream?* to be T and SLIME's
-swank package to be loaded."
-  (unless *iscream?*
-    (error "Cannot do EMACS-EVAL unless *ISCREAM?* is T (Screamer~%~
-            running under SLIME with screamer-slime.el loaded)."))
-  (let ((eval-fn (find-symbol "EVAL-IN-EMACS" :swank)))
-    (unless eval-fn
-      (error "Cannot do EMACS-EVAL: SLIME's swank package is not loaded."))
-    (funcall eval-fn expression nowait)))
+(defvar *swank-send-to-remote-channel* nil
+  "Cached SWANK::SEND-TO-REMOTE-CHANNEL function, resolved on first
+LOCAL-OUTPUT call. Sends a `(:channel-send ID MSG)' event over the
+swank socket -- the tag is dispatch-recognized on both sides, so the
+hot path never touches `slime-enable-evaluate-in-emacs'.")
+
+(defvar *screamer-output-channel-id* nil
+  "Channel ID for the screamer-output channel; set once per session
+by START-SCREAMER-OUTPUT-CHANNEL on the first LOCAL-OUTPUT call.")
+
+(defun reset-screamer-output-channel ()
+  "Forget the cached channel ID and function pointers. The next
+LOCAL-OUTPUT call will allocate a fresh channel and re-handshake
+with the current Emacs connection. Called from the Emacs side via
+`slime-connected-hook' so a SLIME reconnect doesn't leave Lisp
+sending to a stale channel."
+  (setf *screamer-output-channel-id* nil)
+  nil)
+
+(defun start-screamer-output-channel ()
+  "Allocate a swank channel for screamer-output and have Emacs create
+the matching mirror. Idempotent: returns the cached channel ID after
+the first call. The handshake uses `swank:ed-rpc-no-wait', which
+invokes `screamer-slime-register-channel' on the Emacs side without
+requiring `slime-enable-evaluate-in-emacs' (the RPC permission is
+granted by `defslimefun' on that function)."
+  (unless *screamer-output-channel-id*
+    (unless *iscream?*
+      (error "Cannot start screamer-output channel unless *ISCREAM?* is T."))
+    (let* ((channel-class    (find-symbol "CHANNEL" :swank))
+           (id-slot          (find-symbol "ID" :swank))
+           (ed-rpc-no-wait   (find-symbol "ED-RPC-NO-WAIT" :swank)))
+      (unless (and channel-class id-slot ed-rpc-no-wait)
+        (error "swank channel API (channel / ed-rpc-no-wait) not~%~
+                available in this SLIME version."))
+      (let* ((ch (make-instance channel-class :name "screamer-output"))
+             (id (slot-value ch id-slot)))
+        (funcall ed-rpc-no-wait 'screamer-slime-register-channel id)
+        (setf *screamer-output-channel-id* id))))
+  *screamer-output-channel-id*)
+
+(declaim (inline screamer-slime-send))
+(defun screamer-slime-send (msg)
+  "Send MSG over the screamer-output channel. Hot path: zero
+EVAL-IN-EMACS, just a `(:channel-send ID MSG)' event."
+  (funcall (or *swank-send-to-remote-channel*
+               (setf *swank-send-to-remote-channel*
+                     (or (find-symbol "SEND-TO-REMOTE-CHANNEL" :swank)
+                         (error "swank::send-to-remote-channel not~%~
+                                 available in this SLIME version."))))
+           *screamer-output-channel-id*
+           msg))
+
+(defun screamer-slime-pop-end-marker ()
+  "Trail-fired pop. Sends `(:pop)' on the screamer-output channel.
+Named function (not a lambda) so TRAIL receives a shared function
+reference -- no closure allocated per LOCAL-OUTPUT path."
+  (screamer-slime-send '(:pop)))
 
 (defmacro-compile-time local-output (&body forms)
   "Run FORMS with *standard-output* captured and sent to the *Screamer
-Output* buffer in Emacs. The captured text is deleted automatically
-when the current choice is unwound. When FORMS produce no output, no
-Emacs-side work happens. Otherwise a single fire-and-forget RPC
-combines the marker push and insert. Requires *ISCREAM?* to be T and
-SLIME with screamer-slime.el loaded on the Emacs side."
+Output* buffer in Emacs. The captured text is removed when the
+enclosing choice unwinds. Delivery uses a swank channel (no
+EVAL-IN-EMACS on the hot path). Requires *ISCREAM?* T and SLIME with
+screamer-slime.el loaded on the Emacs side."
   (let ((out (gensym "OUT-"))
         (text (gensym "TEXT-")))
     `(progn
        (unless *iscream?*
          (error "Cannot do LOCAL-OUTPUT unless *ISCREAM?* is T (Screamer~%~
                  running under SLIME with screamer-slime.el loaded)."))
+       (unless *screamer-output-channel-id*
+         (start-screamer-output-channel))
        (let* ((,out (make-string-output-stream))
               (*standard-output* ,out))
          (unwind-protect
               (progn ,@forms)
            (let ((,text (get-output-stream-string ,out)))
              (when (plusp (length ,text))
-               (emacs-eval (list 'screamer-slime-push-and-insert ,text) t)
-               (trail #'(lambda () (emacs-eval '(screamer-slime-pop-end-marker) t))))))))))
+               (screamer-slime-send (list :insert ,text))
+               (trail #'screamer-slime-pop-end-marker))))))))
 
 ;;; Constraints
 

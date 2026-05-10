@@ -1551,6 +1551,28 @@ The short-form keywords are matched by symbol name across packages."
 (defun-compile-time walk-loop-kw-eq (sym name)
   (and (symbolp sym) (string-equal (symbol-name sym) name)))
 
+(defun-compile-time walk-loop-typed-default (data-type step-var-p)
+  "Mirror SBCL's loop-typed-init for arithmetic-FOR defaults.
+DATA-TYPE may be NIL (untyped FOR), a symbol type-spec, or a CL
+type form. STEP-VAR-P non-NIL means BY default (returns 1 / 1.0
+/ etc.); otherwise FROM default (0 / 0.0 / etc.). Match SBCL's
+choice in `loop-typed-init' (line 754 of SBCL-loop.lisp)."
+  (let ((init (if step-var-p 1 0)))
+    (cond ((null data-type) init)
+          ((symbolp data-type)
+           (case data-type
+             ((single-float float) (coerce init 'single-float))
+             (double-float (coerce init 'double-float))
+             (short-float (coerce init 'short-float))
+             (long-float (coerce init 'long-float))
+             (t init)))
+          ((and (consp data-type) (eq (car data-type) 'complex))
+           (complex (walk-loop-typed-default
+                     (or (second data-type) 'real)
+                     step-var-p)
+                    0))
+          (t init))))
+
 (defun-compile-time walk-loop-tree-contains-loop-finish? (form)
   "Tree-walk FORM checking for any (loop-finish) call. Used by the
 FINALLY parser to reject (loop-finish) inside FINALLY at parse time
@@ -1630,7 +1652,12 @@ binding x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
       (values :unsupported
               "LOOP code ran out where a FOR/AS variable was expected."
               nil nil nil nil nil nil)))
-  (let ((var (first cs))
+  ;; CLHS d-var-spec: NIL in any position means "ignore this value"
+  ;; (no visible binding). For arithmetic FOR with `for nil from N
+  ;; to M', we still need an iter-var internally; gensym it so the
+  ;; emitted LET* binding is `(#:ITER-NIL- N)' rather than `(NIL N)'.
+  (let ((var (cond ((null (first cs)) (gensym "ITER-NIL-"))
+                   (t (first cs))))
         (rest (rest cs))
         (var-type nil))
     ;; Optional type spec immediately after VAR: "for i fixnum from ..."
@@ -1693,7 +1720,8 @@ binding x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
                  (walk-loop-destructure-bindings
                   var `(aref ,vec-sym ,idx-sym))
                  after
-                 (list vec-sym vec-expr)
+                 ;; outer-bindings now is a LIST of (var expr) pairs.
+                 `((,vec-sym ,vec-expr))
                  var-type)))
       ;; for VAR on LIST [BY step-fn] -> var IS the tail
       ((walk-loop-kw-eq (first rest) "ON")
@@ -1719,48 +1747,147 @@ binding x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
                   (values tail list-expr step-form `(atom ,tail)
                           (walk-loop-destructure-pattern var tail)
                           rest-after nil var-type))))))
-      ;; for VAR {from|upfrom|downfrom} A {to|upto|below|downto|above} B [by N]
-      ((or (walk-loop-kw-eq (first rest) "FROM")
-           (walk-loop-kw-eq (first rest) "UPFROM")
-           (walk-loop-kw-eq (first rest) "DOWNFROM"))
-       (let* ((from-kw (first rest))
-              (downward? (walk-loop-kw-eq from-kw "DOWNFROM"))
-              (from-expr (second rest))
-              (kw (third rest))
-              (limit (fourth rest))
-              (has-limit (walk-loop-loop-direction-keyword-p kw))
-              (after-limit (if has-limit (cddddr rest) (cddr rest)))
-              (by-expr (when (walk-loop-kw-eq (first after-limit) "BY")
-                         (second after-limit)))
-              (by-rest (if by-expr (cddr after-limit) after-limit))
-              ;; TO is the direction-flexible keyword: it inherits direction
-              ;; from FROM (or DOWNFROM). UPTO/BELOW are always increment;
-              ;; DOWNTO/ABOVE are always decrement. Default direction (no
-              ;; limit keyword) follows FROM/DOWNFROM.
-              (incr-step `(+ ,var ,(or by-expr 1)))
-              (decr-step `(- ,var ,(or by-expr 1)))
-              (default-step (if downward? decr-step incr-step))
-              (step (cond ((not has-limit) default-step)
-                          ((walk-loop-kw-eq kw "TO")
-                           (if downward? decr-step incr-step))
-                          ((or (walk-loop-kw-eq kw "UPTO")
-                               (walk-loop-kw-eq kw "BELOW"))   incr-step)
-                          ((or (walk-loop-kw-eq kw "DOWNTO")
-                               (walk-loop-kw-eq kw "ABOVE"))   decr-step)
-                          (t :unsupported)))
-              (term (cond ((not has-limit) nil)
-                          ((walk-loop-kw-eq kw "TO")
-                           (if downward? `(< ,var ,limit) `(> ,var ,limit)))
-                          ((walk-loop-kw-eq kw "UPTO")        `(> ,var ,limit))
-                          ((walk-loop-kw-eq kw "BELOW")       `(>= ,var ,limit))
-                          ((walk-loop-kw-eq kw "DOWNTO")      `(< ,var ,limit))
-                          ((walk-loop-kw-eq kw "ABOVE")       `(<= ,var ,limit))
-                          (t :unsupported))))
-         (if (eq step :unsupported)
-             (values :unsupported
-                     (format nil "FOR/AS direction keyword: ~S not recognized." kw)
-                     nil nil nil nil nil nil)
-             (values var from-expr step term nil by-rest nil var-type))))
+      ;; for VAR {prep form}+  -- arithmetic FOR per CLHS 6.1.2.1.1.
+      ;; Prepositions (FROM/UPFROM/DOWNFROM, TO/UPTO/BELOW/DOWNTO/ABOVE,
+      ;; BY) appear in any order; each group at most once. Implementing
+      ;; SBCL's loop-collect-prepositional-phrases approach.
+      ((let ((kw (first rest)))
+         (and (symbolp kw)
+              (or (walk-loop-kw-eq kw "FROM")
+                  (walk-loop-kw-eq kw "UPFROM")
+                  (walk-loop-kw-eq kw "DOWNFROM")
+                  (walk-loop-kw-eq kw "BY")
+                  (walk-loop-loop-direction-keyword-p kw))))
+       (let ((from-kw nil)
+             (limit-kw nil)
+             (by-raw nil)
+             (cs2 rest))
+         ;; Collect preposition phrases in source order. Only kw + value
+         ;; pairs; we just need WHICH kw appeared (for direction logic)
+         ;; and whether BY was supplied (since default is 1). The actual
+         ;; value-forms are captured via the second pass into outer-pairs
+         ;; below, in source order, for evaluation-order semantics.
+         (loop while (and (consp cs2) (consp (rest cs2))
+                          (symbolp (first cs2))) do
+           (let ((kw (first cs2)))
+             (cond
+               ((or (walk-loop-kw-eq kw "FROM")
+                    (walk-loop-kw-eq kw "UPFROM")
+                    (walk-loop-kw-eq kw "DOWNFROM"))
+                (when from-kw
+                  (return-from walk-loop-parse-iterator
+                    (values :unsupported
+                            "Duplicate FROM/UPFROM/DOWNFROM in arithmetic FOR."
+                            nil nil nil nil nil nil)))
+                (setf from-kw kw  cs2 (cddr cs2)))
+               ((walk-loop-loop-direction-keyword-p kw)
+                (when limit-kw
+                  (return-from walk-loop-parse-iterator
+                    (values :unsupported
+                            "Duplicate TO/UPTO/BELOW/DOWNTO/ABOVE in arithmetic FOR."
+                            nil nil nil nil nil nil)))
+                (setf limit-kw kw  cs2 (cddr cs2)))
+               ((walk-loop-kw-eq kw "BY")
+                (when by-raw
+                  (return-from walk-loop-parse-iterator
+                    (values :unsupported
+                            "Duplicate BY in arithmetic FOR."
+                            nil nil nil nil nil nil)))
+                (setf by-raw t  cs2 (cddr cs2)))
+               (t (return)))))
+         (let* (;; Direction: DOWNFROM, DOWNTO, ABOVE imply DOWN.
+                ;; UPFROM, UPTO, BELOW imply UP. TO is direction-flexible
+                ;; (UP unless from-kw is DOWNFROM).
+                (down-from? (walk-loop-kw-eq from-kw "DOWNFROM"))
+                (down-limit? (or (walk-loop-kw-eq limit-kw "DOWNTO")
+                                 (walk-loop-kw-eq limit-kw "ABOVE")))
+                (up-limit?   (or (walk-loop-kw-eq limit-kw "UPTO")
+                                 (walk-loop-kw-eq limit-kw "BELOW")))
+                (up-from?    (walk-loop-kw-eq from-kw "UPFROM"))
+                (downward? (cond (up-from? nil)
+                                 (down-from? t)
+                                 (down-limit? t)
+                                 (up-limit? nil)
+                                 (t nil)))
+                ;; Default FROM=0 when not specified (CLHS 6.1.2.1.1).
+                ;; Default BY=1.
+                (has-from (not (null from-kw)))
+                (has-limit (not (null limit-kw)))
+                ;; ANSI: each form evaluated exactly once at loop entry,
+                ;; in source order. Capture in outer-bindings -- the
+                ;; LET* wrapping LABELS evaluates them once before the
+                ;; helper-call. Source-order list ordered FROM/LIMIT/BY
+                ;; or LIMIT/FROM/BY etc., depending on what user wrote.
+                (from-sym (gensym "FROM-"))
+                (limit-sym (when has-limit (gensym "LIMIT-")))
+                (by-sym (when by-raw (gensym "BY-")))
+                ;; Default BY = typed-1 (1 untyped, 1.0 single-float,
+                ;; #c(1 0) complex, etc.), per SBCL loop-typed-init.
+                (by-expr (or by-sym
+                             (walk-loop-typed-default var-type t)))
+                ;; Source-order outer-bindings: walk rest from start
+                ;; and emit each prep in encountered order.
+                (outer-pairs
+                 (let ((pairs nil)
+                       (scan rest))
+                   (loop while (and (consp scan) (consp (rest scan))) do
+                     (let ((kw (first scan)))
+                       (cond
+                         ((or (walk-loop-kw-eq kw "FROM")
+                              (walk-loop-kw-eq kw "UPFROM")
+                              (walk-loop-kw-eq kw "DOWNFROM"))
+                          (push `(,from-sym ,(second scan)) pairs)
+                          (setf scan (cddr scan)))
+                         ((walk-loop-loop-direction-keyword-p kw)
+                          (push `(,limit-sym ,(second scan)) pairs)
+                          (setf scan (cddr scan)))
+                         ((walk-loop-kw-eq kw "BY")
+                          (push `(,by-sym ,(second scan)) pairs)
+                          (setf scan (cddr scan)))
+                         (t (return)))))
+                   (nreverse pairs)))
+                ;; If FROM not provided, prepend default from-sym
+                ;; binding to 0. Place it FIRST so it's bound before
+                ;; any user-provided phrase (which could reference it
+                ;; -- though that's degenerate use).
+                (extra-outer
+                 (cond (has-from outer-pairs)
+                       ;; Default FROM = typed-0 per SBCL loop-typed-init
+                       ;; (0 untyped, 0.0 single-float, #c(0 0) complex,
+                       ;; etc.). Placed FIRST so any user phrase that
+                       ;; references the iter-var sees this value.
+                       (t (cons `(,from-sym ,(walk-loop-typed-default
+                                              var-type nil))
+                                outer-pairs))))
+                (incr-step `(+ ,var ,by-expr))
+                (decr-step `(- ,var ,by-expr))
+                (default-step (if downward? decr-step incr-step))
+                (step (cond ((not has-limit) default-step)
+                            ((walk-loop-kw-eq limit-kw "TO")
+                             (if downward? decr-step incr-step))
+                            ((or (walk-loop-kw-eq limit-kw "UPTO")
+                                 (walk-loop-kw-eq limit-kw "BELOW"))
+                             incr-step)
+                            ((or (walk-loop-kw-eq limit-kw "DOWNTO")
+                                 (walk-loop-kw-eq limit-kw "ABOVE"))
+                             decr-step)
+                            (t :unsupported)))
+                (limit (if has-limit limit-sym nil))
+                (term (cond ((not has-limit) nil)
+                            ((walk-loop-kw-eq limit-kw "TO")
+                             (if downward? `(< ,var ,limit) `(> ,var ,limit)))
+                            ((walk-loop-kw-eq limit-kw "UPTO")  `(> ,var ,limit))
+                            ((walk-loop-kw-eq limit-kw "BELOW") `(>= ,var ,limit))
+                            ((walk-loop-kw-eq limit-kw "DOWNTO") `(< ,var ,limit))
+                            ((walk-loop-kw-eq limit-kw "ABOVE")  `(<= ,var ,limit))
+                            (t :unsupported))))
+           (if (eq step :unsupported)
+               (values :unsupported
+                       (format nil "FOR/AS direction keyword: ~S not recognized." limit-kw)
+                       nil nil nil nil nil nil)
+               ;; iter-init is FROM-SYM (symbol load); FROM-SYM was
+               ;; bound in outer-bindings before the helper call.
+               (values var from-sym step term nil cs2 extra-outer var-type)))))
       ;; for VAR -- bare variable as iterator, no init/step (for use with WHILE)
       ((or (null rest) (walk-loop-loop-keyword-p (first rest)))
        (values var nil nil nil nil rest nil var-type))
@@ -2249,8 +2376,14 @@ so the user sees exactly which clause is missing."
                                           (dolist (b for-let)
                                             (push b (loop-ir-for-let ir))))
                                         (when outer-binding
-                                          (push outer-binding
-                                                (loop-ir-outer-bindings ir)))
+                                          ;; outer-binding is now a LIST
+                                          ;; of (var expr) pairs (or NIL).
+                                          ;; Each is pushed individually
+                                          ;; so the post-parse nreverse
+                                          ;; preserves source order.
+                                          (dolist (b outer-binding)
+                                            (push b
+                                                  (loop-ir-outer-bindings ir))))
                                         (when var-type
                                           (cond ((consp user-var)
                                                  ;; FOR (a b) OF-TYPE

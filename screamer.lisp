@@ -315,12 +315,6 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
            (symbolp (second function-name))
            (not (null (second function-name))))))
 
-;;; MACROLET / SYMBOL-MACROLET support. Required by the Dietz LOOP
-;;; suite (uses local macros to set up scenarios) and by any user code
-;;; that puts MACROLET inside (LOCAL ...) or other walked forms.
-;;; Impl-specific because each CL provides AUGMENT-ENVIRONMENT in its
-;;; own package: SBCL/sb-cltl2, CCL/ccl, LW/hcl, Allegro/sys.
-
 (defun-compile-time strip-macro-extras (lambda-list)
   "Strip &ENVIRONMENT and &WHOLE from a macro lambda list. Per CLHS 3.4.4 each may appear at most once."
   (let ((env-var nil)
@@ -354,6 +348,14 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                                   aux-additions)))
             (append lambda-list (cons '&aux aux-additions))))))
 
+;; The CLTL2 environment APIs (augment-environment) ship in distinct
+;; per-impl modules: SBCL/sb-cltl2, CCL/ccl, LW/hcl, Allegro/sys.
+;; Implementations without a CLTL2 module (CLISP, CMUCL, ECL, ABCL,
+;; Clasp) cannot support MACROLET / SYMBOL-MACROLET inside a non-
+;; deterministic context. The defuns below are skipped entirely on
+;; those impls; the walker's MACROLET/SYMBOL-MACROLET handlers signal
+;; a clean error before reaching them.
+#+(or sbcl ccl lispworks allegro)
 (defun-compile-time build-macrolet-expander (binding)
   "Compile a macro function for one MACROLET binding."
   (cl:multiple-value-bind (clean-ll env-var whole-var)
@@ -374,6 +376,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                       ,@user-decls
                       ,@real-body)))))))
 
+#+(or sbcl ccl lispworks allegro)
 (defun-compile-time augment-environment-with-macros (environment macro-bindings)
   "Add local macros to ENVIRONMENT. MACRO-BINDINGS: ((name lambda-list . body) ...)."
   (let ((macros (mapcar #'(lambda (binding)
@@ -385,11 +388,9 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
     #+lispworks (hcl:augment-environment environment :macro macros)
     #+allegro  (sys:augment-environment
                 (or environment (sys:ensure-portable-walking-environment nil))
-                :macro macros)
-    #-(or sbcl ccl lispworks allegro)
-    (progn macros
-           (error "MACROLET is not supported on this Common Lisp implementation. Supported: SBCL, CCL, LispWorks, Allegro."))))
+                :macro macros)))
 
+#+(or sbcl ccl lispworks allegro)
 (defun-compile-time augment-environment-with-symbol-macros (environment symbol-macro-bindings)
   "Add local symbol-macros to ENVIRONMENT. SYMBOL-MACRO-BINDINGS: ((name expansion) ...)."
   #+sbcl
@@ -415,9 +416,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
    (or environment (sys:ensure-portable-walking-environment nil))
    :symbol-macro (mapcar #'(lambda (binding)
                              (list (first binding) (second binding)))
-                         symbol-macro-bindings))
-  #-(or sbcl ccl lispworks allegro)
-  (error "SYMBOL-MACROLET is not supported on this Common Lisp implementation. Supported: SBCL, CCL, LispWorks, Allegro."))
+                         symbol-macro-bindings)))
 
 (defun-compile-time check-function-name (function-name)
   (unless (valid-function-name? function-name)
@@ -870,6 +869,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                                  (rest (rest form)))))))
       (funcall map-function form form-type)))
 
+#+(or sbcl ccl lispworks allegro)
 (defun-compile-time walk-macrolet
     (map-function reduce-function screamer? partial? nested? form environment)
   (unless (null (rest (last form))) (error "Improper MACROLET: ~S" form))
@@ -908,6 +908,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                            body)))))
       (funcall map-function form 'macrolet)))
 
+#+(or sbcl ccl lispworks allegro)
 (defun-compile-time walk-symbol-macrolet
     (map-function reduce-function screamer? partial? nested? form environment)
   (unless (null (rest (last form))) (error "Improper SYMBOL-MACROLET: ~S" form))
@@ -1576,9 +1577,7 @@ choice in `loop-typed-init' (line 754 of SBCL-loop.lisp)."
 (defun-compile-time walk-loop-tree-contains-loop-finish? (form)
   "Tree-walk FORM checking for any (loop-finish) call. Used by the
 FINALLY parser to reject (loop-finish) inside FINALLY at parse time
--- ANSI says that's undefined behavior; SBCL CL:LOOP infinite-loops
-on it (documented in test-loop-audits.lisp / AUDIT 3). We error out
-explicitly with a clear message instead. Skips QUOTE forms and
+-- ANSI says that's undefined behavior. Skips QUOTE forms and
 nested (LOOP ...) forms (whose loop-finish belongs to the inner)."
   (cond ((atom form) nil)
         ((eq (car form) 'quote) nil)
@@ -1957,8 +1956,7 @@ so the user sees exactly which clause is missing."
                     (cond ((and existing
                                 (eq (third existing) :user)
                                 (not (eq kind :user)))
-                           ;; INTO targets a WITH-bound var. Always an
-                           ;; error (Dietz loop.9.10, loop.10.9, etc.).
+                           ;; INTO targets a WITH-bound var. Always an error.
                            (walk-loop-error
                             ir
                             "The variable ~S, which is being used as the value ~
@@ -1986,11 +1984,10 @@ so the user sees exactly which clause is missing."
                              (values record nil))))))))
                  (t
                   ;; Anonymous (implicit) accumulator. Only ONE allowed per
-                  ;; LOOP, and only of compatible kinds. Mixing kinds is the
-                  ;; "aggregate boolean vs value-acc" error tested by Dietz
-                  ;; loop12.error.* (handled via this same path because
-                  ;; ALWAYS/NEVER/THEREIS use anonymous acc with kind
-                  ;; :always/:never/:thereis).
+                  ;; LOOP, and only of compatible kinds (mixing aggregate-
+                  ;; boolean with value-acc is forbidden -- handled via
+                  ;; this same path because ALWAYS/NEVER/THEREIS use
+                  ;; anonymous acc with kind :always/:never/:thereis).
                   (cond ((and implicit-acc
                               (not (eq (third implicit-acc) kind))
                               (not (and (member kind '(:collect :append :nconc))
@@ -2527,10 +2524,10 @@ so the user sees exactly which clause is missing."
                           (walk-loop-kw-eq kw "THEREIS"))
                       (cond
                         ((not (needs-arg cs0 (string kw))) cs0)
-                        ;; ANSI / Dietz loop12.error.*: an aggregate boolean
-                        ;; cannot be mixed with a value-accumulator that
-                        ;; also auto-returns. The anonymous (implicit) value
-                        ;; accumulator slot is recorded in IMPLICIT-ACC.
+                        ;; ANSI: an aggregate boolean cannot be mixed with
+                        ;; a value-accumulator that also auto-returns. The
+                        ;; anonymous (implicit) value accumulator slot is
+                        ;; recorded in IMPLICIT-ACC.
                         ((and implicit-acc
                               (member (third implicit-acc)
                                       '(:collect :append :nconc :sum
@@ -2585,9 +2582,8 @@ so the user sees exactly which clause is missing."
                       ;; FINALLY DO is rejected by SBCL CL:LOOP, so we
                       ;; mirror that: users write bare forms after FINALLY,
                       ;; not FINALLY DO. Keeps det vs nondet path uniform.
-                      ;; Audit A3.3: reject (loop-finish) inside FINALLY at
-                      ;; parse time -- ANSI undefined behavior; SBCL CL:LOOP
-                      ;; infinite-loops; clear error is the right call.
+                      ;; Reject (loop-finish) inside FINALLY at parse time
+                      ;; -- ANSI undefined behavior; we error explicitly.
                       (setf (loop-ir-emitted-body ir) t)
                       (cond ((and (consp (second cs0))
                                   (walk-loop-kw-eq (first (second cs0)) "RETURN"))
@@ -2900,8 +2896,7 @@ function so the gating in the caller stays readable."
               ;; run for side-effects at natural end, regardless of
               ;; whether the return value comes from FINALLY (RETURN ...),
               ;; an auto-returning accumulator (COLLECT/SUM/etc.), or
-              ;; defaults to NIL. Audit A3.4 confirmed prior bug where
-              ;; finally-body was dropped on the auto-return branch.
+              ;; defaults to NIL.
               (finally-body (loop-ir-finally-body ir))
               (auto-return-expr
                (when (some (lambda (a) (fifth a)) acc-records)
@@ -3054,11 +3049,11 @@ function so the gating in the caller stays readable."
              ;; Iter-init + acc-init bindings live in the INNER let*
              ;; (between labels and the initial helper call). They are
              ;; sequential, allowing later inits to see earlier ones --
-             ;; ANSI semantics for sequential WITH and WITH-after-FOR
-             ;; (audits A5.3 / A5.4). The helper PARAMS shadow these
-             ;; bindings inside the function body; on recursion, the
-             ;; helper rebinds via its own params, so the inner let* is
-             ;; only the "first call" computation.
+             ;; ANSI semantics for sequential WITH and WITH-after-FOR.
+             ;; The helper PARAMS shadow these bindings inside the
+             ;; function body; on recursion, the helper rebinds via its
+             ;; own params, so the inner let* is only the "first call"
+             ;; computation.
              (let* ((inner-let*-bindings
                      (append (mapcar #'list iter-vars iter-inits)
                              (mapcar #'list acc-vars acc-inits)))
@@ -3276,9 +3271,11 @@ model cannot propagate through helper parameters."
     ((eq (first form) 'load-time-value)
      (walk-load-time-value
       map-function reduce-function screamer? partial? nested? form environment))
+    #+(or sbcl ccl lispworks allegro)
     ((eq (first form) 'macrolet)
      (walk-macrolet
       map-function reduce-function screamer? partial? nested? form environment))
+    #+(or sbcl ccl lispworks allegro)
     ((eq (first form) 'symbol-macrolet)
      (walk-symbol-macrolet
       map-function reduce-function screamer? partial? nested? form environment))

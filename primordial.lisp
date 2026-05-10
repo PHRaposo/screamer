@@ -35,7 +35,8 @@
      (let ((queen (an-integer-between 1 n)))
       (check-queens queen queens)
       (n-queens n (cons queen queens)))))
-
+      
+#+(or sbcl lispworks ccl allegro)
 (defun n-queens-loop (n)
   (loop with queens = nil
         repeat n
@@ -45,9 +46,13 @@
         finally (return queens)))
 
 (defun test1 () (= (length (all-values (n-queens 4))) 2))
+
+#+(or sbcl lispworks ccl allegro)
 (defun test1a () (= (length (all-values (n-queens-loop 4))) 2))
 
 (defun test2 () (= (length (all-values (n-queens 8))) 92))
+
+#+(or sbcl lispworks ccl allegro)
 (defun test2a () (= (length (all-values (n-queens-loop 8))) 92))
 
 (defun a-bit () (either 0 1))
@@ -98,17 +103,17 @@
 ;;;  2. Results disappear upon ALL-VALUES internal backtracking.
 ;;;  3. Lucid expands LOOP into a MULTIPLE-VALUE-CALL.
 
-
+#+(or sbcl lispworks ccl allegro)
 (defun test7-internal (n) (local (loop repeat n collect (either 0 1))))
 
-
+#+(or sbcl lispworks ccl allegro)
 (defun test7 ()
  (equal-set? (all-values (test7-internal 2)) '((1 1) (0 1) (1 0) (0 0))))
 
-
+#+(or sbcl lispworks ccl allegro)
 (defun test8-internal (n) (local (loop repeat n collect (a-bit))))
 
-
+#+(or sbcl lispworks ccl allegro)
 (defun test8 ()
  (equal-set? (all-values (test8-internal 2)) '((1 1) (0 1) (1 0) (0 0))))
 
@@ -902,15 +907,15 @@
 (defun prime-ordeal ()
  (let ((bug? nil))
   (unless (test1) (format t "~% Test 1 failed") (setf bug? t))
-  (unless (test1a) (format t "~% Test 1a failed") (setf bug? t))
+  #+(or sbcl lispworks ccl allegro) (unless (test1a) (format t "~% Test 1a failed") (setf bug? t))
   (unless (test2) (format t "~% Test 2 failed") (setf bug? t))
-  (unless (test2a) (format t "~% Test 2a failed") (setf bug? t))
+  #+(or sbcl lispworks ccl allegro) (unless (test2a) (format t "~% Test 2a failed") (setf bug? t))
   (unless (test3) (format t "~% Test 3 failed") (setf bug? t))
   (unless (test4) (format t "~% Test 4 failed") (setf bug? t))
   (unless (test5) (format t "~% Test 5 failed") (setf bug? t))
   (unless (test6) (format t "~% Test 6 failed") (setf bug? t))
-  (unless (test7) (format t "~% Test 7 failed") (setf bug? t))
-  (unless (test8) (format t "~% Test 8 failed") (setf bug? t))
+  #+(or sbcl lispworks ccl allegro) (unless (test7) (format t "~% Test 7 failed") (setf bug? t))
+  #+(or sbcl lispworks ccl allegro) (unless (test8) (format t "~% Test 8 failed") (setf bug? t))
   (unless (test11) (format t "~% Test 11 failed") (setf bug? t))
   (unless (test12) (format t "~% Test 12 failed") (setf bug? t))
   (unless (test13) (format t "~% Test 13 failed") (setf bug? t))

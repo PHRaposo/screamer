@@ -4414,13 +4414,20 @@ flag and emit a regular cl function for det-only ones."
                   (macrolet
                    (let ((new-environment
                           (augment-environment-with-macros environment (second form))))
-                     (cps-convert-progn
-                      (rest (rest form)) continuation types value? new-environment)))
+                     ;; Preserve MACROLET in the emitted code: deterministic
+                     ;; subforms containing macro calls are short-circuited
+                     ;; by perform-substitutions and emitted verbatim, so
+                     ;; the host compiler must still see the macro bindings
+                     ;; to expand those calls.
+                     `(macrolet ,(second form)
+                        ,(cps-convert-progn
+                          (rest (rest form)) continuation types value? new-environment))))
                   (symbol-macrolet
                    (let ((new-environment
                           (augment-environment-with-symbol-macros environment (second form))))
-                     (cps-convert-progn
-                      (rest (rest form)) continuation types value? new-environment)))
+                     `(symbol-macrolet ,(second form)
+                        ,(cps-convert-progn
+                          (rest (rest form)) continuation types value? new-environment))))
                   (locally
                    (cl:multiple-value-bind (body declarations)
                        (peal-off-documentation-string-and-declarations (rest form))

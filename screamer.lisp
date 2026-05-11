@@ -1319,6 +1319,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 (defstruct loop-ir
   (iterators '())
   (for-let '())
+  (init-for-let '())
   (accumulators '())
   (body '())
   while-cond
@@ -1650,7 +1651,7 @@ binding x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
     (return-from walk-loop-parse-iterator
       (values :unsupported
               "LOOP code ran out where a FOR/AS variable was expected."
-              nil nil nil nil nil nil)))
+              nil nil nil nil nil nil nil)))
   ;; CLHS d-var-spec: NIL in any position means "ignore this value"
   ;; (no visible binding). For arithmetic FOR with `for nil from N
   ;; to M', we still need an iter-var internally; gensym it so the
@@ -1678,21 +1679,27 @@ binding x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
            ((walk-loop-kw-eq (first after) "THEN")
             (cond ((symbolp var)
                    (values var init-expr (second after) nil nil (cddr after)
-                           nil var-type))
+                           nil var-type nil))
                   (t
                    ;; Destructuring with THEN: the per-iter value is in
                    ;; a gensym TEMP, advanced via STEP. for-let extracts
-                   ;; each leaf from TEMP at iteration time.
+                   ;; each leaf from TEMP at iteration time. Bindings are
+                   ;; pure (CAR/NTHCDR of TEMP) -- safe to evaluate
+                   ;; before the termination test.
                    (let ((temp (gensym "FOR-=-")))
                      (values temp init-expr (second after) nil
                              (walk-loop-destructure-pattern var temp)
-                             (cddr after) nil var-type)))))
+                             (cddr after) nil var-type nil)))))
            (t
             ;; FOR var = expr (no THEN): re-eval per iter. for-let
             ;; binds the destructured leaves directly off the expr.
+            ;; The expression may have side effects (incl. nondet
+            ;; primitives); flag as init-eval so the rewriter evaluates
+            ;; it only when the body branch runs, not on the terminating
+            ;; iteration.
             (values var nil nil nil
                     (walk-loop-destructure-bindings var init-expr)
-                    after nil var-type)))))
+                    after nil var-type t)))))
       ;; for VAR in LIST [BY step-fn] -> tail iterator, var = (car tail)
       ((walk-loop-kw-eq (first rest) "IN")
        (let* ((list-expr (second rest))
@@ -1707,7 +1714,7 @@ binding x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
          (values tail-sym list-expr step-form `(null ,tail-sym)
                  (walk-loop-destructure-bindings var `(car ,tail-sym))
                  rest-after
-                 nil var-type)))
+                 nil var-type nil)))
       ;; for VAR across VECTOR -> integer index iterator. Vector binding
       ;; is returned via OUTER-BINDING (seventh value); evaluated once.
       ((walk-loop-kw-eq (first rest) "ACROSS")
@@ -1721,7 +1728,7 @@ binding x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
                  after
                  ;; outer-bindings now is a LIST of (var expr) pairs.
                  `((,vec-sym ,vec-expr))
-                 var-type)))
+                 var-type nil)))
       ;; for VAR on LIST [BY step-fn] -> var IS the tail
       ((walk-loop-kw-eq (first rest) "ON")
        (let* ((list-expr (second rest))
@@ -1733,7 +1740,7 @@ binding x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
                 (let ((step-form (if by-fn `(funcall ,by-fn ,var)
                                      `(cdr ,var))))
                   (values var list-expr step-form `(atom ,var)
-                          nil rest-after nil var-type)))
+                          nil rest-after nil var-type nil)))
                (t
                 ;; Destructuring ON: the iter-var becomes a gensym TAIL,
                 ;; and the destructuring matches THE TAIL ITSELF (since
@@ -1745,7 +1752,7 @@ binding x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
                                       `(cdr ,tail))))
                   (values tail list-expr step-form `(atom ,tail)
                           (walk-loop-destructure-pattern var tail)
-                          rest-after nil var-type))))))
+                          rest-after nil var-type nil))))))
       ;; for VAR {prep form}+  -- arithmetic FOR per CLHS 6.1.2.1.1.
       ;; Prepositions (FROM/UPFROM/DOWNFROM, TO/UPTO/BELOW/DOWNTO/ABOVE,
       ;; BY) appear in any order; each group at most once. Implementing
@@ -1777,21 +1784,21 @@ binding x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
                   (return-from walk-loop-parse-iterator
                     (values :unsupported
                             "Duplicate FROM/UPFROM/DOWNFROM in arithmetic FOR."
-                            nil nil nil nil nil nil)))
+                            nil nil nil nil nil nil nil)))
                 (setf from-kw kw  cs2 (cddr cs2)))
                ((walk-loop-loop-direction-keyword-p kw)
                 (when limit-kw
                   (return-from walk-loop-parse-iterator
                     (values :unsupported
                             "Duplicate TO/UPTO/BELOW/DOWNTO/ABOVE in arithmetic FOR."
-                            nil nil nil nil nil nil)))
+                            nil nil nil nil nil nil nil)))
                 (setf limit-kw kw  cs2 (cddr cs2)))
                ((walk-loop-kw-eq kw "BY")
                 (when by-raw
                   (return-from walk-loop-parse-iterator
                     (values :unsupported
                             "Duplicate BY in arithmetic FOR."
-                            nil nil nil nil nil nil)))
+                            nil nil nil nil nil nil nil)))
                 (setf by-raw t  cs2 (cddr cs2)))
                (t (return)))))
          (let* (;; Direction: DOWNFROM, DOWNTO, ABOVE imply DOWN.
@@ -1883,17 +1890,17 @@ binding x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
            (if (eq step :unsupported)
                (values :unsupported
                        (format nil "FOR/AS direction keyword: ~S not recognized." limit-kw)
-                       nil nil nil nil nil nil)
+                       nil nil nil nil nil nil nil)
                ;; iter-init is FROM-SYM (symbol load); FROM-SYM was
                ;; bound in outer-bindings before the helper call.
-               (values var from-sym step term nil cs2 extra-outer var-type)))))
+               (values var from-sym step term nil cs2 extra-outer var-type nil)))))
       ;; for VAR -- bare variable as iterator, no init/step (for use with WHILE)
       ((or (null rest) (walk-loop-loop-keyword-p (first rest)))
-       (values var nil nil nil nil rest nil var-type))
+       (values var nil nil nil nil rest nil var-type nil))
       (t (values :unsupported
                  (format nil "~S is an unknown keyword in FOR or AS clause in LOOP."
                          (first rest))
-                 nil nil nil nil nil nil)))))
+                 nil nil nil nil nil nil nil)))))
 
 (defun-compile-time walk-loop-loop-direction-keyword-p (sym)
   "True for the keywords that bound the direction of a numeric FOR
@@ -2331,7 +2338,8 @@ so the user sees exactly which clause is missing."
                       (labels ((push-iter (cs1)
                                  (cl:multiple-value-bind
                                        (var reason-or-init step term for-let
-                                            new-cs outer-binding var-type)
+                                            new-cs outer-binding var-type
+                                            init-for-let-p)
                                      (walk-loop-parse-iterator cs1)
                                    (cond
                                      ((eq var :unsupported)
@@ -2378,7 +2386,10 @@ so the user sees exactly which clause is missing."
                                                 (loop-ir-iterators ir)))
                                         (when for-let
                                           (dolist (b for-let)
-                                            (push b (loop-ir-for-let ir))))
+                                            (cond (init-for-let-p
+                                                   (push b (loop-ir-init-for-let ir)))
+                                                  (t
+                                                   (push b (loop-ir-for-let ir))))))
                                         (when outer-binding
                                           ;; outer-binding is now a LIST
                                           ;; of (var expr) pairs (or NIL).
@@ -2702,6 +2713,7 @@ so the user sees exactly which clause is missing."
               (setf cs next))))))
     (setf (loop-ir-iterators ir)      (nreverse (loop-ir-iterators ir)))
     (setf (loop-ir-for-let ir)        (nreverse (loop-ir-for-let ir)))
+    (setf (loop-ir-init-for-let ir)   (nreverse (loop-ir-init-for-let ir)))
     (setf (loop-ir-accumulators ir)   (nreverse (loop-ir-accumulators ir)))
     (setf (loop-ir-body ir)           (nreverse (loop-ir-body ir)))
     (setf (loop-ir-outer-bindings ir) (nreverse (loop-ir-outer-bindings ir)))
@@ -2851,9 +2863,10 @@ not know which clause needs a parser extension."
               (acc-vars (mapcar #'first acc-records))
               (acc-inits (mapcar #'second acc-records))
               (for-let-vars (mapcar #'first (loop-ir-for-let ir)))
+              (init-for-let-vars (mapcar #'first (loop-ir-init-for-let ir)))
               (outer-vars (mapcar #'first (loop-ir-outer-bindings ir)))
               (loop-internal-vars (append iter-vars acc-vars for-let-vars
-                                          outer-vars))
+                                          init-for-let-vars outer-vars))
               ;; Helper params: iter + acc. Outer vars are bound in a
               ;; LET* wrapping the LABELS (once-only), so the helper
               ;; captures them lexically -- they don't need to thread
@@ -2886,8 +2899,16 @@ function so the gating in the caller stays readable."
               (term-form (cond ((null term-conds) nil)
                                ((= 1 (length term-conds)) (first term-conds))
                                (t `(or ,@term-conds))))
-              ;; Body for-let bindings (re-evaluated per iter inside body)
+              ;; FOR-AS-derived for-let bindings split by evaluation kind:
+              ;; PURE bindings (destructure leaves of an iter-var, vector
+              ;; aref, etc.) are safe to evaluate before WHILE/UNTIL --
+              ;; they have no side effects. INIT-EVAL bindings come from
+              ;; `for var = expr' (no THEN) where EXPR is user-supplied
+              ;; and may have side effects (including nondet primitives
+              ;; like a-member-of); these must run only when the body
+              ;; branch executes, not on the terminating iteration.
               (for-lets (loop-ir-for-let ir))
+              (init-for-lets (loop-ir-init-for-let ir))
               ;; Compute final/return form. ANSI: FINALLY clauses always
               ;; run for side-effects at natural end, regardless of
               ;; whether the return value comes from FINALLY (RETURN ...),
@@ -2942,6 +2963,7 @@ function so the gating in the caller stays readable."
                   ;; that wraps the LABELS, so don't re-collect them.
                   (bound (append iter-vars acc-vars
                                  (mapcar #'first for-lets)
+                                 (mapcar #'first init-for-lets)
                                  (mapcar #'first
                                          (loop-ir-outer-bindings ir))))
                   (free-vars
@@ -2964,7 +2986,7 @@ function so the gating in the caller stays readable."
                             (mapcan (lambda (fl)
                                       (walk-loop-collect-free-symbols
                                        (second fl) bound))
-                                    for-lets)
+                                    (append for-lets init-for-lets))
                             (when (loop-ir-while-cond ir)
                               (walk-loop-collect-free-symbols
                                (loop-ir-while-cond ir) bound))
@@ -3010,6 +3032,7 @@ function so the gating in the caller stays readable."
                   ;;     introduce them (covers IN/ACROSS user vars and
                   ;;     it-vars from conditionals).
                   (for-let-vars (mapcar #'first for-lets))
+                  (init-for-let-vars (mapcar #'first init-for-lets))
                   (param-set (append iter-vars acc-vars))
                   (param-decls
                    (loop for (v . ty) in (loop-ir-type-decls ir)
@@ -3019,15 +3042,29 @@ function so the gating in the caller stays readable."
                    (loop for (v . ty) in (loop-ir-type-decls ir)
                          when (member v for-let-vars :test #'eq)
                          collect `(type ,ty ,v)))
+                  (init-for-let-decls
+                   (loop for (v . ty) in (loop-ir-type-decls ir)
+                         when (member v init-for-let-vars :test #'eq)
+                         collect `(type ,ty ,v)))
                   (helper-body
                    ;; CLHS 6.1.2.1: FOR-AS variables update before WHILE/UNTIL.
+                   ;; PURE FOR-LET (destructure of iter-var, AREF of vec-sym,
+                   ;; etc.) is bound in the outer LET* so the termination
+                   ;; test sees its leaves. INIT-EVAL FOR-LET (`for x = expr'
+                   ;; without THEN, where EXPR may have side effects) is
+                   ;; bound in the inner LET* so it only runs when the body
+                   ;; branch executes -- terminating iterations don't fire
+                   ;; the init expression (which matters when EXPR is
+                   ;; e.g. a-member-of and would spawn ghost choice points).
                    `(block ,block-name
                       (let* ,for-lets
                         ,@(when for-let-decls
                             `((declare ,@for-let-decls)))
                         (if ,term-form
                             ,return-form
-                            (progn
+                            (let* ,init-for-lets
+                              ,@(when init-for-let-decls
+                                  `((declare ,@init-for-let-decls)))
                               ,@filtered-body-rewritten
                               (,helper-name ,@next-iter-vars
                                             ,@next-acc-vars)))))))

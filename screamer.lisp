@@ -159,6 +159,10 @@ choice-point; nested choice-points reuse the same instance.")
                             (slot-value condition 'message)
                             (slot-value condition 'args))))))
 
+(define-condition-compile-time screamer-loop-malformed-error
+    (program-error simple-condition)
+    ())
+
 (defun-compile-time screamer-error (header &rest args)
   (error 'screamer-error
          :message (remove #\return
@@ -1316,7 +1320,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 
 ;;; LOOP -> LABELS-recursion rewriter.
 
-(defstruct loop-ir
+(defstruct-compile-time loop-ir
   (iterators '())
   (for-let '())
   (init-for-let '())
@@ -1681,22 +1685,11 @@ binding x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
                    (values var init-expr (second after) nil nil (cddr after)
                            nil var-type nil))
                   (t
-                   ;; Destructuring with THEN: the per-iter value is in
-                   ;; a gensym TEMP, advanced via STEP. for-let extracts
-                   ;; each leaf from TEMP at iteration time. Bindings are
-                   ;; pure (CAR/NTHCDR of TEMP) -- safe to evaluate
-                   ;; before the termination test.
                    (let ((temp (gensym "FOR-=-")))
                      (values temp init-expr (second after) nil
                              (walk-loop-destructure-pattern var temp)
                              (cddr after) nil var-type nil)))))
            (t
-            ;; FOR var = expr (no THEN): re-eval per iter. for-let
-            ;; binds the destructured leaves directly off the expr.
-            ;; The expression may have side effects (incl. nondet
-            ;; primitives); flag as init-eval so the rewriter evaluates
-            ;; it only when the body branch runs, not on the terminating
-            ;; iteration.
             (values var nil nil nil
                     (walk-loop-destructure-bindings var init-expr)
                     after nil var-type t)))))
@@ -2821,36 +2814,8 @@ the inner loop."
                      (walk-loop-substitute-loop-finish sub replacement))
                    (cdr form))))))
 
-(defun-compile-time walk-loop-rewrite-as-recursion (form)
-  "Generate a LABELS-recursive expansion for FORM, a (LOOP ...) pattern.
-
-Errors out -- with a message identifying the offending clause -- when
-the parser hits something it doesn't yet handle, when the body mutates
-an outer variable (the recursion model can't propagate the mutation
-through helper parameters), or when there's no termination source.
-
-The point of erroring is to make missing coverage VISIBLE: silent
-fallback would let LOOPs run with weaker semantics and the user would
-not know which clause needs a parser extension."
-  (let ((ir (walk-loop-parse form)))
-    (when (loop-ir-unsupported ir)
-      (error "~A~%Loop form: ~S"
-             (loop-ir-unsupported ir) form))
-    (unless (or (some #'fourth (loop-ir-iterators ir))
-                (loop-ir-while-cond ir)
-                (loop-ir-until-cond ir)
-                (loop-ir-extra-term-conds ir)
-                ;; Simple LOOP (CLHS 6.1.1.1) has no implicit termination
-                ;; source: it exits only via RETURN, GO out, THROW, or
-                ;; non-local unwind. That is the user's contract; an
-                ;; infinite simple LOOP is the user's bug, not the
-                ;; rewriter's concern.
-                (loop-ir-simple-form-p ir))
-      (error "(LOOP ...) has no termination source~%~
-              (no iterator with TO/BELOW/etc, no WHILE/UNTIL, no boolean clause).~%~
-              Loop form: ~S"
-             form))
-    (let* ((helper-name (intern (symbol-name (gensym "WALK-LOOP-HELPER-"))
+(defun-compile-time walk-loop-rewrite-as-recursion (ir form)
+  (let* ((helper-name (intern (symbol-name (gensym "WALK-LOOP-HELPER-"))
                                    :screamer))
               (iter-vars (mapcar #'first (loop-ir-iterators ir)))
               (iter-inits (mapcar #'second (loop-ir-iterators ir)))
@@ -2878,7 +2843,7 @@ not know which clause needs a parser extension."
       (walk-loop-rewrite-as-recursion-finish
        ir helper-name iter-vars iter-inits iter-steps iter-terms
        acc-records acc-vars acc-inits
-       helper-params))))
+       helper-params)))
 
 (defun-compile-time walk-loop-rewrite-as-recursion-finish
     (ir helper-name iter-vars iter-inits iter-steps iter-terms
@@ -2899,14 +2864,6 @@ function so the gating in the caller stays readable."
               (term-form (cond ((null term-conds) nil)
                                ((= 1 (length term-conds)) (first term-conds))
                                (t `(or ,@term-conds))))
-              ;; FOR-AS-derived for-let bindings split by evaluation kind:
-              ;; PURE bindings (destructure leaves of an iter-var, vector
-              ;; aref, etc.) are safe to evaluate before WHILE/UNTIL --
-              ;; they have no side effects. INIT-EVAL bindings come from
-              ;; `for var = expr' (no THEN) where EXPR is user-supplied
-              ;; and may have side effects (including nondet primitives
-              ;; like a-member-of); these must run only when the body
-              ;; branch executes, not on the terminating iteration.
               (for-lets (loop-ir-for-let ir))
               (init-for-lets (loop-ir-init-for-let ir))
               ;; Compute final/return form. ANSI: FINALLY clauses always
@@ -3048,14 +3005,6 @@ function so the gating in the caller stays readable."
                          collect `(type ,ty ,v)))
                   (helper-body
                    ;; CLHS 6.1.2.1: FOR-AS variables update before WHILE/UNTIL.
-                   ;; PURE FOR-LET (destructure of iter-var, AREF of vec-sym,
-                   ;; etc.) is bound in the outer LET* so the termination
-                   ;; test sees its leaves. INIT-EVAL FOR-LET (`for x = expr'
-                   ;; without THEN, where EXPR may have side effects) is
-                   ;; bound in the inner LET* so it only runs when the body
-                   ;; branch executes -- terminating iterations don't fire
-                   ;; the init expression (which matters when EXPR is
-                   ;; e.g. a-member-of and would spawn ghost choice points).
                    `(block ,block-name
                       (let* ,for-lets
                         ,@(when for-let-decls
@@ -3139,6 +3088,40 @@ model cannot propagate through helper parameters."
       (walk form))
     vars))
 
+(defun-compile-time walk-loop-no-termination-source-p (ir)
+  (not (or (some #'fourth (loop-ir-iterators ir))
+           (loop-ir-while-cond ir)
+           (loop-ir-until-cond ir)
+           (loop-ir-extra-term-conds ir)
+           (loop-ir-simple-form-p ir))))
+
+(defun-compile-time walk-loop
+    (map-function reduce-function screamer? partial? nested? form environment)
+  (cond
+    (reduce-function
+     (walk-macro-call map-function reduce-function screamer? partial?
+                      nested? form environment))
+    ((deterministic? form environment)
+     (walk map-function reduce-function screamer? partial? nested?
+           (let ((*macroexpand-hook* #'funcall))
+             (macroexpand-1 form environment))
+           environment))
+    (t
+     (let ((ir (walk-loop-parse form)))
+       (cond
+         ((loop-ir-unsupported ir)
+          (error 'screamer-loop-malformed-error
+                 :format-control "~A~%Loop form: ~S"
+                 :format-arguments (list (loop-ir-unsupported ir) form)))
+         ((walk-loop-no-termination-source-p ir)
+          (error 'screamer-loop-malformed-error
+                 :format-control "(LOOP ...) has no termination source~%(no iterator with TO/BELOW/etc, no WHILE/UNTIL, no boolean clause).~%Loop form: ~S"
+                 :format-arguments (list form)))
+         (t
+          (walk map-function reduce-function screamer? partial? nested?
+                (walk-loop-rewrite-as-recursion ir form)
+                environment)))))))
+
 (defun-compile-time walk-macro-call
     (map-function reduce-function screamer? partial? nested? form environment)
   (if reduce-function
@@ -3158,10 +3141,7 @@ model cannot propagate through helper parameters."
             partial?
             nested?
             (let ((*macroexpand-hook* #'funcall))
-              (if (and (consp form) (eq (car form) 'loop)
-                       (not (deterministic? form environment)))
-                  (walk-loop-rewrite-as-recursion form)
-                  (macroexpand-1 form environment)))
+              (macroexpand-1 form environment))
             environment)))
 
 (defun-compile-time walk-function-call
@@ -3364,6 +3344,9 @@ model cannot propagate through helper parameters."
      (walk-multiple-value-call-nondeterministic
       map-function reduce-function screamer? partial? nested? form environment))
     ((and partial? (eq (first form) 'full)) (walk-full map-function form))
+    ((and screamer? (eq (first form) 'loop))
+     (walk-loop
+      map-function reduce-function screamer? partial? nested? form environment))
     ((and (symbolp (first form))
           (macro-function (first form) environment))
      (walk-macro-call

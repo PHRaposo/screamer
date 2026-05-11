@@ -235,9 +235,8 @@ Recognised binding-scoped clauses: DYNAMIC-EXTENT, IGNORE, IGNORABLE,
 SPECIAL, TYPE. For these, multi-variable forms are split so FOR-VAR
 contains only VAR and REMAINING contains the other variables.
 
-Implementation-specific clauses whose tail is a list of symbols (e.g.
-SBCL's SB-C::NO-DEBUG) are treated as binding-scoped and split the same
-way.
+Implementation-specific clauses whose tail is a list of symbols are
+treated as binding-scoped and split the same way.
 
 Non-variable clauses (OPTIMIZE, FTYPE, DECLARATION, etc.) and clauses
 with non-symbol tails are returned untouched in REMAINING."
@@ -1339,7 +1338,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
   ;; Emitted as (declare (type ...) ...) at the start of the helper body.
   (type-decls '())
   ;; All variables introduced by the loop (FOR/AS, WITH, INTO acc, NAMED).
-  ;; Used to detect duplicate-var errors (SBCL: "Duplicated variable ~S").
+  ;; Used to detect duplicate-var errors.
   (introduced-vars '())
   ;; T once any "body code" clause has been emitted (DO, COLLECT, RETURN,
   ;; THEREIS, etc.). After this, FOR/AS/REPEAT/WITH cause "iteration in
@@ -1347,7 +1346,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
   ;; before body. Purely a grammar check; does not affect emission.
   (emitted-body nil)
   ;; Set once a NAMED clause has been consumed; further NAMED clauses are
-  ;; rejected (SBCL: "You may only use one NAMED clause").
+  ;; rejected.
   (named-seen nil)
   ;; T iff the parser detected a CLHS-6.1.1.1 simple LOOP: body composed
   ;; entirely of compound forms (no extended-loop keywords). Such loops
@@ -1362,14 +1361,14 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 
 (defvar-compile-time *loop-source-context* nil
   "Tail of the parser's input list as of the last clause boundary.
-SBCL CL:LOOP appends this to error messages so the user sees where in
-the LOOP source the parser was when the diagnostic fired.")
+Appended to error messages so the user sees where in the LOOP source
+the parser was when the diagnostic fired.")
 
 (defun-compile-time walk-loop-error (ir format-string &rest format-args)
-  "Mark IR unsupported with a SBCL-style diagnostic message: the formatted
-text plus the current LOOP context (the unparsed remainder of the LOOP
-body as of the last clause boundary). The walker's outer wrapper
-signals SCREAMER-ERROR using this string + the original LOOP form."
+  "Mark IR unsupported with a diagnostic: the formatted text plus the
+current LOOP context (the unparsed remainder of the LOOP body as of
+the last clause boundary). The walker's outer wrapper signals
+SCREAMER-ERROR using this string + the original LOOP form."
   (setf (loop-ir-unsupported ir)
         (let ((msg (apply #'format nil format-string format-args))
               (ctx *loop-source-context*))
@@ -1395,9 +1394,9 @@ NIL VAR is allowed (FOR NIL IN list -- discarded iter var)."
 
 (defun-compile-time walk-loop-pop-or-error (ir cs slot-msg)
   "Return (values FIRST-OF-CS REST-OF-CS) when CS is non-empty; otherwise
-mark IR unsupported with the SBCL-style \"LOOP source code ran out
-when another token was expected\" message and return (values NIL NIL).
-SLOT-MSG names what was expected (e.g. \"after FOR variable\")."
+mark IR unsupported with \"LOOP source code ran out when another token
+was expected\" and return (values NIL NIL). SLOT-MSG names what was
+expected (e.g. \"after FOR variable\")."
   (cond ((null cs)
          (walk-loop-error ir
                           "LOOP source code ran out when another token was ~
@@ -1407,7 +1406,7 @@ SLOT-MSG names what was expected (e.g. \"after FOR variable\")."
         (t (values (first cs) (rest cs)))))
 
 (defun-compile-time walk-loop-get-form-or-error (ir cs slot-msg)
-  "Like walk-loop-pop-or-error but the diagnostic is the SBCL form-position
+  "Like walk-loop-pop-or-error but the diagnostic is the form-position
 variant: \"LOOP code ran out where a form was expected\"."
   (cond ((null cs)
          (walk-loop-error ir
@@ -1417,9 +1416,9 @@ variant: \"LOOP code ran out where a form was expected\"."
         (t (values (first cs) (rest cs)))))
 
 (defun-compile-time walk-loop-get-compound-or-error (ir cs slot-msg)
-  "Pop a single compound form from CS. Errors with the SBCL message
-\"A compound form was expected, but ~S found.\" if next token is not a
-cons, or with the source-ran-out variant if CS is empty."
+  "Pop a single compound form from CS. Errors with \"A compound form
+was expected, but ~S found.\" if next token is not a cons, or with the
+source-ran-out variant if CS is empty."
   (cl:multiple-value-bind (form rest) (walk-loop-get-form-or-error ir cs slot-msg)
     (cond ((loop-ir-unsupported ir) (values nil nil))
           ((not (consp form))
@@ -1558,11 +1557,9 @@ The short-form keywords are matched by symbol name across packages."
   (and (symbolp sym) (string-equal (symbol-name sym) name)))
 
 (defun-compile-time walk-loop-typed-default (data-type step-var-p)
-  "Mirror SBCL's loop-typed-init for arithmetic-FOR defaults.
-DATA-TYPE may be NIL (untyped FOR), a symbol type-spec, or a CL
-type form. STEP-VAR-P non-NIL means BY default (returns 1 / 1.0
-/ etc.); otherwise FROM default (0 / 0.0 / etc.). Match SBCL's
-choice in `loop-typed-init' (line 754 of SBCL-loop.lisp)."
+  "Typed default for arithmetic-FOR. DATA-TYPE: NIL (untyped), a symbol
+type-spec, or a CL type form. STEP-VAR-P non-NIL means BY default
+(1 / 1.0 / etc.); otherwise FROM default (0 / 0.0 / etc.)."
   (let ((init (if step-var-p 1 0)))
     (cond ((null data-type) init)
           ((symbolp data-type)
@@ -1643,14 +1640,12 @@ conditional)."
 Returns (VALUES VAR INIT STEP TERMINATE FOR-LET-BINDING REST-CS
          OUTER-BINDING TYPE) or (VALUES :unsupported REASON-STRING ...)
 if the iterator form isn't recognized. REASON-STRING (when VAR is
-:unsupported) is the SBCL-style diagnostic text for the caller to
-relay via walk-loop-error. FOR-LET-BINDING is non-NIL when the
-iterator value comes from a let expression (e.g., for x in list ->
-binding x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
+:unsupported) is the diagnostic text for the caller to relay via
+walk-loop-error. FOR-LET-BINDING is non-NIL when the iterator value
+comes from a let expression (e.g., for x in list -> binding
+x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
 / via OF-TYPE), or NIL."
-  ;; Source-end check before any access. SBCL gives:
-  ;;   "LOOP code ran out where a variable was expected."
-  ;; for `(loop for)`. Our caller relays the REASON-STRING.
+  ;; Source-end check before any access.
   (when (null cs)
     (return-from walk-loop-parse-iterator
       (values :unsupported
@@ -1748,8 +1743,7 @@ binding x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
                           rest-after nil var-type nil))))))
       ;; for VAR {prep form}+  -- arithmetic FOR per CLHS 6.1.2.1.1.
       ;; Prepositions (FROM/UPFROM/DOWNFROM, TO/UPTO/BELOW/DOWNTO/ABOVE,
-      ;; BY) appear in any order; each group at most once. Implementing
-      ;; SBCL's loop-collect-prepositional-phrases approach.
+      ;; BY) appear in any order; each group at most once.
       ((let ((kw (first rest)))
          (and (symbolp kw)
               (or (walk-loop-kw-eq kw "FROM")
@@ -1821,7 +1815,7 @@ binding x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
                 (limit-sym (when has-limit (gensym "LIMIT-")))
                 (by-sym (when by-raw (gensym "BY-")))
                 ;; Default BY = typed-1 (1 untyped, 1.0 single-float,
-                ;; #c(1 0) complex, etc.), per SBCL loop-typed-init.
+                ;; #c(1 0) complex, etc.).
                 (by-expr (or by-sym
                              (walk-loop-typed-default var-type t)))
                 ;; Source-order outer-bindings: walk rest from start
@@ -1851,10 +1845,10 @@ binding x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
                 ;; -- though that's degenerate use).
                 (extra-outer
                  (cond (has-from outer-pairs)
-                       ;; Default FROM = typed-0 per SBCL loop-typed-init
-                       ;; (0 untyped, 0.0 single-float, #c(0 0) complex,
-                       ;; etc.). Placed FIRST so any user phrase that
-                       ;; references the iter-var sees this value.
+                       ;; Default FROM = typed-0 (0 untyped, 0.0
+                       ;; single-float, #c(0 0) complex, etc.). Placed
+                       ;; FIRST so any user phrase that references the
+                       ;; iter-var sees this value.
                        (t (cons `(,from-sym ,(walk-loop-typed-default
                                               var-type nil))
                                 outer-pairs))))
@@ -1935,9 +1929,7 @@ so the user sees exactly which clause is missing."
               Errors recorded via walk-loop-error in two cases:
                 - INTO target is not a symbol.
                 - INTO target collides with a WITH binding (incompatible
-                  KIND :user vs accumulator) -- mirrors SBCL's
-                  \"value accumulation recipient name ... is already
-                   used by another accumulator clause\" check."
+                  KIND :user vs accumulator)."
                (cond
                  (named-var
                   (cond ((not (symbolp named-var))
@@ -2012,9 +2004,9 @@ so the user sees exactly which clause is missing."
                  ;; Guard for clauses that require at least one token after
                  ;; the keyword (e.g., WHEN test, RETURN expr, COLLECT expr).
                  ;; Returns T if cs0 has more than one token, otherwise
-                 ;; records SBCL-style "source ran out" diagnostic and
-                 ;; returns NIL. Caller must then return cs0 unchanged so
-                 ;; the parse loop terminates.
+                 ;; records "source ran out" diagnostic and returns NIL.
+                 ;; Caller must then return cs0 unchanged so the parse loop
+                 ;; terminates.
                  (cond ((null (rest cs0))
                         (walk-loop-error
                          ir
@@ -2045,7 +2037,7 @@ so the user sees exactly which clause is missing."
                  (cond ((not (needs-arg cs0 (string (first cs0)))) cs0)
                        (t
                  ;; Mark "body emitted" so a subsequent FOR/AS errors
-                 ;; with "iteration follows body code" (SBCL/LW parity).
+                 ;; with "iteration follows body code".
                  (setf (loop-ir-emitted-body ir) t)
                  (let* ((kw (first cs0))
                         (expr (walk-loop-tree-subst-it (second cs0) *it-var*))
@@ -2254,13 +2246,10 @@ so the user sees exactly which clause is missing."
                            (t after-else)))))
                (parse-clause (cs0)
                  (let ((kw (first cs0)))
-                   ;; ANSI / SBCL+LW parity: certain clauses are forbidden
-                   ;; inside a conditional sub-clause body (WHEN/IF/UNLESS).
-                   ;; *conditional-guard* is non-NIL exactly inside such a
-                   ;; body. SBCL message: "The LOOP :X clause is not
-                   ;; permitted inside a conditional"; LW: "Missing part
-                   ;; of LOOP condition". For FOR/AS, SBCL: "FOR does not
-                   ;; introduce a LOOP clause that can follow WHEN".
+                   ;; ANSI: certain clauses are forbidden inside a
+                   ;; conditional sub-clause body (WHEN/IF/UNLESS).
+                   ;; *conditional-guard* is non-NIL exactly inside such
+                   ;; a body.
                    (when (and *conditional-guard*
                               (or (walk-loop-kw-eq kw "FOR")
                                   (walk-loop-kw-eq kw "AS")
@@ -2311,10 +2300,8 @@ so the user sees exactly which clause is missing."
                              (cddr cs0))))
                      ((or (walk-loop-kw-eq kw "FOR") (walk-loop-kw-eq kw "AS"))
                       ;; ANSI iter-driving clauses must come before any
-                      ;; body code. SBCL: "iteration in LOOP follows body
-                      ;; code"; LW: "Iterator clauses must come before the
-                      ;; main body of LOOP". REPEAT is excluded -- SBCL
-                      ;; allows REPEAT after COLLECT; we mirror that.
+                      ;; body code. REPEAT is excluded -- REPEAT after
+                      ;; COLLECT is allowed.
                       (when (loop-ir-emitted-body ir)
                         (walk-loop-error
                          ir
@@ -2420,9 +2407,7 @@ so the user sees exactly which clause is missing."
                                        (t (return cs1))))))
                      ((or (walk-loop-kw-eq kw "DO") (walk-loop-kw-eq kw "DOING"))
                       ;; ANSI: do compound-form+ -- at least one form
-                      ;; required and all must be compound (lists). SBCL
-                      ;; signals "A compound form was expected, but ~S
-                      ;; found." when the next token is an atom.
+                      ;; required and all must be compound (lists).
                       (cond ((or (null (rest cs0))
                                  (not (consp (second cs0))))
                              (mark-unsupported
@@ -2583,11 +2568,10 @@ so the user sees exactly which clause is missing."
                                  (cdr cs1)))))
                      ((walk-loop-kw-eq kw "FINALLY")
                       ;; finally (return form) | finally form+
-                      ;; FINALLY DO is rejected by SBCL CL:LOOP, so we
-                      ;; mirror that: users write bare forms after FINALLY,
-                      ;; not FINALLY DO. Keeps det vs nondet path uniform.
-                      ;; Reject (loop-finish) inside FINALLY at parse time
-                      ;; -- ANSI undefined behavior; we error explicitly.
+                      ;; FINALLY DO is not supported: users write bare
+                      ;; forms after FINALLY. Reject (loop-finish)
+                      ;; inside FINALLY at parse time -- ANSI undefined
+                      ;; behavior; we error explicitly.
                       (setf (loop-ir-emitted-body ir) t)
                       (cond ((and (consp (second cs0))
                                   (walk-loop-kw-eq (first (second cs0)) "RETURN"))
@@ -2637,13 +2621,12 @@ so the user sees exactly which clause is missing."
                      ((walk-loop-kw-eq kw "UNLESS")
                       (cond ((not (needs-arg cs0 "UNLESS")) cs0)
                             (t (parse-conditional cs0 t))))
-                     ;; SBCL CL:LOOP error parity: AND/ELSE/END are
-                     ;; secondary keywords valid only inside conditional
-                     ;; clauses. AND inside FOR is consumed by the
-                     ;; parallel-iteration loop in the FOR handler; AND
-                     ;; inside WHEN/IF/UNLESS is consumed by parse-
-                     ;; conditional. Reaching parse-clause means the
-                     ;; user wrote one at top level.
+                     ;; AND/ELSE/END are secondary keywords valid only
+                     ;; inside conditional clauses. AND inside FOR is
+                     ;; consumed by the parallel-iteration loop in the
+                     ;; FOR handler; AND inside WHEN/IF/UNLESS is
+                     ;; consumed by parse-conditional. Reaching parse-
+                     ;; clause means the user wrote one at top level.
                      ((or (walk-loop-kw-eq kw "AND")
                           (walk-loop-kw-eq kw "ELSE")
                           (walk-loop-kw-eq kw "END"))
@@ -2662,10 +2645,9 @@ so the user sees exactly which clause is missing."
                        (format nil "unknown LOOP keyword: ~S" kw))
                       cs0)))))
         ;; ANSI: NAMED foo, if present, must be the first clause.
-        ;; Consume it before entering the main parse loop. SBCL errors
-        ;; on NAMED elsewhere with "NAMED clause occurs too late" -- we
-        ;; mirror that in parse-clause's default branch via the
-        ;; loop-ir-named-seen flag.
+        ;; Consume it before entering the main parse loop. NAMED
+        ;; elsewhere errors via the loop-ir-named-seen flag in
+        ;; parse-clause's default branch.
         (when (walk-loop-kw-eq (first cs) "NAMED")
           (setf (loop-ir-named-seen ir) t)
           (cond ((null (rest cs))
@@ -2695,8 +2677,7 @@ so the user sees exactly which clause is missing."
           (setf cs nil))
         (loop while (and cs (not (loop-ir-unsupported ir))) do
           ;; Snapshot the source position at every clause boundary, so
-          ;; walk-loop-error can quote the surrounding context (mimics
-          ;; SBCL's source-context slot).
+          ;; walk-loop-error can quote the surrounding context.
           (let ((*loop-source-context* cs))
             (let ((next (parse-clause cs)))
               ;; Guard against handlers that returned the same cs (i.e.,
@@ -2814,36 +2795,24 @@ the inner loop."
                      (walk-loop-substitute-loop-finish sub replacement))
                    (cdr form))))))
 
-(defun-compile-time walk-loop-rewrite-as-recursion (ir form)
+(defun-compile-time walk-loop-rewrite-as-recursion (ir)
   (let* ((helper-name (intern (symbol-name (gensym "WALK-LOOP-HELPER-"))
-                                   :screamer))
-              (iter-vars (mapcar #'first (loop-ir-iterators ir)))
-              (iter-inits (mapcar #'second (loop-ir-iterators ir)))
-              (iter-steps (mapcar (lambda (it)
-                                    (or (third it) (first it)))
-                                  (loop-ir-iterators ir)))
-              (iter-terms (remove nil (mapcar #'fourth
-                                              (loop-ir-iterators ir))))
-              (acc-records (loop-ir-accumulators ir))
-              (acc-vars (mapcar #'first acc-records))
-              (acc-inits (mapcar #'second acc-records))
-              (for-let-vars (mapcar #'first (loop-ir-for-let ir)))
-              (init-for-let-vars (mapcar #'first (loop-ir-init-for-let ir)))
-              (outer-vars (mapcar #'first (loop-ir-outer-bindings ir)))
-              (loop-internal-vars (append iter-vars acc-vars for-let-vars
-                                          init-for-let-vars outer-vars))
-              ;; Helper params: iter + acc. Outer vars are bound in a
-              ;; LET* wrapping the LABELS (once-only), so the helper
-              ;; captures them lexically -- they don't need to thread
-              ;; through recursion. This also lets ACC-INITS reference
-              ;; outer vars, which is needed for WITH (a b c) = form
-              ;; destructuring (the destructuring temp is an outer).
-              (helper-params (append iter-vars acc-vars)))
-      (declare (ignorable loop-internal-vars))
-      (walk-loop-rewrite-as-recursion-finish
-       ir helper-name iter-vars iter-inits iter-steps iter-terms
-       acc-records acc-vars acc-inits
-       helper-params)))
+                              :screamer))
+         (iter-vars (mapcar #'first (loop-ir-iterators ir)))
+         (iter-inits (mapcar #'second (loop-ir-iterators ir)))
+         (iter-steps (mapcar (lambda (it)
+                               (or (third it) (first it)))
+                             (loop-ir-iterators ir)))
+         (iter-terms (remove nil (mapcar #'fourth
+                                         (loop-ir-iterators ir))))
+         (acc-records (loop-ir-accumulators ir))
+         (acc-vars (mapcar #'first acc-records))
+         (acc-inits (mapcar #'second acc-records))
+         (helper-params (append iter-vars acc-vars)))
+    (walk-loop-rewrite-as-recursion-finish
+     ir helper-name iter-vars iter-inits iter-steps iter-terms
+     acc-records acc-vars acc-inits
+     helper-params)))
 
 (defun-compile-time walk-loop-rewrite-as-recursion-finish
     (ir helper-name iter-vars iter-inits iter-steps iter-terms
@@ -2852,18 +2821,20 @@ the inner loop."
   "Continuation of walk-loop-rewrite-as-recursion. Split into a separate
 function so the gating in the caller stays readable."
   (let* ((helper-params helper-params)
-              ;; Termination condition: iterator term, while/until, plus any
-              ;; extra conds from boolean accumulators (ALWAYS/NEVER/THEREIS).
-              (term-conds
-               (append iter-terms
-                       (when (loop-ir-while-cond ir)
+              (iter-term-form (cond ((null iter-terms) nil)
+                                    ((= 1 (length iter-terms))
+                                     (first iter-terms))
+                                    (t `(or ,@iter-terms))))
+              (other-term-conds
+               (append (when (loop-ir-while-cond ir)
                          `((not ,(loop-ir-while-cond ir))))
                        (when (loop-ir-until-cond ir)
                          `(,(loop-ir-until-cond ir)))
                        (loop-ir-extra-term-conds ir)))
-              (term-form (cond ((null term-conds) nil)
-                               ((= 1 (length term-conds)) (first term-conds))
-                               (t `(or ,@term-conds))))
+              (other-term-form (cond ((null other-term-conds) nil)
+                                     ((= 1 (length other-term-conds))
+                                      (first other-term-conds))
+                                     (t `(or ,@other-term-conds))))
               (for-lets (loop-ir-for-let ir))
               (init-for-lets (loop-ir-init-for-let ir))
               ;; Compute final/return form. ANSI: FINALLY clauses always
@@ -2915,63 +2886,6 @@ function so the gating in the caller stays readable."
                                      (t v))))
                            acc-records))
                   (next-iter-vars iter-steps)
-                  ;; Free vars from all scanned forms. Outer-vars are
-                  ;; lexically captured by the helper from the LET*
-                  ;; that wraps the LABELS, so don't re-collect them.
-                  (bound (append iter-vars acc-vars
-                                 (mapcar #'first for-lets)
-                                 (mapcar #'first init-for-lets)
-                                 (mapcar #'first
-                                         (loop-ir-outer-bindings ir))))
-                  (free-vars
-                   (remove-duplicates
-                    (append (walk-loop-collect-free-symbols
-                             `(progn ,@(loop-ir-body ir)) bound)
-                            (mapcan (lambda (it)
-                                      (walk-loop-collect-free-symbols
-                                       (second it) bound))
-                                    (loop-ir-iterators ir))
-                            (mapcan (lambda (it)
-                                      (append
-                                       (when (third it)
-                                         (walk-loop-collect-free-symbols
-                                          (third it) bound))
-                                       (when (fourth it)
-                                         (walk-loop-collect-free-symbols
-                                          (fourth it) bound))))
-                                    (loop-ir-iterators ir))
-                            (mapcan (lambda (fl)
-                                      (walk-loop-collect-free-symbols
-                                       (second fl) bound))
-                                    (append for-lets init-for-lets))
-                            (when (loop-ir-while-cond ir)
-                              (walk-loop-collect-free-symbols
-                               (loop-ir-while-cond ir) bound))
-                            (when (loop-ir-until-cond ir)
-                              (walk-loop-collect-free-symbols
-                               (loop-ir-until-cond ir) bound))
-                            (when return-form
-                              (walk-loop-collect-free-symbols return-form bound))
-                            (mapcan (lambda (a)
-                                      (append
-                                       (walk-loop-collect-free-symbols
-                                        (second a) bound)
-                                       (when (fourth a)
-                                         (walk-loop-collect-free-symbols
-                                          (fourth a) bound))
-                                       (when (fifth a)
-                                         (walk-loop-collect-free-symbols
-                                          (fifth a) bound))))
-                                    acc-records))
-                    :test #'eq))
-                  ;; Wrap body in (block <name> ...) so CL:RETURN inside
-                  ;; DO/RETURN unwinds the loop. With LOOP NAMED foo,
-                  ;; <name> is foo and RETURN-FROM foo also unwinds.
-                  ;; Otherwise the block is anonymous (NIL).
-                  ;;
-                  ;; Substitute (loop-finish) with an explicit RETURN-FROM
-                  ;; that runs FINALLY + natural-end return form (loop-
-                  ;; finish skips the natural-end IF test).
                   (block-name (loop-ir-block-name ir))
                   (loop-finish-form
                    `(return-from ,block-name ,return-form))
@@ -2980,14 +2894,6 @@ function so the gating in the caller stays readable."
                              (walk-loop-substitute-loop-finish
                               f loop-finish-form))
                            filtered-body))
-                  ;; FREE-VARS captured lexically, not threaded as params.
-                  ;; TYPE-DECLS: split into two scopes. (declare ...) is
-                  ;; not legal inside BLOCK, so we emit:
-                  ;;   - helper-param decls at the top of the labels body
-                  ;;     (covers iter-vars, acc-vars, outer-vars).
-                  ;;   - for-let var decls inside the LET* whose bindings
-                  ;;     introduce them (covers IN/ACROSS user vars and
-                  ;;     it-vars from conditionals).
                   (for-let-vars (mapcar #'first for-lets))
                   (init-for-let-vars (mapcar #'first init-for-lets))
                   (param-set (append iter-vars acc-vars))
@@ -3003,41 +2909,28 @@ function so the gating in the caller stays readable."
                    (loop for (v . ty) in (loop-ir-type-decls ir)
                          when (member v init-for-let-vars :test #'eq)
                          collect `(type ,ty ,v)))
+                  (inner-recurse
+                   `(let* ,init-for-lets
+                      ,@(when init-for-let-decls
+                          `((declare ,@init-for-let-decls)))
+                      ,@filtered-body-rewritten
+                      (,helper-name ,@next-iter-vars ,@next-acc-vars)))
+                  (post-for-let-form
+                   (cond (other-term-form
+                          `(if ,other-term-form ,return-form ,inner-recurse))
+                         (t inner-recurse)))
+                  (let-for-lets-form
+                   `(let* ,for-lets
+                      ,@(when for-let-decls
+                          `((declare ,@for-let-decls)))
+                      ,post-for-let-form))
                   (helper-body
-                   ;; CLHS 6.1.2.1: FOR-AS variables update before WHILE/UNTIL.
                    `(block ,block-name
-                      (let* ,for-lets
-                        ,@(when for-let-decls
-                            `((declare ,@for-let-decls)))
-                        (if ,term-form
-                            ,return-form
-                            (let* ,init-for-lets
-                              ,@(when init-for-let-decls
-                                  `((declare ,@init-for-let-decls)))
-                              ,@filtered-body-rewritten
-                              (,helper-name ,@next-iter-vars
-                                            ,@next-acc-vars)))))))
-             (declare (ignorable free-vars))
-             ;; Two LET* layers:
-             ;;
-             ;;   (let* (outer-bindings)             ; OUTSIDE labels --
-             ;;     (labels ((helper (...) body))    ; lexically captured
-             ;;       (let* (iter-init+acc-init)     ; INSIDE labels --
-             ;;         (helper ...))))              ; only for first call
-             ;;
-             ;; Outer-bindings (e.g., ACROSS's vec-sym, WITH-destructure
-             ;; temps and leaves) live in the OUTER let*, so the helper
-             ;; function body can lexically capture them. They are eval-
-             ;; uated once, before LABELS.
-             ;;
-             ;; Iter-init + acc-init bindings live in the INNER let*
-             ;; (between labels and the initial helper call). They are
-             ;; sequential, allowing later inits to see earlier ones --
-             ;; ANSI semantics for sequential WITH and WITH-after-FOR.
-             ;; The helper PARAMS shadow these bindings inside the
-             ;; function body; on recursion, the helper rebinds via its
-             ;; own params, so the inner let* is only the "first call"
-             ;; computation.
+                      ,(cond (iter-term-form
+                              `(if ,iter-term-form
+                                   ,return-form
+                                   ,let-for-lets-form))
+                             (t let-for-lets-form)))))
              (let* ((inner-let*-bindings
                      (append (mapcar #'list iter-vars iter-inits)
                              (mapcar #'list acc-vars acc-inits)))
@@ -3119,7 +3012,7 @@ model cannot propagate through helper parameters."
                  :format-arguments (list form)))
          (t
           (walk map-function reduce-function screamer? partial? nested?
-                (walk-loop-rewrite-as-recursion ir form)
+                (walk-loop-rewrite-as-recursion ir)
                 environment)))))))
 
 (defun-compile-time walk-macro-call

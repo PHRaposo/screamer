@@ -1635,7 +1635,13 @@ conditional)."
                  "WHEN" "UNLESS" "IF" "ELSE" "END")
                :test #'string-equal)))
 
-(defun-compile-time walk-loop-parse-iterator (cs)
+(cl:defun loop-hash-table-pairs (table)
+  "Materialize TABLE as an alist of (key . value) cons cells. Called
+from the outer-binding of a FOR-AS-HASH iterator."
+  (cl:loop for k being the hash-keys of table using (hash-value v)
+           collect (cons k v)))
+
+(defun-compile-time walk-loop-parse-iterator (ir cs)
   "Parse an iterator clause starting at CS (after FOR/AS keyword).
 Returns (VALUES VAR INIT STEP TERMINATE FOR-LET-BINDING REST-CS
          OUTER-BINDING TYPE) or (VALUES :unsupported REASON-STRING ...)
@@ -1644,7 +1650,8 @@ if the iterator form isn't recognized. REASON-STRING (when VAR is
 walk-loop-error. FOR-LET-BINDING is non-NIL when the iterator value
 comes from a let expression (e.g., for x in list -> binding
 x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
-/ via OF-TYPE), or NIL."
+/ via OF-TYPE), or NIL. IR is used to record additional dup-detection
+vars (USING (hash-X other-var) etc.) before returning."
   ;; Source-end check before any access.
   (when (null cs)
     (return-from walk-loop-parse-iterator
@@ -1741,6 +1748,109 @@ x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
                   (values tail list-expr step-form `(atom ,tail)
                           (walk-loop-destructure-pattern var tail)
                           rest-after nil var-type nil))))))
+      ;; for VAR being [the|each] hash-key[s]|hash-value[s] [of|in] table
+      ;;     [using (hash-{value|key} other)]
+      ((walk-loop-kw-eq (first rest) "BEING")
+       (let ((cs1 (rest rest)))
+         (when (or (walk-loop-kw-eq (first cs1) "THE")
+                   (walk-loop-kw-eq (first cs1) "EACH"))
+           (setf cs1 (rest cs1)))
+         (let ((hash-kind
+                (cond ((or (walk-loop-kw-eq (first cs1) "HASH-KEY")
+                           (walk-loop-kw-eq (first cs1) "HASH-KEYS"))
+                       :key)
+                      ((or (walk-loop-kw-eq (first cs1) "HASH-VALUE")
+                           (walk-loop-kw-eq (first cs1) "HASH-VALUES"))
+                       :value)
+                      (t nil))))
+           (cond
+             ((null hash-kind)
+              (values :unsupported
+                      "Expected HASH-KEY[S] or HASH-VALUE[S] after BEING."
+                      nil nil nil nil nil nil nil))
+             (t
+              (setf cs1 (rest cs1))
+              (cond
+                ((not (or (walk-loop-kw-eq (first cs1) "OF")
+                          (walk-loop-kw-eq (first cs1) "IN")))
+                 (values :unsupported
+                         "Expected OF or IN after hash-key/value keyword."
+                         nil nil nil nil nil nil nil))
+                (t
+                 (setf cs1 (rest cs1))
+                 (cond
+                   ((null cs1)
+                    (values :unsupported
+                            "Expected hash-table expression after OF/IN."
+                            nil nil nil nil nil nil nil))
+                   (t
+                    (let* ((table-expr (first cs1))
+                           (after-table (rest cs1))
+                           (using-other nil)
+                           (rest-after after-table)
+                           (using-error nil))
+                      (when (walk-loop-kw-eq (first after-table) "USING")
+                        (let ((spec (second after-table)))
+                          (cond
+                            ((not (and (consp spec)
+                                       (consp (cdr spec))
+                                       (null (cddr spec))))
+                             (setf using-error
+                                   "USING clause must be (hash-key/value var)."))
+                            (t
+                             (let ((other-kw (first spec))
+                                   (other-spec (second spec)))
+                               (cond
+                                 ((not (case hash-kind
+                                         (:key
+                                          (or (walk-loop-kw-eq other-kw "HASH-VALUE")
+                                              (walk-loop-kw-eq other-kw "HASH-VALUES")))
+                                         (:value
+                                          (or (walk-loop-kw-eq other-kw "HASH-KEY")
+                                              (walk-loop-kw-eq other-kw "HASH-KEYS")))))
+                                  (setf using-error
+                                        "USING keyword does not match BEING primary."))
+                                 (t
+                                  (setf using-other other-spec)
+                                  (setf rest-after (cddr after-table)))))))))
+                      (cond
+                        (using-error
+                         (values :unsupported using-error
+                                 nil nil nil nil nil nil nil))
+                        (t
+                         (let* ((pairs-sym (gensym "HT-PAIRS-"))
+                                (cur-sym   (gensym "HT-CUR-"))
+                                (outer-binding
+                                 `((,pairs-sym
+                                    (loop-hash-table-pairs ,table-expr))))
+                                (primary-expr
+                                 (case hash-kind
+                                   (:key   `(car (car ,cur-sym)))
+                                   (:value `(cdr (car ,cur-sym)))))
+                                (using-expr
+                                 (case hash-kind
+                                   (:key   `(cdr (car ,cur-sym)))
+                                   (:value `(car (car ,cur-sym)))))
+                                (for-let-primary
+                                 (walk-loop-destructure-bindings var primary-expr))
+                                (for-let-using
+                                 (cond ((null using-other) nil)
+                                       (t (walk-loop-destructure-bindings
+                                           using-other using-expr))))
+                                (for-let (append for-let-primary for-let-using)))
+                           (when using-other
+                             (cond ((symbolp using-other)
+                                    (walk-loop-record-var ir using-other "FOR/AS"))
+                                   (t (dolist (lv (walk-loop-pattern-vars using-other))
+                                        (walk-loop-record-var ir lv "FOR/AS")))))
+                           (values cur-sym pairs-sym
+                                   `(cdr ,cur-sym)
+                                   `(null ,cur-sym)
+                                   for-let
+                                   rest-after
+                                   outer-binding
+                                   var-type
+                                   nil))))))))))))))
       ;; for VAR {prep form}+  -- arithmetic FOR per CLHS 6.1.2.1.1.
       ;; Prepositions (FROM/UPFROM/DOWNFROM, TO/UPTO/BELOW/DOWNTO/ABOVE,
       ;; BY) appear in any order; each group at most once.
@@ -2320,7 +2430,7 @@ so the user sees exactly which clause is missing."
                                        (var reason-or-init step term for-let
                                             new-cs outer-binding var-type
                                             init-for-let-p)
-                                     (walk-loop-parse-iterator cs1)
+                                     (walk-loop-parse-iterator ir cs1)
                                    (cond
                                      ((eq var :unsupported)
                                       ;; reason-or-init is the diagnostic
@@ -5822,7 +5932,8 @@ enclosing choice unwinds. Delivery uses a swank channel (no
 EVAL-IN-EMACS on the hot path). Requires *ISCREAM?* T and SLIME with
 screamer-slime.el loaded on the Emacs side."
   (let ((out (gensym "OUT-"))
-        (text (gensym "TEXT-")))
+        (text (gensym "TEXT-"))
+        (result (gensym "RESULT-")))
     `(progn
        (unless *iscream?*
          (error "Cannot do LOCAL-OUTPUT unless *ISCREAM?* is T (Screamer~%~
@@ -5830,13 +5941,13 @@ screamer-slime.el loaded on the Emacs side."
        (unless *screamer-output-channel-id*
          (start-screamer-output-channel))
        (let* ((,out (make-string-output-stream))
-              (*standard-output* ,out))
-         (unwind-protect
-              (progn ,@forms)
-           (let ((,text (get-output-stream-string ,out)))
-             (when (plusp (length ,text))
-               (screamer-slime-send (list :insert ,text))
-               (trail #'screamer-slime-pop-end-marker))))))))
+              (*standard-output* ,out)
+              (,result (progn ,@forms))
+              (,text (get-output-stream-string ,out)))
+         (when (plusp (length ,text))
+           (screamer-slime-send (list :insert ,text))
+           (trail #'screamer-slime-pop-end-marker))
+         ,result))))
 
 ;;; Constraints
 

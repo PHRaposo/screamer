@@ -2822,10 +2822,6 @@ fallback would let LOOPs run with weaker semantics and the user would
 not know which clause needs a parser extension."
   (let ((ir (walk-loop-parse form)))
     (when (loop-ir-unsupported ir)
-      ;; Plain ERROR -- this is a LOOP parse error, not a Screamer
-      ;; nondeterminism violation. SCREAMER-ERROR appends "There are
-      ;; nine types of nondeterministic contexts..." which is irrelevant
-      ;; here and confuses users debugging malformed LOOPs.
       (error "~A~%Loop form: ~S"
              (loop-ir-unsupported ir) form))
     (unless (or (some #'fourth (loop-ir-iterators ir))
@@ -3024,15 +3020,17 @@ function so the gating in the caller stays readable."
                          when (member v for-let-vars :test #'eq)
                          collect `(type ,ty ,v)))
                   (helper-body
+                   ;; CLHS 6.1.2.1: FOR-AS variables update before WHILE/UNTIL.
                    `(block ,block-name
-                      (if ,term-form
-                          ,return-form
-                          (let* ,for-lets
-                            ,@(when for-let-decls
-                                `((declare ,@for-let-decls)))
-                            ,@filtered-body-rewritten
-                            (,helper-name ,@next-iter-vars
-                                          ,@next-acc-vars))))))
+                      (let* ,for-lets
+                        ,@(when for-let-decls
+                            `((declare ,@for-let-decls)))
+                        (if ,term-form
+                            ,return-form
+                            (progn
+                              ,@filtered-body-rewritten
+                              (,helper-name ,@next-iter-vars
+                                            ,@next-acc-vars)))))))
              (declare (ignorable free-vars))
              ;; Two LET* layers:
              ;;
@@ -3117,10 +3115,6 @@ model cannot propagate through helper parameters."
                      (let ((*macroexpand-hook* #'funcall))
                        (macroexpand-1 form environment))
                      environment))
-      ;; CPS-rewrite path. Nondet CL:LOOP routes through the
-      ;; LABELS-recursion rewriter (CPS conversion of the host
-      ;; expansion's internal SETQs is unsound). Det LOOPs and all
-      ;; other macros macroexpand normally.
       (walk map-function
             reduce-function
             screamer?
@@ -4414,11 +4408,6 @@ flag and emit a regular cl function for det-only ones."
                   (macrolet
                    (let ((new-environment
                           (augment-environment-with-macros environment (second form))))
-                     ;; Preserve MACROLET in the emitted code: deterministic
-                     ;; subforms containing macro calls are short-circuited
-                     ;; by perform-substitutions and emitted verbatim, so
-                     ;; the host compiler must still see the macro bindings
-                     ;; to expand those calls.
                      `(macrolet ,(second form)
                         ,(cps-convert-progn
                           (rest (rest form)) continuation types value? new-environment))))

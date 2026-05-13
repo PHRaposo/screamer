@@ -20,77 +20,149 @@ See `LICENSE` for terms.
 
 ## Status
 
-This is **Screamer 4.0.1**, the active maintenance branch. It builds on
-the 3.20-derived modernisation effort by Nikodemus Siivola and adds
-support for rationals, ratios, floats, dependency tracking, and a
-walker that handles `MACROLET`, `SYMBOL-MACROLET`, `LOAD-TIME-VALUE`,
-and `LOCALLY` inside nondeterministic contexts.
+This is **Screamer 4.0.1**, the active maintenance branch. It builds
+on the 3.20-derived modernisation effort by Nikodemus Siivola, adopts
+several portable improvements from Swapneil Singh's
+[Screamer 5](https://github.com/swapneils/screamer) (credited inline
+below), and adds support for rationals, ratios, floats, dependency
+tracking, and a walker that handles `MACROLET`, `SYMBOL-MACROLET`,
+`LOAD-TIME-VALUE`, and `LOCALLY` inside nondeterministic contexts.
 
 Tested on SBCL, CCL, LispWorks, and Allegro. Depends on
 [Alexandria](https://common-lisp.net/project/alexandria/).
 
-## What's new in 4.0.1
+## Public API additions
 
 ### Search and value collection
 
-- `n-values` — collect the first N nondeterministic values; analogous to
-  `all-values` but bounded
-- `mapcar-nondeterministic` / `map-nondeterministic` — `cl:mapcar` /
-  `cl:map` lifted for nondeterministic functions
-- `lambda-nondeterministic` — anonymous nondeterministic function-object
-  (CPS-converted at macroexpand time, captures lexical environment, must
-  be invoked via `funcall-nondeterministic`)
-- `optimize-value` — generalised `min`/`max` optimisation that prunes
-  partial states early via constraint noticers (replaces `best-value`)
+- `n-values` — collect the first N nondeterministic values; analogous
+  to `all-values` but bounded. Adapted from Kilian Sprotte's
+  [SMC(PWGL)](https://github.com/openmusic-project/PWGL) (2007).
+- `mapcar-nondeterministic` — `cl:mapcar` lifted for nondeterministic
+  functions. Adopted verbatim from
+  [Screamer 5](https://github.com/swapneils/screamer)
+  (Swapneil Singh).
+- `map-nondeterministic` — `cl:map` lifted for nondeterministic
+  functions.
+- `lambda-nondeterministic` — anonymous nondeterministic function-
+  object (CPS-converted at macroexpand time, captures lexical
+  environment, must be invoked via `funcall-nondeterministic`).
 
 ### Numeric types
 
-- Rational generators: `a-rational`, `a-rational-above`, `a-rational-below`,
-  `a-rational-between` (Farey-walking, terminates with bounds)
+Rational, ratio and float variables and generators, none of which
+exist in Screamer 5.
+
+- Rational generators: `a-rational`, `a-rational-above`,
+  `a-rational-below`, `a-rational-between` (Farey-walking, terminates
+  with bounds).
 - Ratio generators (rationals excluding integers): `a-ratio`,
-  `a-ratio-above`, `a-ratio-below`, `a-ratio-between`
+  `a-ratio-above`, `a-ratio-below`, `a-ratio-between`.
 - Float variables: `a-floatv`, `a-float-abovev`, `a-float-belowv`,
-  `a-float-betweenv`
-- Rational/ratio variables: `a-rationalv`, `a-rationalv-*v`, `a-ratiov`,
-  `a-ratiov-*v`
-- Type predicates lifted: `rationalpv`, `ratiopv`, `floatpv`
+  `a-float-betweenv`.
+- Rational and ratio variables: `a-rationalv`, `a-rationalv-*v`,
+  `a-ratiov`, `a-ratiov-*v`.
+- Type predicates lifted: `rationalpv`, `ratiopv`, `floatpv`.
 
 ### Search control
 
-- `random-force` — force a variable by picking randomly from its domain
-  (bounded by `*maximum-random-domain-size*`)
-- `a-random-member-of` / `a-random-member-ofv` — visit elements in random
-  permutation
-- `n-variables`, `n-lists-of-variables` — bulk variable construction
+- `random-force` — force a variable by picking randomly from its
+  domain (bounded by `*maximum-random-domain-size*`).
+- `a-random-member-of` / `a-random-member-ofv` — visit elements in
+  random permutation.
+- `n-variables`, `n-lists-of-variables` — bulk variable construction.
+- `optimize-value` — generalised `min`/`max` optimisation that prunes
+  partial states early via constraint noticers (replaces
+  `best-value`).
 
 ### Constraint primitives
 
-- `all-differentv` — pairwise inequality across a variable list, returns
-  a boolean variable
-- Dependency tracking: `attach-noticer!` accepts `:dependencies`; ordering
-  primitives (`reorder`, `static-ordering-internal`) walk dependencies
-  before forcing
-- `divide-and-conquer-force` extended to rationals and ratios
+- `all-differentv` — pairwise inequality across a variable list,
+  returns a boolean variable. Implemented with the classic
+  `known?-all-differentv` / `assert!-all-differentv` dispatch.
+- `divide-and-conquer-force` extended to rationals and ratios with
+  `closest-ratio-upper` / `closest-ratio-lower` bisection that
+  respects `variable-max-denom`.
+- `with-trail` — bind a fresh `*trail*` of a given size for
+  pre-allocation in long searches. Adopted verbatim from Screamer 5
+  (Swapneil Singh).
+- Dependency tracking: `attach-noticer!` accepts `:dependencies` (the
+  keyword and its `attach-dependencies!-internal` helper are
+  adopted verbatim from Screamer 5). The ordering primitive that
+  walks dependencies — `static-ordering-internal` — was rewritten
+  here to recurse into a variable's dependencies inline before
+  forcing it.
+
+### Conditions and errors
+
+- `screamer-error` condition class (with `message` and `args` slots).
+  Adopted verbatim from Screamer 5 (Swapneil Singh).
+
+### Output
+
+- `local-output` — captures `*standard-output*` and sends the text to
+  the *Screamer Output* buffer in Emacs through a swank channel; the
+  text is removed when the enclosing choice unwinds. Distinct from
+  Screamer 5's `local-output`, which uses the older
+  `emacs-eval` / iscream.el path. Requires `*ISCREAM?*` and
+  `screamer-slime.el`.
+
+## Internal changes
+
+These are not part of the public API but they are visible to readers
+of the source.
 
 ### Walker and CPS
 
 - `MACROLET`, `SYMBOL-MACROLET`, and `LOCALLY` supported in
-  nondeterministic context (walker dispatches them and CPS converter
-  recurses through with environment augmentation)
-- `LOAD-TIME-VALUE` recognised by the walker
+  nondeterministic context. The walker dispatches them and the CPS
+  converter recurses through with environment augmentation. Screamer 5
+  has experimental MACROLET / SYMBOL-MACROLET support via runtime
+  `EVAL`; ours preserves the wrappers in the CPS-converted code
+  instead.
+- `LOAD-TIME-VALUE` recognised by the walker.
 - LABELS-bound continuation closures declared `dynamic-extent` in
-  `cps-convert-tagbody` for stack allocation
+  `cps-convert-tagbody` for stack allocation.
+- TYPES parameter propagated through `cps-convert-call` and
+  `cps-convert-multiple-value-call-internal`: magic continuations
+  receive a `(the (and …) …)` wrap via
+  `inject-type-into-magic-continuation`; literal `#'foo` or
+  uninterned-symbol continuations route through
+  `wrap-runtime-the-continuation`.
 
-### Stricter propagation
+### Runtime
 
-- `*minimum-shrink-ratio*` defaults to `1e-8` (was `1e-2`); smaller
-  domain reductions still trigger noticers
-
-### Conditions and errors
-
-- New `screamer-error` condition class with `message` and `args` slots
-- `define-condition-compile-time` and `defparameter-compile-time` macros
-  to mirror the existing compile-time infrastructure
+- `copy-output-value` — typecase that deep-copies cons (`copy-tree`),
+  hash-table (`alexandria:copy-hash-table` + recurse), sequence
+  (`copy-seq` + recurse) and structure-object (`copy-structure`).
+  Adopted from Screamer 5 5.1.3 (Swapneil Singh) with a small
+  adjustment (iterates the source hash-table, not the copy, while
+  writing the new values). `all-values` and `n-values` apply it
+  unconditionally to every collected value to prevent trail-unwind
+  from corrupting an already-collected result.
+- `variable-dependencies` slot on the `variable` defstruct. Adopted
+  verbatim from Screamer 5 (Swapneil Singh).
+- `domain-size` integer branch returns
+  `(1+ (- (floor upper) (ceiling lower)))`. Inspired by the
+  Screamer 5 5.2.2 fix `(1+ (floor (- upper lower)))`, refined here
+  so that non-integer-bound ranges such as `[1/2, 7/2]` return the
+  correct count.
+- Arithmetic propagation rules: new `--rule-up` and `/-rule-up`
+  symmetric to `+-rule-up` and `*-rule-up`; float-to-nonrational
+  guard in `+-rule-down` and `*-rule-down` tightened from
+  `(or float-z float-y)` to `(and float-z rational-y)`. New
+  numeric-type helpers `numeric-type-tag`, `contagious-zero`,
+  `identity-shortcut-safe?` used by the refactored `+v2`, `-v2`,
+  `*v2`, `/v2`; the noticer-attach path of `*v2`/`/v2` was extracted
+  into `general-*v2`/`general-/v2`. `/v2` cond order corrected so
+  that `(zerop y) -> (fail)` precedes `(zerop x) -> 0`.
+- `peal-off-documentation-string-and-declarations` delegates to
+  `alexandria:parse-body` so declare-before-doc and mixed orderings
+  extract the docstring correctly.
+- `define-condition-compile-time` macro mirrors the existing
+  compile-time infrastructure. Adopted verbatim from Screamer 5
+  (Swapneil Singh).
+- `defparameter-compile-time` macro, same pattern as above.
 
 ## Standard preamble
 

@@ -120,6 +120,17 @@ choice-point; nested choice-points reuse the same instance.")
 (defvar-compile-time *trail* (make-array 4096 :adjustable t :fill-pointer 0) "The trail.")
 (declaim (vector *trail*))
 
+(defmacro-compile-time with-trail (size-form &body body)
+  "Evaluate BODY with *TRAIL* freshly bound to an adjustable vector of size
+SIZE-FORM (default 2048 if NIL). Use to pre-allocate the trail for long
+searches and avoid mid-search reallocation."
+  (when (numberp size-form)
+    (assert (and (integerp size-form) (>= size-form 0))))
+  `(let ((*trail* (make-array (or ,size-form 2048)
+                              :adjustable t
+                              :fill-pointer 0)))
+     ,@body))
+
 (defvar-compile-time *function-record-table* (make-hash-table :test #'equal)
   "The function record table.")
 
@@ -198,22 +209,7 @@ contexts even though they may appear inside a SCREAMER::DEFUN."))
 
 (defun-compile-time peal-off-documentation-string-and-declarations
     (body &optional documentation-string?)
-  ;; needs work: This requires that the documentation string preceed all
-  ;;             declarations which needs to be fixed.
-  (let (documentation-string declarations)
-    (when (and documentation-string?
-               (not (null body))
-               (not (null (rest body)))
-               (stringp (first body)))
-      (setf documentation-string (first body))
-      (setf body (rest body)))
-    (loop (unless (and (not (null body))
-                       (consp (first body))
-                       (eq (first (first body)) 'declare))
-            (return))
-      (push (first body) declarations)
-      (pop body))
-    (values body (reverse declarations) documentation-string)))
+  (alexandria:parse-body body :documentation documentation-string?))
 
 (defun-compile-time split-declaration-clause (clause var)
   "Split a single declaration CLAUSE according to whether it mentions VAR.
@@ -2183,16 +2179,92 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
           t
           environment))))))
 
+(defun-compile-time continuation-primary-param (params)
+  (block found
+    (let ((after-keyword? nil))
+      (dolist (p params nil)
+        (cond ((member p lambda-list-keywords :test #'eq)
+               (setf after-keyword? (not (eq p '&optional))))
+              (after-keyword? nil)
+              (t (return-from found
+                   (if (consp p) (first p) p))))))))
+
+(defun-compile-time split-leading-declares (body)
+  (let ((decls '()))
+    (loop while (and body (consp (car body)) (eq (caar body) 'declare))
+          do (push (pop body) decls))
+    (values (nreverse decls) body)))
+
+(defun-compile-time inject-type-into-magic-continuation (continuation types)
+  (let* ((lam       (second continuation))
+         (params    (second lam))
+         (rest-body (rest (rest lam)))
+         (primary   (continuation-primary-param params)))
+    (when (and primary (symbolp primary))
+      (cl:multiple-value-bind (decls body) (split-leading-declares rest-body)
+        `(function (lambda ,params
+                    ,@decls
+                    (let ((,primary (the (and ,@types) ,primary)))
+                      (declare (type (and ,@types) ,primary))
+                      ,@body)))))))
+
+(defun-compile-time wrap-runtime-the-continuation (cps-name arg-vars c types outer-cont)
+  (let ((v (gensym "V-"))
+        (rest (gensym "REST-"))
+        (wrap-fn (gensym "TYPED-K-")))
+    (possibly-beta-reduce-funcall
+     `#'(lambda (,c)
+          (declare (magic))
+          (flet ((,wrap-fn (&optional ,v &rest ,rest)
+                   (declare (magic) (ignorable ,rest))
+                   (apply ,c (the (and ,@types) ,v) ,rest)))
+            (declare (ignorable (function ,wrap-fn))
+                     (dynamic-extent (function ,wrap-fn)))
+            (,cps-name #',wrap-fn ,@(reverse arg-vars))))
+     '()
+     outer-cont
+     t)))
+
 (defun-compile-time cps-convert-multiple-value-call-internal
     (nondeterministic? function forms continuation types value? environment
                        &optional arguments)
   (if (null forms)
       (if nondeterministic?
-          ;; needs work: TYPES is never actually used in this branch.
-          `(apply-nondeterministic-nondeterministic
-            ,(if value? continuation (void-continuation continuation))
-            ,function
-            (append ,@(reverse arguments)))
+          (let ((k-form (if value? continuation (void-continuation continuation))))
+            (cond
+              ((or (not value?) (null types))
+               `(apply-nondeterministic-nondeterministic
+                 ,k-form ,function (append ,@(reverse arguments))))
+              ((is-magic-continuation? k-form)
+               (let ((typed (inject-type-into-magic-continuation k-form types)))
+                 (unless typed
+                   (error "[cps-convert-multiple-value-call-internal] - Magic continuation~%~
+                           has no identifiable primary parameter for type injection:~%~S"
+                          k-form))
+                 `(apply-nondeterministic-nondeterministic
+                   ,typed ,function (append ,@(reverse arguments)))))
+              ((or (and (symbolp k-form) (not (symbol-package k-form)))
+                   (and (consp k-form)
+                        (eq (first k-form) 'function)
+                        (null (rest (last k-form)))
+                        (= (length k-form) 2)
+                        (symbolp (second k-form))))
+               (let ((v (gensym "V-"))
+                     (rest (gensym "REST-"))
+                     (k (gensym "K-"))
+                     (wrap-fn (gensym "TYPED-K-")))
+                 `(let ((,k ,k-form))
+                    (flet ((,wrap-fn (&optional ,v &rest ,rest)
+                             (declare (magic) (ignorable ,rest))
+                             (apply ,k (the (and ,@types) ,v) ,rest)))
+                      (declare (ignorable (function ,wrap-fn))
+                               (dynamic-extent (function ,wrap-fn)))
+                      (apply-nondeterministic-nondeterministic
+                       #',wrap-fn ,function (append ,@(reverse arguments)))))))
+              (t
+               (error "[cps-convert-multiple-value-call-internal] - Unexpected~%~
+                       continuation shape:~%~S"
+                      k-form))))
           (possibly-beta-reduce-funcall
            continuation
            types
@@ -2406,18 +2478,34 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                                       environment
                                       &optional
                                       arg-vars)
-  ;; needs work: TYPES is never actually used here.
   (if (null arguments)
-      (let ((c (gensym "CONTINUATION-")))
-        (possibly-beta-reduce-funcall
-         `#'(lambda (,c)
-              (declare (magic))
-              (,(cps-convert-function-name function-name)
-                ,c
-                ,@(reverse arg-vars)))
-         '()
-         (if value? continuation (void-continuation continuation))
-         t))
+      (let* ((c (gensym "CONTINUATION-"))
+             (cps-name (cps-convert-function-name function-name))
+             (outer-cont (if value? continuation (void-continuation continuation))))
+        (cond
+          ((or (not value?) (null types))
+           (possibly-beta-reduce-funcall
+            `#'(lambda (,c) (declare (magic)) (,cps-name ,c ,@(reverse arg-vars)))
+            '() outer-cont t))
+          ((is-magic-continuation? outer-cont)
+           (let ((typed (inject-type-into-magic-continuation outer-cont types)))
+             (unless typed
+               (error "[cps-convert-call] - Magic continuation has no~%~
+                       identifiable primary parameter for type injection:~%~S"
+                      outer-cont))
+             (possibly-beta-reduce-funcall
+              `#'(lambda (,c) (declare (magic)) (,cps-name ,c ,@(reverse arg-vars)))
+              '() typed t)))
+          ((or (and (symbolp outer-cont) (not (symbol-package outer-cont)))
+               (and (consp outer-cont)
+                    (eq (first outer-cont) 'function)
+                    (null (rest (last outer-cont)))
+                    (= (length outer-cont) 2)
+                    (symbolp (second outer-cont))))
+           (wrap-runtime-the-continuation cps-name arg-vars c types outer-cont))
+          (t
+           (error "[cps-convert-call] - Unexpected continuation shape:~%~S"
+                  outer-cont))))
       (let ((arg (gensym "ARG-"))
             (other-arguments (gensym "OTHER-")))
         (cps-convert
@@ -3031,6 +3119,25 @@ expression is always deterministic."
         value)
       result)))
 
+(cl:defun copy-output-value (value)
+  "Deep-copy VALUE so a later trail-unwind cannot mutate an already-collected
+result. Used by ALL-VALUES, N-VALUES and similar accumulators."
+  (typecase value
+    (cons (copy-tree value))
+    (hash-table
+     (let ((new (alexandria:copy-hash-table value)))
+       (maphash (lambda (k v)
+                  (setf (gethash k new) (copy-output-value v)))
+                value)
+       new))
+    (sequence
+     (let ((new (copy-seq value)))
+       (dotimes (i (length new))
+         (setf (elt new i) (copy-output-value (elt new i))))
+       new))
+    (structure-object (copy-structure value))
+    (t value)))
+
 (defmacro-compile-time all-values (&body body)
   "Evaluates BODY as an implicit PROGN and returns a list of all of the
 nondeterministic values yielded by the it.
@@ -3051,15 +3158,16 @@ always deterministic.
 
 ALL-VALUES is analogous to the `bagof' primitive in Prolog."
   (let ((values (gensym "VALUES"))
-        (last-value-cons (gensym "LAST-VALUE-CONS")))
+        (last-value-cons (gensym "LAST-VALUE-CONS"))
+        (value (gensym "VALUE")))
     `(let ((,values '())
            (,last-value-cons nil))
        (for-effects
-         (let ((value (progn ,@body)))
+         (let ((,value (copy-output-value (progn ,@body))))
            (global (if (null ,values)
-                       (setf ,last-value-cons (list value)
+                       (setf ,last-value-cons (list ,value)
                              ,values ,last-value-cons)
-                       (setf (rest ,last-value-cons) (list value)
+                       (setf (rest ,last-value-cons) (list ,value)
                              ,last-value-cons (rest ,last-value-cons))))))
        ,values)))
 
@@ -3140,7 +3248,7 @@ N-VALUES is analogous to ALL-VALUES, but collects only the first N solutions."
            (,number 0))
        (block n-values
          (for-effects
-           (let ((,value (progn ,@forms)))
+           (let ((,value (copy-output-value (progn ,@forms))))
              (global (cond ((null ,values)
                             (setf ,last-value-cons (list ,value))
                             (setf ,values ,last-value-cons))
@@ -6072,12 +6180,12 @@ Otherwise returns the value of X."
   (if (and (variable-integer? z) (or (variable-ratio? x) (variable-ratio? y)))
       (restrict-ratio! x))
   (if (and (variable-ratio? z) (or (variable-integer? x) (variable-integer? y)))
-      (unless (variable-integer? x) (restrict-ratio! x)))   
+      (unless (variable-integer? x) (restrict-ratio! x)))
   (if (and (variable-rational? z) (or (variable-rational? x) (variable-rational? y)))
       (restrict-rational! x))
-  (if (or (variable-float? z) (variable-float? y))
-          (unless (not (eq (variable-enumerated-domain x) t))
-            (restrict-nonrational! x)))
+  (if (and (variable-float? z) (variable-rational? y))
+      (unless (not (eq (variable-enumerated-domain x) t))
+        (restrict-nonrational! x)))
   (if (and (variable-real? z) (or (variable-real? x) (variable-real? y)))
       (restrict-real! x))
   (if (and (variable-nonreal? z)
@@ -6099,6 +6207,42 @@ Otherwise returns the value of X."
              (not (variable? y))
              (not (variable? z))
              (/= z (+ x y)))
+        (fail))))
+
+(defun --rule-up (z x y)
+  (declare (type variable z x y))
+  (if (and (variable-integer? x) (variable-integer? y))
+      (restrict-integer! z))
+  (if (and (variable-ratio? x) (variable-ratio? y))
+      (restrict-rational! z))
+  (if (and (or (variable-integer? x) (variable-integer? y))
+           (or (variable-ratio? x) (variable-ratio? y)))
+      (restrict-ratio! z))
+  (if (and (variable-rational? x) (variable-rational? y))
+      (restrict-rational! z))
+  (if (or (variable-float? x) (variable-float? y))
+      (unless (not (eq (variable-enumerated-domain z) t))
+        (restrict-nonrational! z)))
+  (if (and (variable-real? x) (variable-real? y))
+      (restrict-real! z))
+  (if (and (or (variable-nonreal? x) (variable-nonreal? y))
+           (or (variable-real? x) (variable-real? y)))
+      (restrict-nonreal! z))
+  (if (and (variable-real? x) (variable-real? y) (variable-real? z))
+      (restrict-bounds!
+       z
+       (infinity-- (variable-lower-bound x) (variable-upper-bound y))
+       (infinity-- (variable-upper-bound x) (variable-lower-bound y))))
+  (if (and (variable-rational? x) (variable-rational? y) (variable-rational? z)
+           (or (variable-lower-bound y) (variable-upper-bound y)))
+      (max-denominator-rule z x y '-))
+  (let ((x (value-of x))
+        (y (value-of y))
+        (z (value-of z)))
+    (if (and (not (variable? x))
+             (not (variable? y))
+             (not (variable? z))
+             (/= z (- x y)))
         (fail))))
 
 (defun /-rule (z x y)
@@ -6210,9 +6354,9 @@ Otherwise returns the value of X."
     (unless (variable-integer? x) (restrict-ratio! x)))
   (if (and (variable-rational? z) (or (variable-rational? x) (variable-rational? y)))
       (restrict-rational! x))
-(if (or (variable-float? z) (variable-float? y))
-          (unless (not (eq (variable-enumerated-domain x) t))
-      (restrict-nonrational! x)))
+  (if (and (variable-float? z) (variable-rational? y))
+      (unless (not (eq (variable-enumerated-domain x) t))
+        (restrict-nonrational! x)))
   (if (and (variable-real? z) (or (variable-real? x) (variable-real? y)))
       (restrict-real! x))
   (if (and (variable-real? x) (variable-real? y) (variable-real? z))
@@ -6227,6 +6371,35 @@ Otherwise returns the value of X."
              (not (variable? y))
              (not (variable? z))
              (/= z (* x y)))
+        (fail))))
+
+(defun /-rule-up (z x y)
+  (declare (type variable z x y))
+  (if (and (variable-ratio? x) (variable-integer? y))
+      (restrict-ratio! z))
+  (if (and (variable-rational? x) (variable-rational? y))
+      (restrict-rational! z))
+  (if (or (variable-float? x) (variable-float? y))
+      (unless (not (eq (variable-enumerated-domain z) t))
+        (restrict-nonrational! z)))
+  (if (and (variable-real? x) (variable-real? y))
+      (restrict-real! z))
+  (if (and (or (variable-nonreal? x) (variable-nonreal? y))
+           (or (variable-real? x) (variable-real? y)))
+      (restrict-nonreal! z))
+  (if (and (variable-real? x) (variable-real? y) (variable-real? z))
+      (/-rule x y z))
+  (if (and (variable-rational? x) (variable-rational? y) (variable-rational? z)
+           (or (variable-lower-bound y) (variable-upper-bound y)))
+      (max-denominator-rule z x y '/))
+  (let ((x (value-of x))
+        (y (value-of y))
+        (z (value-of z)))
+    (if (and (not (variable? x))
+             (not (variable? y))
+             (not (variable? z))
+             (not (zerop y))
+             (/= z (/ x y)))
         (fail))))
 
 (defun min-rule-up (z x y)
@@ -6466,14 +6639,47 @@ Otherwise returns the value of X."
 
 ;;; Lifted Arithmetic Functions (Two argument optimized)
 
+(cl:defun numeric-type-tag (operand)
+  (cond ((variable? operand)
+         (cond ((variable-integer? operand)     :integer)
+               ((variable-ratio? operand)       :ratio)
+               ((variable-rational? operand)    :rational)
+               ((variable-float? operand)       :float)
+               ((variable-nonrational? operand) :float)
+               ((variable-real? operand)        :real)
+               (t :unknown)))
+        ((integerp operand)  :integer)
+        ((ratiop operand)    :ratio)
+        ((rationalp operand) :rational)
+        ((floatp operand)    :float)
+        ((realp operand)     :real)
+        ((numberp operand)   :nonreal)
+        (t :unknown)))
+
+(cl:defun contagious-zero (x y)
+  (let ((tx (numeric-type-tag x))
+        (ty (numeric-type-tag y)))
+    (cond ((or (eq tx :float) (eq ty :float)) 0.0)
+          ((and (member tx '(:integer :ratio :rational) :test #'eq)
+                (member ty '(:integer :ratio :rational) :test #'eq))
+           0)
+          (t nil))))
+
+(cl:defun identity-shortcut-safe? (constant other)
+  (cond ((rationalp constant) t)
+        ((floatp constant) (eq (numeric-type-tag other) :float))
+        (t nil)))
+
 (defun +v2 (x y)
   (assert!-numberpv x)
   (assert!-numberpv y)
-  ;; needs work: The first two optimizations below violate Common Lisp type
-  ;;             propagation conventions.
-  (cond ((and (bound? x) (zerop (value-of x))) (value-of y))
-        ((and (bound? y) (zerop (value-of y))) (value-of x))
-        ((and (bound? x) (bound? y)) (+ (value-of x) (value-of y)))
+  (cond ((and (bound? x) (bound? y)) (+ (value-of x) (value-of y)))
+        ((and (bound? x) (zerop (value-of x))
+              (identity-shortcut-safe? (value-of x) y))
+         (value-of y))
+        ((and (bound? y) (zerop (value-of y))
+              (identity-shortcut-safe? (value-of y) x))
+         (value-of x))
         (t (let ((x (variablize x))
                  (y (variablize y))
                  (z (a-numberv)))
@@ -6490,67 +6696,78 @@ Otherwise returns the value of X."
 (defun -v2 (x y)
   (assert!-numberpv x)
   (assert!-numberpv y)
-  ;; needs work: The first optimization below violates Common Lisp type
-  ;;             propagation conventions.
-  (cond ((and (bound? y) (zerop (value-of y))) (value-of x))
-        ((and (bound? x) (bound? y)) (- (value-of x) (value-of y)))
+  (cond ((and (bound? x) (bound? y)) (- (value-of x) (value-of y)))
+        ((and (bound? y) (zerop (value-of y))
+              (identity-shortcut-safe? (value-of y) x))
+         (value-of x))
         (t (let ((x (variablize x))
                  (y (variablize y))
                  (z (a-numberv)))
             (declare (type variable x y z))
              (attach-noticer!
-              #'(lambda () (+-rule-down x y z) (+-rule-down x z y)) x)
+              #'(lambda () (--rule-up y x z) (--rule-up z x y)) x)
              (attach-noticer!
-              #'(lambda () (+-rule-up x y z) (+-rule-down x z y)) y)
+              #'(lambda () (+-rule-up x y z) (--rule-up z x y)) y)
              (attach-noticer!
-              #'(lambda () (+-rule-up x y z) (+-rule-down x y z)) z
+              #'(lambda () (+-rule-up x y z) (--rule-up y x z)) z
         :dependencies (list x y))
              z))))
 
 (defun *v2 (x y)
   (assert!-numberpv x)
   (assert!-numberpv y)
-  ;; needs work: The first four optimizations below violate Common Lisp type
-  ;;             propagation conventions.
-  (cond ((and (bound? x) (zerop (value-of x))) 0)
-        ((and (bound? y) (zerop (value-of y))) 0)
-        ((and (bound? x) (= (value-of x) 1)) (value-of y))
-        ((and (bound? y) (= (value-of y) 1)) (value-of x))
-        ((and (bound? x) (bound? y)) (* (value-of x) (value-of y)))
-        (t (let ((x (variablize x))
-                 (y (variablize y))
-                 (z (a-numberv)))
-            (declare (type variable x y z))
-             (attach-noticer!
-              #'(lambda () (*-rule-up z x y) (*-rule-down z y x)) x)
-             (attach-noticer!
-              #'(lambda () (*-rule-up z x y) (*-rule-down z x y)) y)
-             (attach-noticer!
-              #'(lambda () (*-rule-down z x y) (*-rule-down z y x)) z
-        :dependencies (list x y))
-             z))))
+  (cond ((and (bound? x) (bound? y)) (* (value-of x) (value-of y)))
+        ((and (bound? x) (zerop (value-of x)))
+         (or (contagious-zero (value-of x) y) (general-*v2 x y)))
+        ((and (bound? y) (zerop (value-of y)))
+         (or (contagious-zero x (value-of y)) (general-*v2 x y)))
+        ((and (bound? x) (= (value-of x) 1)
+              (identity-shortcut-safe? (value-of x) y))
+         (value-of y))
+        ((and (bound? y) (= (value-of y) 1)
+              (identity-shortcut-safe? (value-of y) x))
+         (value-of x))
+        (t (general-*v2 x y))))
+
+(cl:defun general-*v2 (x y)
+  (let ((x (variablize x))
+        (y (variablize y))
+        (z (a-numberv)))
+    (declare (type variable x y z))
+    (attach-noticer!
+     #'(lambda () (*-rule-up z x y) (*-rule-down z y x)) x)
+    (attach-noticer!
+     #'(lambda () (*-rule-up z x y) (*-rule-down z x y)) y)
+    (attach-noticer!
+     #'(lambda () (*-rule-down z x y) (*-rule-down z y x)) z
+     :dependencies (list x y))
+    z))
 
 (defun /v2 (x y)
   (assert!-numberpv x)
   (assert!-numberpv y)
-  ;; needs work: The first three optimizations below violate Common Lisp type
-  ;;             propagation conventions.
-  (cond ((and (bound? x) (zerop (value-of x))) 0)
-        ((and (bound? y) (zerop (value-of y))) (fail))
-        ((and (bound? y) (= (value-of y) 1)) (value-of x))
+  (cond ((and (bound? y) (zerop (value-of y))) (fail))
         ((and (bound? x) (bound? y)) (/ (value-of x) (value-of y)))
-        (t (let ((x (variablize x))
-                 (y (variablize y))
-                 (z (a-numberv)))
-            (declare (type variable x y z))
-             (attach-noticer!
-              #'(lambda () (*-rule-down x y z) (*-rule-down x z y) (non-zero-rule y)) x)
-             (attach-noticer!
-              #'(lambda () (*-rule-up x y z) (*-rule-down x z y) (non-zero-rule y)) y)
-             (attach-noticer!
-              #'(lambda () (*-rule-up x y z) (*-rule-down x y z) (non-zero-rule y)) z
-        :dependencies (list x y))
-             z))))
+        ((and (bound? x) (zerop (value-of x)))
+         (or (contagious-zero (value-of x) y) (general-/v2 x y)))
+        ((and (bound? y) (= (value-of y) 1)
+              (identity-shortcut-safe? (value-of y) x))
+         (value-of x))
+        (t (general-/v2 x y))))
+
+(cl:defun general-/v2 (x y)
+  (let ((x (variablize x))
+        (y (variablize y))
+        (z (a-numberv)))
+    (declare (type variable x y z))
+    (attach-noticer!
+     #'(lambda () (/-rule-up y x z) (/-rule-up z x y) (non-zero-rule y)) x)
+    (attach-noticer!
+     #'(lambda () (*-rule-up x y z) (/-rule-up z x y) (non-zero-rule y)) y)
+    (attach-noticer!
+     #'(lambda () (*-rule-up x y z) (/-rule-up y x z) (non-zero-rule y)) z
+     :dependencies (list x y))
+    z))
 
 (defun minv2 (x y)
   (assert!-realpv x)
@@ -9563,7 +9780,8 @@ have domain size of 1."
                    (variable-upper-bound x)
                    (variable-rational? x))
               (cond ((variable-integer? x)
-                     (1+ (- (variable-upper-bound x) (variable-lower-bound x))))
+                     (1+ (- (floor   (variable-upper-bound x))
+                            (ceiling (variable-lower-bound x)))))
                      ((variable-max-denom x)
                       (estimate-farey-domain-size (variable-max-denom x)
                                                   (variable-lower-bound x) (variable-upper-bound x)))))

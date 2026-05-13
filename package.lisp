@@ -48,6 +48,7 @@
            #:lambda-nondeterministic
            #:unwind-trail
            #:trail
+           #:with-trail
            #:purge
            #:unwedge-screamer
            #:local-output

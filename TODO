@@ -50,11 +50,11 @@
     *ISCREAM?* kept as the explicit gate. Y-OR-N-P simplified to
     delegate to CL:Y-OR-N-P (SLIME routes to the minibuffer
     natively). iscream.el deleted.
-* DONE Rewrite dynamic-extent continuations using FLET
-    POSSIBLY-BETA-REDUCE-FUNCALL emits FLET for magic-cont/null-types
-    sites and aliases the original cvar via LET to #'helper, enabling
-    stack-allocation of continuation closures. *dynamic-extent?*
-    removed: optimisation is now unconditional.
+* TODO Rewrite dynamic-extent continuations using FLET
+    POSSIBLY-BETA-REDUCE-FUNCALL currently emits LET for magic-cont
+    sites. Switching to FLET aliasing would enable stack-allocation
+    of continuation closures on SBCL (which cannot stack-allocate
+    LET-bound lambdas but can stack-allocate FLET-bound functions).
 * DONE Dynamic-extent in CPS-CONVERT-TAGBODY.
     LABELS-bound continuations declared (dynamic-extent ...).
 * WIP Split the system into logical pieces.
@@ -70,14 +70,13 @@
 *** DONE DEFMACRO-COMPILE-TIME
       Check if Allegro still needs this.
       Used across all 4 supported impls (SBCL, CCL, LispWorks, Allegro).
-*** DONE primordial.lisp has some commented-out tests using LOOP
+*** TODO primordial.lisp has some commented-out tests using LOOP
     Apparently LOCAL and LOOP interactions depend on the specific
     expansion of loop. :/ If nothing else, documentation should
     mention this. An alternative would be to provide our own
-    implemntation of LOOP that is well-behaved when it comes to LOCAL.
-    test7 / test8 reactivated; the walker now dispatches LOOP on
-    determinism (LABELS-recursive rewrite for nondet, host
-    macroexpansion for det, with MACROLET/SYMBOL-MACROLET support).
+    implementation of LOOP that is well-behaved when it comes to
+    LOCAL. The walker currently signals an explicit error for LOOP
+    in nondeterministic context (see WALK function).
 *** TODO review the remaining limitations listed in the old source, and put the in the manual
      1. Does not handle SETF methods with multiple values for LOCAL
         SETF.
@@ -86,9 +85,12 @@
      3. If you do a (SETF (SYMBOL-FUNCTION 'FOO) ...) to a deterministic
 	function when FOO was previously defined as a nondeterministic
 	function you will lose when you attempt to evaluate (FOO ...).
-     4. DONE: FLET and LABELS now supported via cps-convert-flet/labels +
-        *lexical-function-records*. Bindings are lexically scoped; calls to
-        labels-bound nondet names dispatch through their CPS form.
+     4. TODO: FLET and LABELS in nondeterministic context currently
+        signal "Cannot (currently) handle the special form" because
+        cps-convert has no FLET/LABELS clause. A cps-convert-flet/
+        labels implementation plus a *lexical-function-records* alist
+        would route calls to labels-bound nondet names through their
+        CPS form.
      5. There is no way to force Screamer into compiling a deterministic
 	function as a nondeterministic one. A wizard might want to do this to
 	take advantage of the fact that a LOCAL SETF/SETQ in a nondeterministic

@@ -22,9 +22,9 @@ See `LICENSE` for terms.
 
 This is **Screamer 4.0.1**, the active maintenance branch. It builds on
 the 3.20-derived modernisation effort by Nikodemus Siivola and adds
-support for rationals, ratios, floats, dependency tracking, FLET/LABELS
-in nondeterministic contexts, and a new walker that handles `LOOP`,
-`MACROLET`, `SYMBOL-MACROLET`, and `LOAD-TIME-VALUE` correctly.
+support for rationals, ratios, floats, dependency tracking, and a
+walker that handles `MACROLET`, `SYMBOL-MACROLET`, `LOAD-TIME-VALUE`,
+and `LOCALLY` inside nondeterministic contexts.
 
 Tested on SBCL, CCL, LispWorks, and Allegro. Depends on
 [Alexandria](https://common-lisp.net/project/alexandria/).
@@ -74,13 +74,12 @@ Tested on SBCL, CCL, LispWorks, and Allegro. Depends on
 
 ### Walker and CPS
 
-- New `LOOP` walker: deterministic LOOPs go through host macroexpansion;
-  nondeterministic LOOPs are rewritten as labels-based recursion (CPS
-  conversion of LOOP's internal SETQs is unsound)
-- `MACROLET` and `SYMBOL-MACROLET` supported in nondeterministic context
-- `FLET` and `LABELS` supported via `cps-convert-flet/labels`
-- Continuation closures stack-allocated via FLET aliasing in
-  `possibly-beta-reduce-funcall`
+- `MACROLET`, `SYMBOL-MACROLET`, and `LOCALLY` supported in
+  nondeterministic context (walker dispatches them and CPS converter
+  recurses through with environment augmentation)
+- `LOAD-TIME-VALUE` recognised by the walker
+- LABELS-bound continuation closures declared `dynamic-extent` in
+  `cps-convert-tagbody` for stack allocation
 
 ### Stricter propagation
 

@@ -522,7 +522,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                                 environment
                                 (first lambda-list)))
     (t (ecase mode
-         ((nil &rest &allow-other-keys &aux)
+         ((nil &rest &allow-other-keys)
           (walk-lambda-list-reducing map-function
                                      reduce-function
                                      screamer?
@@ -531,7 +531,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                                      (rest lambda-list)
                                      environment
                                      mode))
-         ((&optional &key)
+         ((&optional &key &aux)
           (if (and (consp (first lambda-list))
                    (consp (rest (first lambda-list))))
               (funcall
@@ -2238,8 +2238,8 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                 forms
                 `#'(lambda ()
                      (declare (magic))
-                     (possibly-beta-reduce-funcall
-                      continuation types `(values-list ,mv-list) t))
+                     ,(possibly-beta-reduce-funcall
+                       continuation types `(values-list ,mv-list) t))
                 nil
                 nil
                 environment))
@@ -2729,6 +2729,12 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
           (let* ((continuation (gensym "CONTINUATION-"))
                  ;; note: Could provide better TYPES and VALUE? here.
                  (*block-tags* (list (list function-name continuation '() t))))
+            (unless (deterministic-lambda-list? lambda-list environment)
+              (screamer-error
+               "Cannot (currently) handle SCREAMER:DEFUN ~S with~%~
+                nondeterministic initialization forms for~%~
+                &OPTIONAL, &KEY, or &AUX parameters."
+               function-name))
             (list `(cl:defun ,function-name ,lambda-list
                      ,@(if documentation-string (list documentation-string))
                      ,@declarations

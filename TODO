@@ -94,8 +94,7 @@
     the SCREAMER:DEFUN force-compile pass. FUNCTION-DEFINITION now
     emits an explicit (setf (documentation NAME 'function) DOC) under
     #+lispworks in both the deterministic and nondeterministic
-    branches when a docstring is present. Hobbyist/Professional/
-    Enterprise editions do not exhibit the stripping.
+    branches when a docstring is present.
 * TODO Rewrite dynamic-extent continuations using FLET
     POSSIBLY-BETA-REDUCE-FUNCALL currently emits LET for magic-cont
     sites. Switching to FLET aliasing would enable stack-allocation

@@ -215,8 +215,9 @@ the foundational papers. The code in those documents matches the
 
 ## TODO
 
-See [TODO](TODO) for the active task list. Recent activity covers walker
-cleanup, gensym renaming by role, public docstring normalisation, and
-the next planned items (multi-store LOCAL SETF, SCREAMER:INCF/PUSH/POP
-for trail-safe destructive ops on defstruct slots, SLIME port of
-`local-output`).
+See [TODO](TODO) for the active task list. The Public API and Internal
+changes sections above summarise the recently shipped work. Pending
+items include splitting `screamer.lisp` into a compile-time module
+loaded ahead of the main file, manual texinfo updates for the new
+4.0.1 symbols, `SCREAMER:INCF/PUSH/POP` for trail-safe destructive ops
+on defstruct slots, and FLET-based dynamic-extent continuations.

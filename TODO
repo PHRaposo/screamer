@@ -50,6 +50,52 @@
     *ISCREAM?* kept as the explicit gate. Y-OR-N-P simplified to
     delegate to CL:Y-OR-N-P (SLIME routes to the minibuffer
     natively). iscream.el deleted.
+* DONE Screamer 5 imports
+    Imported from Swapneil Singh's Screamer 5 (verbatim unless noted):
+    - WITH-TRAIL macro for pre-allocating *trail* in long searches.
+    - COPY-OUTPUT-VALUE typecase deep-copy: cons (copy-tree),
+      hash-table (alexandria:copy-hash-table with source-side
+      iteration), sequence (copy-seq), structure-object (copy-structure).
+      ALL-VALUES and N-VALUES apply it to every collected value
+      unconditionally so trail-unwind cannot mutate already-collected
+      results.
+    - VARIABLE-DEPENDENCIES slot on the variable defstruct, plus
+      ATTACH-NOTICER! :DEPENDENCIES keyword and
+      ATTACH-DEPENDENCIES!-INTERNAL helper.
+    - MAPCAR-NONDETERMINISTIC.
+    - SCREAMER-ERROR condition class with MESSAGE and ARGS slots.
+    - DEFINE-CONDITION-COMPILE-TIME and DEFPARAMETER-COMPILE-TIME
+      macros, mirroring the existing DEFUN-/DEFMACRO-/DEFVAR-COMPILE-TIME
+      infrastructure.
+    Refined locally:
+    - STATIC-ORDERING-INTERNAL rewritten to recurse into a variable's
+      dependencies inline before forcing it.
+    - DOMAIN-SIZE integer branch fixed to handle non-integer-bound
+      ranges via (1+ (- (floor U) (ceiling L))) (the Screamer 5 5.2.2
+      patch handled integer bounds only).
+* DONE Arithmetic propagation refactor
+    --RULE-UP and /-RULE-UP added symmetric to +-RULE-UP and *-RULE-UP.
+    Float-to-nonrational guard in +-RULE-DOWN and *-RULE-DOWN tightened
+    from (or float-z float-y) to (and float-z rational-y).
+    Numeric-type helpers NUMERIC-TYPE-TAG, CONTAGIOUS-ZERO,
+    IDENTITY-SHORTCUT-SAFE? introduced and used by the refactored +V2,
+    -V2, *V2, /V2. Noticer-attach path of *V2 and /V2 extracted into
+    GENERAL-*V2 and GENERAL-/V2. /V2 cond order corrected: (zerop y)
+    -> (fail) now precedes (zerop x) -> 0.
+* DONE TYPES propagation through CPS
+    CPS-CONVERT-CALL and CPS-CONVERT-MULTIPLE-VALUE-CALL-INTERNAL
+    propagate the TYPES parameter to the continuation: magic
+    continuations receive a (the (and ...) ...) wrap via
+    INJECT-TYPE-INTO-MAGIC-CONTINUATION; literal #'foo or
+    uninterned-symbol continuations route through
+    WRAP-RUNTIME-THE-CONTINUATION.
+* DONE LispWorks Personal docstring re-installation
+    LispWorks Personal Edition's compiler discards docstrings during
+    the SCREAMER:DEFUN force-compile pass. FUNCTION-DEFINITION now
+    emits an explicit (setf (documentation NAME 'function) DOC) under
+    #+lispworks in both the deterministic and nondeterministic
+    branches when a docstring is present. Hobbyist/Professional/
+    Enterprise editions do not exhibit the stripping.
 * TODO Rewrite dynamic-extent continuations using FLET
     POSSIBLY-BETA-REDUCE-FUNCALL currently emits LET for magic-cont
     sites. Switching to FLET aliasing would enable stack-allocation
@@ -152,7 +198,10 @@
 * Refactoring
 *** DONE Depend on Alexandria
     :depends-on (:alexandria) added to screamer.asd.
-***** TODO peal-off-documentation-string-and-declarations -> alexandria:parse-body
+***** DONE peal-off-documentation-string-and-declarations -> alexandria:parse-body
+        Replaced with a delegation to ALEXANDRIA:PARSE-BODY so that
+        declare-before-doc and mixed orderings extract the docstring
+        correctly.
 *** SETF and SETQ walking is suspiciously different
 * Future Work
 *** TODO See if it would make sense to make nondeterministic functions funcallable instances.

@@ -154,6 +154,3 @@
            #:*strategy*
            #:*maximum-random-domain-size*))
 
-(in-package :screamer)
-;;; Avoid warnings when compiling screamer.lisp in LispWorks
-#+lispworks(declaim (declaration magic))

@@ -40,7 +40,8 @@
 #+sbcl (eval-when (:compile-toplevel :load-toplevel :execute)
          (require :sb-cltl2))
 
-#-lispworks(declaim (declaration magic))
+(eval-when (:compile-toplevel :load-toplevel :execute)
+ (declaim (declaration magic)))
 
 (defmacro define-screamer-package (defined-package-name &body options)
   "Convenience wrapper around DEFPACKAGE. Passes its argument directly

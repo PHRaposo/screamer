@@ -2807,13 +2807,19 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
       (if (function-record-deterministic? function-record)
           (let ((*block-tags* (list (list function-name nil))))
             ;; needs work: To process subforms of lambda list.
-            (list `(cl:defun ,function-name ,lambda-list
-                     ,@(if documentation-string (list documentation-string))
-                     ,@declarations
-                     ,@(mapcar #'(lambda (form)
-                                   (perform-substitutions form environment))
-                               body))
-                  `(declare-deterministic ',function-name)))
+            (append
+             (list `(cl:defun ,function-name ,lambda-list
+                      ,@(if documentation-string (list documentation-string))
+                      ,@declarations
+                      ,@(mapcar #'(lambda (form)
+                                    (perform-substitutions form environment))
+                                body)))
+             ;; LW compiler strips docstrings; re-install via setf.
+             #+lispworks
+             (when documentation-string
+               (list `(setf (documentation ',function-name 'function)
+                            ,documentation-string)))
+             (list `(declare-deterministic ',function-name))))
           (let* ((continuation (gensym "CONTINUATION-"))
                  ;; note: Could provide better TYPES and VALUE? here.
                  (*block-tags* (list (list function-name continuation '() t))))
@@ -2823,36 +2829,42 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                 nondeterministic initialization forms for~%~
                 &OPTIONAL, &KEY, or &AUX parameters."
                function-name))
-            (list `(cl:defun ,function-name ,lambda-list
-                     ,@(if documentation-string (list documentation-string))
-                     ,@declarations
-                     (declare
-                      (ignore
-                       ,@(reduce
-                          #'append
-                          (mapcar
-                           #'(lambda (argument)
-                               (if (consp argument)
-                                   (if (and (consp (rest argument))
-                                            (consp (rest (rest argument))))
-                                       (list (first argument) (third argument))
-                                       (list (first argument)))
-                                   (list argument)))
-                           (set-difference
-                            lambda-list
-                            lambda-list-keywords
-                            :test #'eq)))))
-                     (screamer-error
-                      "Function ~S is a nondeterministic function. As such, it~%~
-                  must be called only from a nondeterministic context."
-                      ',function-name))
-                  `(cl:defun ,(cps-convert-function-name function-name)
-                       (,continuation ,@lambda-list)
-                     ,@(if documentation-string (list documentation-string))
-                     ,@declarations
-                     ,continuation      ;ignore
-                     ,(cps-convert-progn body continuation '() t environment))
-                  `(declare-nondeterministic ',function-name)))))))
+            (append
+             (list `(cl:defun ,function-name ,lambda-list
+                      ,@(if documentation-string (list documentation-string))
+                      ,@declarations
+                      (declare
+                       (ignore
+                        ,@(reduce
+                           #'append
+                           (mapcar
+                            #'(lambda (argument)
+                                (if (consp argument)
+                                    (if (and (consp (rest argument))
+                                             (consp (rest (rest argument))))
+                                        (list (first argument) (third argument))
+                                        (list (first argument)))
+                                    (list argument)))
+                            (set-difference
+                             lambda-list
+                             lambda-list-keywords
+                             :test #'eq)))))
+                      (screamer-error
+                       "Function ~S is a nondeterministic function. As such, it~%~
+                   must be called only from a nondeterministic context."
+                       ',function-name)))
+             ;; LW compiler strips docstrings; re-install via setf.
+             #+lispworks
+             (when documentation-string
+               (list `(setf (documentation ',function-name 'function)
+                            ,documentation-string)))
+             (list `(cl:defun ,(cps-convert-function-name function-name)
+                        (,continuation ,@lambda-list)
+                      ,@(if documentation-string (list documentation-string))
+                      ,@declarations
+                      ,continuation     ;ignore
+                      ,(cps-convert-progn body continuation '() t environment))
+                   `(declare-nondeterministic ',function-name))))))))
 
 (defun-compile-time modified-function-definitions (function-name environment)
   ;; note: This is using the current rather than the saved ENVIRONMENT.

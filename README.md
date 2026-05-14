@@ -102,10 +102,7 @@ exist in Screamer 5.
 
 - `local-output` — captures `*standard-output*` and sends the text to
   the *Screamer Output* buffer in Emacs through a swank channel; the
-  text is removed when the enclosing choice unwinds. Distinct from
-  Screamer 5's `local-output`, which uses the older
-  `emacs-eval` / iscream.el path. Requires `*ISCREAM?*` and
-  `screamer-slime.el`.
+  text is removed when the enclosing choice unwinds.
 
 ## Internal changes
 

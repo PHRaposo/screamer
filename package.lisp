@@ -153,4 +153,3 @@
            #:*maximum-discretization-range*
            #:*strategy*
            #:*maximum-random-domain-size*))
-

@@ -40,8 +40,169 @@
 #+sbcl (eval-when (:compile-toplevel :load-toplevel :execute)
          (require :sb-cltl2))
 
+;;; cl:loop workaround (SBCL/CCL/Allegro): swaps IGNORE -> IGNORABLE on
+;;; anonymous iter-vars and adds IGNORABLE on `collect into FOO' accumulators.
+
+#+sbcl (in-package :sb-loop)
+#+sbcl
 (eval-when (:compile-toplevel :load-toplevel :execute)
- (declaim (declaration magic)))
+  (sb-ext:without-package-locks
+    (defun loop-make-var (name initialization dtype &optional step-var-p
+                                                    &aux (loop *loop*))
+      (cond ((null name)
+             (setq name (gensym "_"))
+             (push (list name (or initialization
+                                  (loop-typed-init dtype step-var-p)))
+                   (vars loop))
+             (push `(ignorable ,name) (declarations loop))
+             (loop-declare-var name dtype))
+            ((atom name)
+             (check-var-name name)
+             (loop-declare-var name dtype :step-var-p step-var-p
+                                          :initialization initialization)
+             (push `(ignorable ,name) (declarations loop))
+             (push (list name (or initialization
+                                  (loop-typed-init dtype step-var-p)))
+                   (vars loop)))
+            (initialization
+             (check-var-name name)
+             (let ((newvar (gensym "DS")))
+               (loop-declare-var name dtype :desetq t)
+               (push (list newvar initialization) (vars loop))
+               (setf (desetq loop) (list* name newvar (desetq loop)))))
+            (t
+             (let ((tcar nil) (tcdr nil))
+               (if (atom dtype) (setq tcar (setq tcdr dtype))
+                   (setq tcar (car dtype) tcdr (cdr dtype)))
+               (loop-make-var (car name) nil tcar)
+               (when (cdr name) (loop-make-var (cdr name) nil tcdr)))))
+      name)
+    (defmacro with-loop-list-collection-head
+        ((collector head-var tail-var &optional user-head-var)
+         &body body &environment env)
+      (let ((l (and user-head-var (list (list user-head-var nil))))
+            (debug (sb-c:policy env (= debug 3))))
+        `(let* ((,head-var ,(if (and (not debug)
+                                     (loop for how
+                                           in (loop-collector-history collector)
+                                           always (eq how 'list)))
+                                `(sb-kernel:unaligned-dx-cons nil)
+                                `(list nil)))
+                (,tail-var ,head-var) ,@l)
+           (declare (dynamic-extent ,head-var)
+                    ,@(unless debug
+                        `((sb-c::no-debug ,head-var ,tail-var)))
+                    ,@(and user-head-var
+                           `((list ,user-head-var)
+                             (ignorable ,user-head-var))))
+           ,@body)))))
+#+sbcl (in-package :screamer)
+
+#+ccl (in-package :ansi-loop)
+#+ccl
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun loop-make-variable (name initialization dtype
+                             &optional iteration-variable-p)
+    (cond ((null name)
+           (cond ((not (null initialization))
+                  (push (list (setq name (loop-gentemp 'loop-ignore-))
+                              initialization)
+                        *loop-variables*)
+                  (push `(ignorable ,name) *loop-declarations*))))
+          ((atom name)
+           (cond (iteration-variable-p
+                  (if (member name *loop-iteration-variables*)
+                      (loop-error "Duplicated LOOP iteration variable ~S." name)
+                      (push name *loop-iteration-variables*)))
+                 ((assoc name *loop-variables*)
+                  (loop-error
+                   "Duplicated variable ~S in LOOP parallel binding." name)))
+           (unless (symbolp name)
+             (loop-error "Bad variable ~S somewhere in LOOP." name))
+           (unless initialization (setq initialization (loop-typed-init dtype)))
+           (when (and dtype
+                      (null initialization)
+                      (not (typep nil dtype)))
+             (if (eq dtype 'complex)
+                 (setq initialization 0 dtype 'number)
+                 (when iteration-variable-p
+                   (setq dtype `(or null ,dtype)))))
+           (loop-declare-variable name dtype)
+           (push (list name initialization) *loop-variables*))
+          (initialization
+           (cond (*loop-destructuring-hooks*
+                  (loop-declare-variable name dtype)
+                  (push (list name initialization) *loop-variables*))
+                 (t (let ((newvar (loop-gentemp 'loop-destructure-)))
+                      (loop-declare-variable name dtype)
+                      (push (list newvar initialization) *loop-variables*)
+                      (setq *loop-desetq-crocks*
+                            (list* name newvar *loop-desetq-crocks*))))))
+          (t (let ((tcar nil) (tcdr nil))
+               (if (atom dtype) (setq tcar (setq tcdr dtype))
+                   (setq tcar (car dtype) tcdr (cdr dtype)))
+               (loop-make-variable (car name) nil tcar iteration-variable-p)
+               (loop-make-variable (cdr name) nil tcdr iteration-variable-p))))
+    name)
+  (defmacro with-loop-list-collection-head
+      ((head-var tail-var &optional user-head-var) &body body)
+    (let ((l (and user-head-var (list (list user-head-var nil)))))
+      `(let* ((,head-var (list nil)) (,tail-var ,head-var) ,@l)
+         ,@(and user-head-var `((declare (ignorable ,user-head-var))))
+         ,@body))))
+#+ccl (in-package :screamer)
+
+#+allegro (in-package :excl)
+#+allegro
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defmacro with-loop-list-collection-head
+      ((head-var tail-var &optional user-head-var) &body body)
+    (let ((l (and user-head-var (list (list user-head-var nil)))))
+      `(let* ((,head-var (list nil)) (,tail-var ,head-var) ,@l)
+         (declare (dynamic-extent ,head-var)
+                  ,@(and user-head-var `((ignorable ,user-head-var))))
+         ,@body)))
+  (defun loop-make-variable (name initialization dtype
+                             &optional iteration-variable-p)
+    (cond ((null name)
+           (cond ((not (null initialization))
+                  (push (list (setq name (loop-gentemp 'loop-ignore-))
+                              initialization)
+                        *loop-variables*)
+                  (push `(ignorable ,name) *loop-declarations*))))
+          ((atom name)
+           (cond (iteration-variable-p
+                  (if (member name *loop-iteration-variables*)
+                      (loop-error "Duplicated LOOP iteration variable ~S." name)
+                      (push name *loop-iteration-variables*)))
+                 ((assoc name *loop-variables*)
+                  (loop-error "Duplicated variable ~S in LOOP parallel binding."
+                              name)))
+           (unless (symbolp name)
+             (loop-error "Bad variable ~S somewhere in LOOP." name))
+           (let ((init (or initialization (loop-typed-init dtype))))
+             (loop-declare-variable name init dtype)
+             (push (list name init) *loop-variables*)
+             (push `(ignorable ,name) *loop-declarations*)))
+          (initialization
+           (cond (*loop-destructuring-hooks*
+                  (loop-declare-variable name nil dtype)
+                  (push (list name initialization) *loop-variables*))
+                 (t (let ((newvar (loop-gentemp 'loop-destructure-)))
+                      (loop-declare-variable name nil dtype)
+                      (push (list newvar initialization) *loop-variables*)
+                      (setq *loop-desetq-crocks*
+                            (list* name newvar *loop-desetq-crocks*))))))
+          (t (let ((tcar nil) (tcdr nil))
+               (if (atom dtype) (setq tcar (setq tcdr dtype))
+                   (setq tcar (car dtype) tcdr (cdr dtype)))
+               (loop-make-variable (car name) nil tcar iteration-variable-p)
+               (loop-make-variable (cdr name) nil tcdr iteration-variable-p))))
+    name))
+#+allegro (in-package :screamer)
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (declaration magic)))
 
 (defmacro define-screamer-package (defined-package-name &body options)
   "Convenience wrapper around DEFPACKAGE. Passes its argument directly
@@ -91,15 +252,6 @@ to DEFPACKAGE, and automatically injects two additional options:
   "Set to T to enable Emacs integration (LOCAL-OUTPUT, EMACS-EVAL).
 Requires Screamer running under SLIME with screamer-slime.el loaded.")
 
-(defvar-compile-time *dynamic-extent?*
-    ;; SBCL cannot stack-allocate LET-bound lambdas that screamer
-    ;; currently uses, so setting dynamic-extent to T will only
-    ;; generate compiler notes about it inability to do so.
-    #-sbcl t
-    #+sbcl nil
-  "Set to T to enable the dynamic extent optimization, NIL to
-disable it. Default is platform dependent.")
-
 (defvar-compile-time *nondeterministic-context* nil
   "Hash-table storing context information for the current nondeterministic search.
 NIL outside any choice-point. Initialized to a fresh hash-table at the outermost
@@ -139,6 +291,43 @@ searches and avoid mid-search reallocation."
     '(&optional &rest &key &allow-other-keys &aux)
   "The allowed lambda list keywords in order.")
 
+(declaim (ftype function
+                walk walk-macro-call walk-progn
+                walk-loop-kw-eq walk-loop-fold-body
+                walk-loop-split-plain-prefix walk-loop-destructure-pattern
+                walk-loop-loop-direction-keyword-p
+                walk-loop-rewrite-as-recursion-finish
+                walk-loop-retro-wrap-acc-markers
+                cps-convert cps-convert-progn cps-convert-function-name
+                possibly-beta-reduce-funcall perform-substitutions
+                deterministic? flet-binding-deterministic?
+                value-of bounded? occurs-in? eliminate-variables deep-bound?
+                domain-size estimate-farey-domain-size variables-in
+                variable-integer? variable-noninteger?
+                variable-ratio? variable-nonratio? variable-rational?
+                variable-nonrational? variable-float? variable-nonfloat?
+                variable-real? variable-nonreal? variable-number?
+                variable-nonnumber? variable-boolean? variable-nonboolean?
+                a-booleanv a-numberv a-realv an-integer-betweenv
+                rationals-between ratios-between
+                strict-prev-in-domain strict-next-in-domain
+                set-enumerated-domain! restrict-value!
+                known?-equalv known?-notv-equalv known?-<=v2-internal equalv
+                assert!-equalv assert!-numberpv assert!-realpv assert!-orv
+                funcall-nondeterministic-nondeterministic
+                apply-nondeterministic-nondeterministic
+                a-boolean-nondeterministic
+                an-integer-nondeterministic
+                an-integer-above-nondeterministic
+                an-integer-below-nondeterministic
+                an-integer-between-nondeterministic
+                a-member-of-nondeterministic
+                a-random-member-of-nondeterministic
+                a-rational-nondeterministic
+                a-rational-above-nondeterministic
+                a-rational-below-nondeterministic
+                a-rational-between-nondeterministic))
+
 (defmacro-compile-time choice-point-internal (form)
   `(catch '%fail
      (let ((*nondeterministic-context*
@@ -162,7 +351,8 @@ searches and avoid mid-search reallocation."
   (callees nil)
   (deterministic? t)
   (old-deterministic? nil)
-  (screamer? *screamer?*))
+  (screamer? *screamer?*)
+  (cps-name nil))
 
 (defstruct-compile-time (nondeterministic-function
                          (:print-function print-nondeterministic-function)
@@ -179,6 +369,10 @@ searches and avoid mid-search reallocation."
                      (apply #'format nil
                             (slot-value condition 'message)
                             (slot-value condition 'args))))))
+
+(define-condition-compile-time screamer-loop-malformed-error
+    (program-error simple-condition)
+    ())
 
 (defun-compile-time screamer-error (header &rest args)
   (error 'screamer-error
@@ -207,6 +401,21 @@ contexts even though they may appear inside a SCREAMER::DEFUN."))
   (or (gethash function-name *function-record-table*)
       (setf (gethash function-name *function-record-table*)
             (make-function-record :function-name function-name))))
+
+(defvar-compile-time *lexical-function-records* nil
+  "Alist of FLET/LABELS bindings in scope, shadowed during CPS conversion.")
+
+(defvar-compile-time *conditional-guard* nil
+  "Active WHEN/IF/UNLESS guard inside the LOOP rewriter; NIL otherwise.")
+
+(defvar-compile-time *it-var* nil
+  "Gensym holding the value of the most recent WHEN/IF/UNLESS test
+inside the LOOP rewriter, used to expand the IT anaphor in sub-clause
+expressions. NIL outside any conditional clause.")
+
+(defun-compile-time function-record-or-lexical (function-name)
+  (or (cdr (assoc function-name *lexical-function-records* :test #'equal))
+      (get-function-record function-name)))
 
 (defun-compile-time peal-off-documentation-string-and-declarations
     (body &optional documentation-string?)
@@ -294,7 +503,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
        (or (and (null (rest (last form)))
                 (>= (length form) 2)
                 (listp (second form)))
-           (error "Invalid syntax for LAMBDA expression: ~S" form))))
+           (error "[lambda-expression?] - Invalid syntax for LAMBDA expression: ~S" form))))
 
 (defun-compile-time valid-function-name? (function-name)
   (or (and (symbolp function-name) (not (null function-name)))
@@ -315,12 +524,12 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
           (let ((head (car rest)))
             (cond ((eq head '&environment)
                    (when env-var
-                     (error "repeated &ENVIRONMENT in macro lambda list: ~S"
+                     (error "[strip-macro-extras] - repeated &ENVIRONMENT in macro lambda list: ~S"
                             lambda-list))
                    (setf env-var (second rest)) (setf rest (cddr rest)))
                   ((eq head '&whole)
                    (when whole-var
-                     (error "repeated &WHOLE in macro lambda list: ~S"
+                     (error "[strip-macro-extras] - repeated &WHOLE in macro lambda list: ~S"
                             lambda-list))
                    (setf whole-var (second rest)) (setf rest (cddr rest)))
                   (t (push head clean) (setf rest (cdr rest))))))
@@ -410,7 +619,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 
 (defun-compile-time check-function-name (function-name)
   (unless (valid-function-name? function-name)
-    (error "Invalid function name: ~S" function-name)))
+    (error "[check-function-name] - Invalid function name: ~S" function-name)))
 
 (defun-compile-time every-other (list)
   (cond ((null list) list)
@@ -426,7 +635,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
          (ecase mode
            ((nil)
             (unless (symbolp parameter)
-              (error "Invalid parameter: ~S" parameter)))
+              (error "[check-lambda-list-internal] - Invalid parameter: ~S" parameter)))
            (&optional
             (unless (or (symbolp parameter)
                         (and (consp parameter)
@@ -436,10 +645,10 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                                  (and (= (length parameter) 3)
                                       (symbolp (third parameter))))
                              (symbolp (first parameter))))
-              (error "Invalid &OPTIONAL parameter: ~S" parameter)))
+              (error "[check-lambda-list-internal] - Invalid &OPTIONAL parameter: ~S" parameter)))
            (&rest
             (unless (symbolp parameter)
-              (error "Invalid &REST parameter: ~S" parameter)))
+              (error "[check-lambda-list-internal] - Invalid &REST parameter: ~S" parameter)))
            (&key
             (unless (or (symbolp parameter)
                         (and (consp parameter)
@@ -454,7 +663,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                                       (= (length (first parameter)) 2)
                                       (symbolp (first (first parameter)))
                                       (symbolp (second (first parameter)))))))
-              (error "Invalid &KEY parameter: ~S" parameter)))
+              (error "[check-lambda-list-internal] - Invalid &KEY parameter: ~S" parameter)))
            (&aux
             (unless (or (symbolp parameter)
                         (and (consp parameter)
@@ -462,30 +671,30 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                              (or (= (length parameter) 1)
                                  (= (length parameter) 2))
                              (symbolp (first parameter))))
-              (error "Invalid &AUX parameter: ~S" parameter)))))
+              (error "[check-lambda-list-internal] - Invalid &AUX parameter: ~S" parameter)))))
        (check-lambda-list-internal (rest lambda-list) mode))))
 
 (defun-compile-time check-lambda-list (lambda-list)
   (unless (null (rest (last lambda-list)))
-    (error "Improper lambda-list: ~S" lambda-list))
+    (error "[check-lambda-list] - Improper lambda-list: ~S" lambda-list))
   (let ((rest (member '&rest lambda-list :test #'eq)))
     (if rest
         (let ((rest (rest rest)))
           (unless (not (member '&rest rest :test #'eq))
-            (error "&REST cannot appear more than once: ~S" lambda-list))
+            (error "[check-lambda-list] - &REST cannot appear more than once: ~S" lambda-list))
           (unless (and (not (null rest))
                        (not (member (first rest) lambda-list-keywords :test #'eq))
                        (or (null (rest rest))
                            (member (first (rest rest)) lambda-list-keywords
                                    :test #'eq)))
-            (error "&REST must be followed by exactly one variable: ~S"
+            (error "[check-lambda-list] - &REST must be followed by exactly one variable: ~S"
                    lambda-list)))))
   (let ((allow-other-keys (member '&allow-other-keys lambda-list :test #'eq)))
     (if allow-other-keys
         (unless (or (null (rest allow-other-keys))
                     (member (first (rest allow-other-keys)) lambda-list-keywords
                             :test #'eq))
-          (error "&ALLOW-OTHER-KEYS must not be followed by a parameter: ~S"
+          (error "[check-lambda-list] - &ALLOW-OTHER-KEYS must not be followed by a parameter: ~S"
                  lambda-list))))
   (let ((keywords
          (remove-if-not #'(lambda (argument)
@@ -494,14 +703,14 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
     (unless (every #'(lambda (keyword)
                        (member keyword *ordered-lambda-list-keywords* :test #'eq))
                    keywords)
-      (error "Invalid lambda list keyword: ~S" lambda-list))
+      (error "[check-lambda-list] - Invalid lambda list keyword: ~S" lambda-list))
     (unless (every #'(lambda (x y)
                        (member y (member x *ordered-lambda-list-keywords*
                                          :test #'eq)
                                :test #'eq))
                    keywords
                    (rest keywords))
-      (error "Invalid order for lambda list keywords: ~S" lambda-list)))
+      (error "[check-lambda-list] - Invalid order for lambda list keywords: ~S" lambda-list)))
   (check-lambda-list-internal lambda-list))
 
 (defun-compile-time walk-lambda-list-reducing
@@ -571,10 +780,10 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 
 (defun-compile-time walk-block
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper BLOCK: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-block] - Improper BLOCK: ~S" form))
   (unless (>= (length form) 2)
-    (error "BLOCK must have at least one argument, a NAME: ~S" form))
-  (unless (symbolp (second form)) (error "NAME must be a symbol: ~S" form))
+    (error "[walk-block] - BLOCK must have at least one argument, a NAME: ~S" form))
+  (unless (symbolp (second form)) (error "[walk-block] - NAME must be a symbol: ~S" form))
   (if reduce-function
       (funcall reduce-function
                (funcall map-function form 'block)
@@ -592,9 +801,9 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 
 (defun-compile-time walk-catch
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper CATCH: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-catch] - Improper CATCH: ~S" form))
   (unless (>= (length form) 2)
-    (error "CATCH must have at least one argument, a TAG: ~S" form))
+    (error "[walk-catch] - CATCH must have at least one argument, a TAG: ~S" form))
   (if reduce-function
       (funcall reduce-function
                (funcall map-function form 'catch)
@@ -612,13 +821,13 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 
 (defun-compile-time walk-eval-when
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper EVAL-WHEN: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-eval-when] - Improper EVAL-WHEN: ~S" form))
   (unless (>= (length form) 2)
-    (error "EVAL-WHEN must have at least one argument: ~S" form))
+    (error "[walk-eval-when] - EVAL-WHEN must have at least one argument: ~S" form))
   (unless (listp (second form))
-    (error "First argument of EVAL-WHEN must be a list: ~S" form))
+    (error "[walk-eval-when] - First argument of EVAL-WHEN must be a list: ~S" form))
   (unless (null (rest (last (second form))))
-    (error "Improper list of SITUATIONS: ~S" form))
+    (error "[walk-eval-when] - Improper list of SITUATIONS: ~S" form))
   (unless (every #'(lambda (situation)
                      (member situation '(:compile-toplevel
                                          :load-toplevel
@@ -628,7 +837,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                                          eval)
                              :test #'eq))
                  (second form))
-    (error "Invalid SITUATION: ~S" form))
+    (error "[walk-eval-when] - Invalid SITUATION: ~S" form))
   (if (member :execute (second form) :test #'eq)
       (walk-progn map-function
                   reduce-function
@@ -639,12 +848,20 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                   environment)
       (funcall map-function nil 'quote)))
 
+(defun-compile-time flet-binding-deterministic? (binding environment)
+  "T iff BINDING (FLET/LABELS) has a deterministic body and lambda-list."
+  (and (deterministic-lambda-list? (second binding) environment)
+       (every (lambda (subform)
+                (deterministic? subform environment))
+              (peal-off-documentation-string-and-declarations
+               (rest (rest binding)) t))))
+
 (defun-compile-time walk-flet/labels
     (map-function reduce-function screamer? partial? nested? form environment
                   form-type)
-  (unless (null (rest (last form))) (error "Improper ~S: ~S" form-type form))
+  (unless (null (rest (last form))) (error "[walk-flet/labels] - Improper ~S: ~S" form-type form))
   (unless (>= (length form) 2)
-    (error "~S must have BINDINGS: ~S" form-type form))
+    (error "[walk-flet/labels] - ~S must have BINDINGS: ~S" form-type form))
   (unless (and (listp (second form))
                (null (rest (last (second form))))
                (every #'(lambda (binding)
@@ -654,65 +871,84 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                                (valid-function-name? (first binding))
                                (listp (second binding))))
                       (second form)))
-    (error "Invalid BINDINGS for ~S: ~S" form-type form))
+    (error "[walk-flet/labels] - Invalid BINDINGS for ~S: ~S" form-type form))
   (if reduce-function
-      (funcall
-       reduce-function
-       (funcall map-function form form-type)
-       (if nested?
-           (funcall
-            reduce-function
-            (reduce
-             reduce-function
-             (mapcar
-              #'(lambda (binding)
-                  (funcall reduce-function
-                           (walk-lambda-list map-function
-                                             reduce-function
-                                             screamer?
-                                             partial?
-                                             nested?
-                                             (second binding)
-                                             environment)
-                           (mapcar
-                            #'(lambda (subform)
-                                (walk map-function
-                                      reduce-function
-                                      screamer?
-                                      partial?
-                                      nested?
-                                      subform
-                                      environment))
-                            (peal-off-documentation-string-and-declarations
-                             (rest (rest binding)) t))))
-              (second form)))
-            (reduce reduce-function
-                    (mapcar #'(lambda (subform)
-                                (walk map-function
-                                      reduce-function
-                                      screamer?
-                                      partial?
-                                      nested?
-                                      subform
-                                      environment))
-                            (rest (rest form)))))
-           (reduce reduce-function
-                   (mapcar #'(lambda (subform)
-                               (walk map-function
-                                     reduce-function
-                                     screamer?
-                                     partial?
-                                     nested?
-                                     subform
-                                     environment))
-                           (rest (rest form))))))
+      (let* ((bindings (second form))
+             (body (peal-off-documentation-string-and-declarations
+                    (rest (rest form))))
+             (lex-records
+              (mapcar #'(lambda (binding)
+                          (let ((rec (make-function-record
+                                      :function-name (first binding))))
+                            (setf (function-record-deterministic? rec)
+                                  (flet-binding-deterministic? binding environment))
+                            (cons (first binding) rec)))
+                      bindings))
+             (binding-walk-records
+              (if (eq form-type 'labels)
+                  (append lex-records *lexical-function-records*)
+                  *lexical-function-records*))
+             (body-walk-records
+              (append lex-records *lexical-function-records*)))
+        (funcall
+         reduce-function
+         (funcall map-function form form-type)
+         (if nested?
+             (funcall
+              reduce-function
+              (let ((*lexical-function-records* binding-walk-records))
+                (reduce reduce-function
+                        (mapcar
+                         #'(lambda (binding)
+                             (funcall reduce-function
+                                      (walk-lambda-list map-function
+                                                        reduce-function
+                                                        screamer?
+                                                        partial?
+                                                        nested?
+                                                        (second binding)
+                                                        environment)
+                                      (mapcar
+                                       #'(lambda (subform)
+                                           (walk map-function
+                                                 reduce-function
+                                                 screamer?
+                                                 partial?
+                                                 nested?
+                                                 subform
+                                                 environment))
+                                       (peal-off-documentation-string-and-declarations
+                                        (rest (rest binding)) t))))
+                         bindings)))
+              (let ((*lexical-function-records* body-walk-records))
+                (reduce reduce-function
+                        (mapcar #'(lambda (subform)
+                                    (walk map-function
+                                          reduce-function
+                                          screamer?
+                                          partial?
+                                          nested?
+                                          subform
+                                          environment))
+                                body))))
+             (let ((*lexical-function-records* body-walk-records))
+               (reduce reduce-function
+                       (mapcar #'(lambda (subform)
+                                   (walk map-function
+                                         reduce-function
+                                         screamer?
+                                         partial?
+                                         nested?
+                                         subform
+                                         environment))
+                               body))))))
       (funcall map-function form form-type)))
 
 (defun-compile-time walk-function
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper FUNCTION: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-function] - Improper FUNCTION: ~S" form))
   (unless (= (length form) 2)
-    (error "FUNCTION must have one argument: ~S" form))
+    (error "[walk-function] - FUNCTION must have one argument: ~S" form))
   (cond ((lambda-expression? (second form))
          (if (and reduce-function nested?)
              (funcall
@@ -745,25 +981,25 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
            ((symbolp (second form))
             (if (or (special-operator-p (second form))
                     (macro-function (second form) environment))
-                (error "You can't reference the FUNCTION of a special form or~%~
+                (error "[walk-function] - You can't reference the FUNCTION of a special form or~%~
                       macro: ~S"
                        form)
                 (funcall map-function form 'function-symbol)))
            (t (funcall map-function form 'function-setf))))
-        (t (error "Invalid argument to FUNCTION: ~S" form))))
+        (t (error "[walk-function] - Invalid argument to FUNCTION: ~S" form))))
 
 (defun-compile-time walk-go (map-function form)
-  (unless (null (rest (last form))) (error "Improper GO: ~S" form))
-  (unless (= (length form) 2) (error "GO must have one argument: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-go] - Improper GO: ~S" form))
+  (unless (= (length form) 2) (error "[walk-go] - GO must have one argument: ~S" form))
   (unless (or (symbolp (second form)) (integerp (second form)))
-    (error "TAG of GO must be a symbol or integer: ~S" form))
+    (error "[walk-go] - TAG of GO must be a symbol or integer: ~S" form))
   (funcall map-function form 'go))
 
 (defun-compile-time walk-if
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper IF: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-if] - Improper IF: ~S" form))
   (unless (or (= (length form) 3) (= (length form) 4))
-    (error "IF must have two or three arguments: ~S" form))
+    (error "[walk-if] - IF must have two or three arguments: ~S" form))
   (if reduce-function
       (if (= (length form) 4)
           (funcall reduce-function
@@ -813,9 +1049,9 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 (defun-compile-time walk-let/let*
     (map-function reduce-function screamer? partial? nested? form environment
                   form-type)
-  (unless (null (rest (last form))) (error "Improper ~S: ~S" form-type form))
+  (unless (null (rest (last form))) (error "[walk-let/let*] - Improper ~S: ~S" form-type form))
   (unless (>= (length form) 2)
-    (error "~S must have BINDINGS: ~S" form-type form))
+    (error "[walk-let/let*] - ~S must have BINDINGS: ~S" form-type form))
   (unless (and (listp (second form))
                (null (rest (last (second form))))
                (every #'(lambda (binding)
@@ -826,7 +1062,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                                        (= (length binding) 2))
                                    (symbolp (first binding)))))
                       (second form)))
-    (error "Invalid BINDINGS for ~S: ~S" form-type form))
+    (error "[walk-let/let*] - Invalid BINDINGS for ~S: ~S" form-type form))
   (if reduce-function
       (funcall
        reduce-function
@@ -862,9 +1098,9 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 #+(or sbcl ccl lispworks allegro)
 (defun-compile-time walk-macrolet
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper MACROLET: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-macrolet] - Improper MACROLET: ~S" form))
   (unless (>= (length form) 2)
-    (error "MACROLET must have BINDINGS: ~S" form))
+    (error "[walk-macrolet] - MACROLET must have BINDINGS: ~S" form))
   (unless (and (listp (second form))
                (null (rest (last (second form))))
                (every #'(lambda (binding)
@@ -874,7 +1110,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                                (symbolp (first binding))
                                (listp (second binding))))
                       (second form)))
-    (error "Invalid BINDINGS for MACROLET: ~S" form))
+    (error "[walk-macrolet] - Invalid BINDINGS for MACROLET: ~S" form))
   (if reduce-function
       (let ((new-environment
              (if (null (second form))
@@ -901,9 +1137,9 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 #+(or sbcl ccl lispworks allegro)
 (defun-compile-time walk-symbol-macrolet
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper SYMBOL-MACROLET: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-symbol-macrolet] - Improper SYMBOL-MACROLET: ~S" form))
   (unless (>= (length form) 2)
-    (error "SYMBOL-MACROLET must have BINDINGS: ~S" form))
+    (error "[walk-symbol-macrolet] - SYMBOL-MACROLET must have BINDINGS: ~S" form))
   (unless (and (listp (second form))
                (null (rest (last (second form))))
                (every #'(lambda (binding)
@@ -912,7 +1148,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                                (= (length binding) 2)
                                (symbolp (first binding))))
                       (second form)))
-    (error "Invalid BINDINGS for SYMBOL-MACROLET: ~S" form))
+    (error "[walk-symbol-macrolet] - Invalid BINDINGS for SYMBOL-MACROLET: ~S" form))
   (if reduce-function
       (let ((new-environment
              (if (null (second form))
@@ -940,14 +1176,14 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
     (map-function reduce-function screamer? partial? nested? form environment)
   ;; Body is opaque to the runtime walker (load-time only); treat as constant.
   (declare (ignore reduce-function screamer? partial? nested? environment))
-  (unless (null (rest (last form))) (error "Improper LOAD-TIME-VALUE: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-load-time-value] - Improper LOAD-TIME-VALUE: ~S" form))
   (unless (or (= (length form) 2) (= (length form) 3))
-    (error "LOAD-TIME-VALUE must have one or two arguments: ~S" form))
+    (error "[walk-load-time-value] - LOAD-TIME-VALUE must have one or two arguments: ~S" form))
   (funcall map-function form 'load-time-value))
 
 (defun-compile-time walk-locally
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper LOCALLY: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-locally] - Improper LOCALLY: ~S" form))
   (if reduce-function
       (cl:multiple-value-bind (body declarations)
           (peal-off-documentation-string-and-declarations (rest form))
@@ -969,9 +1205,9 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 (defun-compile-time walk-multiple-value-call
     (map-function reduce-function screamer? partial? nested? form environment)
   (unless (null (rest (last form)))
-    (error "Improper MULTIPLE-VALUE-CALL: ~S" form))
+    (error "[walk-multiple-value-call] - Improper MULTIPLE-VALUE-CALL: ~S" form))
   (unless (>= (length form) 2)
-    (error "MULTIPLE-VALUE-CALL must have at least one argument, a FUNCTION: ~S"
+    (error "[walk-multiple-value-call] - MULTIPLE-VALUE-CALL must have at least one argument, a FUNCTION: ~S"
            form))
   ;; Force descent into a literal #'(lambda ...) function arg -- it's
   ;; guaranteed to be invoked.
@@ -1000,9 +1236,9 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 (defun-compile-time walk-multiple-value-prog1
     (map-function reduce-function screamer? partial? nested? form environment)
   (unless (null (rest (last form)))
-    (error "Improper MULTIPLE-VALUE-PROG1: ~S" form))
+    (error "[walk-multiple-value-prog1] - Improper MULTIPLE-VALUE-PROG1: ~S" form))
   (unless (>= (length form) 2)
-    (error "MULTIPLE-VALUE-PROG1 must have at least one argument, a FORM: ~S"
+    (error "[walk-multiple-value-prog1] - MULTIPLE-VALUE-PROG1 must have at least one argument, a FORM: ~S"
            form))
   (if reduce-function
       (funcall reduce-function
@@ -1021,7 +1257,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 
 (defun-compile-time walk-progn
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper PROGN: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-progn] - Improper PROGN: ~S" form))
   (if reduce-function
       (funcall reduce-function
                (funcall map-function form 'progn)
@@ -1039,9 +1275,9 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 
 (defun-compile-time walk-progv
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper PROGV: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-progv] - Improper PROGV: ~S" form))
   (unless (>= (length form) 3)
-    (error "PROGV must have at least two arguments: ~S" form))
+    (error "[walk-progv] - PROGV must have at least two arguments: ~S" form))
   (if reduce-function
       (funcall reduce-function
                (funcall map-function form 'progv)
@@ -1074,18 +1310,18 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
       (funcall map-function form 'progv)))
 
 (defun-compile-time walk-quote (map-function form)
-  (unless (null (rest (last form))) (error "Improper QUOTE: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-quote] - Improper QUOTE: ~S" form))
   (unless (= (length form) 2)
-    (error "QUOTE must have one argument: ~S" form))
+    (error "[walk-quote] - QUOTE must have one argument: ~S" form))
   (funcall map-function (second form) 'quote))
 
 (defun-compile-time walk-return-from
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper RETURN-FROM: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-return-from] - Improper RETURN-FROM: ~S" form))
   (unless (or (= (length form) 2) (= (length form) 3))
-    (error "RETURN-FROM must have one or two arguments,~%~
+    (error "[walk-return-from] - RETURN-FROM must have one or two arguments,~%~
           a NAME and an optional RESULT: ~S" form))
-  (unless (symbolp (second form)) (error "NAME must be a symbol: ~S" form))
+  (unless (symbolp (second form)) (error "[walk-return-from] - NAME must be a symbol: ~S" form))
   (if reduce-function
       (funcall reduce-function
                (funcall map-function form 'return-from)
@@ -1100,11 +1336,11 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 
 (defun-compile-time walk-setq
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper SETQ: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-setq] - Improper SETQ: ~S" form))
   (unless (every #'symbolp (every-other (rest form)))
-    (error "Invalid destination for SETQ: ~S" form))
+    (error "[walk-setq] - Invalid destination for SETQ: ~S" form))
   (unless (evenp (length (rest form)))
-    (error "Odd number of arguments to SETQ: ~S" form))
+    (error "[walk-setq] - Odd number of arguments to SETQ: ~S" form))
   (if reduce-function
       (funcall reduce-function
                (funcall map-function form 'setq)
@@ -1122,15 +1358,15 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 
 (defun-compile-time walk-tagbody
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper TAGBODY: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-tagbody] - Improper TAGBODY: ~S" form))
   (unless (every #'(lambda (subform)
                      (or (symbolp subform) (integerp subform) (listp subform)))
                  (rest form))
-    (error "Subforms of a TAGBODY must be symbols, integers or lists: ~S"
+    (error "[walk-tagbody] - Subforms of a TAGBODY must be symbols, integers or lists: ~S"
            form))
   (let ((tags (remove-if #'consp (rest form))))
     (unless (= (length tags) (length (remove-duplicates tags)))
-      (error "TAGBODY has duplicate TAGs: ~S" form)))
+      (error "[walk-tagbody] - TAGBODY has duplicate TAGs: ~S" form)))
   (if reduce-function
       (funcall reduce-function
                (funcall map-function form 'tagbody)
@@ -1148,8 +1384,8 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 
 (defun-compile-time walk-the
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper THE: ~S" form))
-  (unless (= (length form) 3) (error "THE must have two arguments: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-the] - Improper THE: ~S" form))
+  (unless (= (length form) 3) (error "[walk-the] - THE must have two arguments: ~S" form))
   (if reduce-function
       (funcall reduce-function
                (walk map-function
@@ -1164,9 +1400,9 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 
 (defun-compile-time walk-throw
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper THROW: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-throw] - Improper THROW: ~S" form))
   (unless (= (length form) 3)
-    (error "THROW must have two arguments, a TAG and a RESULT: ~S" form))
+    (error "[walk-throw] - THROW must have two arguments, a TAG and a RESULT: ~S" form))
   (if reduce-function
       (funcall reduce-function
                (funcall map-function form 'throw)
@@ -1189,9 +1425,9 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 
 (defun-compile-time walk-unwind-protect
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper UNWIND-PROTECT: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-unwind-protect] - Improper UNWIND-PROTECT: ~S" form))
   (unless (>= (length form) 2)
-    (error "UNWIND-PROTECT must have at least one argument, a PROTECTED-FORM: ~S"
+    (error "[walk-unwind-protect] - UNWIND-PROTECT must have at least one argument, a PROTECTED-FORM: ~S"
            form))
   (if reduce-function
       (funcall
@@ -1217,9 +1453,113 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                                 (rest (rest form))))))
       (funcall map-function form 'unwind-protect)))
 
+(defun-compile-time walk-handler-bind
+    (map-function reduce-function screamer? partial? nested? form environment
+                  &aux (form-type 'handler-bind))
+  (unless (null (rest (last form)))
+    (error "[walk-handler-bind] - Improper ~S: ~S" form-type form))
+  (unless (>= (length form) 2)
+    (error "[walk-handler-bind] - ~S must have BINDINGS: ~S" form-type form))
+  (unless (and (listp (second form))
+               (null (rest (last (second form))))
+               (every #'(lambda (binding)
+                          (and (consp binding)
+                               (null (rest (last binding)))
+                               (or (= (length binding) 1)
+                                   (= (length binding) 2))
+                               (symbolp (first binding))))
+                      (second form)))
+    (error "[walk-handler-bind] - Invalid BINDINGS for ~S: ~S" form-type form))
+  (if reduce-function
+      (funcall
+       reduce-function
+       (funcall map-function form form-type)
+       (funcall reduce-function
+                (reduce reduce-function
+                        (mapcar #'(lambda (binding)
+                                    (walk map-function
+                                          reduce-function
+                                          screamer?
+                                          partial?
+                                          nested?
+                                          (second binding)
+                                          environment))
+                                (second form)))
+                (reduce reduce-function
+                        (mapcar #'(lambda (subform)
+                                    (walk map-function
+                                          reduce-function
+                                          screamer?
+                                          partial?
+                                          nested?
+                                          subform
+                                          environment))
+                                (rest (rest form))))))
+      (funcall map-function form form-type)))
+
+(defun-compile-time walk-handler/restart-case
+    (map-function reduce-function screamer? partial? nested? form environment
+                  form-type)
+  (unless (null (rest (last form)))
+    (error "[walk-handler/restart-case] - Improper ~S: ~S" form-type form))
+  (let ((bindings (rest (rest form))))
+    (unless (and (listp bindings)
+                 (null (rest (last bindings)))
+                 (every #'(lambda (binding)
+                            (and (consp binding)
+                                 (null (rest (last binding)))
+                                 (symbolp (first binding))
+                                 (listp (second binding))))
+                        bindings))
+      (error "[walk-handler/restart-case] - Invalid BINDINGS for ~S: ~S"
+             form-type form)))
+  (if reduce-function
+      (funcall
+       reduce-function
+       (funcall map-function form 'unwind-protect)
+       (funcall reduce-function
+                (walk map-function
+                      reduce-function
+                      screamer?
+                      partial?
+                      nested?
+                      (second form)
+                      environment)
+                (reduce reduce-function
+                        (mapcar #'(lambda (binding)
+                                    (walk map-function
+                                          reduce-function
+                                          screamer?
+                                          partial?
+                                          nested?
+                                          `(lambda ,(second binding)
+                                             ,@(rest (rest binding)))
+                                          environment))
+                                (rest (rest form))))))
+      (funcall map-function form 'unwind-protect)))
+
+(defun-compile-time walk-ignore-errors
+    (map-function reduce-function screamer? partial? nested? form environment)
+  (unless (null (rest (last form)))
+    (error "[walk-ignore-errors] - Improper IGNORE-ERRORS: ~S" form))
+  (if reduce-function
+      (funcall reduce-function
+               (funcall map-function form 'ignore-errors)
+               (reduce reduce-function
+                       (mapcar #'(lambda (subform)
+                                   (walk map-function
+                                         reduce-function
+                                         screamer?
+                                         partial?
+                                         nested?
+                                         subform
+                                         environment))
+                               (rest form))))
+      (funcall map-function form 'ignore-errors)))
+
 (defun-compile-time walk-for-effects
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper FOR-EFFECTS: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-for-effects] - Improper FOR-EFFECTS: ~S" form))
   ;; note: We used to think that we should never walk the body of FOR-EFFECTS
   ;;       as we thought that the walker would get confused on the code
   ;;       generated by FOR-EFFECTS and that FOR-EFFECTS called
@@ -1248,9 +1588,9 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 
 (defun-compile-time walk-setf
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper SETF: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-setf] - Improper SETF: ~S" form))
   (unless (evenp (length (rest form)))
-    (error "Odd number of arguments to SETF: ~S" form))
+    (error "[walk-setf] - Odd number of arguments to SETF: ~S" form))
   (if *local?*
       (if reduce-function
           (funcall reduce-function
@@ -1278,9 +1618,9 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 (defun-compile-time walk-multiple-value-call-nondeterministic
     (map-function reduce-function screamer? partial? nested? form environment)
   (unless (null (rest (last form)))
-    (error "Improper MULTIPLE-VALUE-CALL-NONDETERMINISTIC: ~S" form))
+    (error "[walk-multiple-value-call-nondeterministic] - Improper MULTIPLE-VALUE-CALL-NONDETERMINISTIC: ~S" form))
   (unless (>= (length form) 2)
-    (error "MULTIPLE-VALUE-CALL-NONDETERMINISTIC must have at least one ~
+    (error "[walk-multiple-value-call-nondeterministic] - MULTIPLE-VALUE-CALL-NONDETERMINISTIC must have at least one ~
           argument, a FUNCTION: ~S"
            form))
   (if reduce-function
@@ -1299,10 +1639,2043 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
       (funcall map-function form 'multiple-value-call-nondeterministic)))
 
 (defun-compile-time walk-full (map-function form)
-  (unless (null (rest (last form))) (error "Improper FULL: ~S" form))
+  (unless (null (rest (last form))) (error "[walk-full] - Improper FULL: ~S" form))
   (unless (= (length form) 2)
-    (error "FULL must have exactly one argument, a FORM: ~S" form))
+    (error "[walk-full] - FULL must have exactly one argument, a FORM: ~S" form))
   (funcall map-function form 'full))
+
+;;; LOOP -> LABELS-recursion rewriter.
+
+(defstruct-compile-time loop-ir
+  (iterators '())
+  (for-let '())
+  (init-for-let '())
+  (accumulators '())
+  (body '())
+  (extra-term-conds '())
+  (outer-bindings '())
+  (initially-body '())
+  (finally-body '())
+  return-form
+  ;; NIL for anonymous block, otherwise the symbol named by `LOOP NAMED foo'.
+  (block-name nil)
+  ;; Alist (var . type-spec) for FOR / WITH clauses with declared types.
+  ;; Emitted as (declare (type ...) ...) at the start of the helper body.
+  (type-decls '())
+  ;; All variables introduced by the loop (FOR/AS, WITH, INTO acc, NAMED).
+  ;; Used to detect duplicate-var errors.
+  (introduced-vars '())
+  ;; T once any "body code" clause has been emitted (DO, COLLECT, RETURN,
+  ;; THEREIS, etc.). After this, FOR/AS/REPEAT/WITH cause "iteration in
+  ;; LOOP follows body code" -- ANSI requires all iteration clauses
+  ;; before body. Purely a grammar check; does not affect emission.
+  (emitted-body nil)
+  ;; Set once a NAMED clause has been consumed; further NAMED clauses are
+  ;; rejected.
+  (named-seen nil)
+  ;; T iff the parser detected a CLHS-6.1.1.1 simple LOOP: body composed
+  ;; entirely of compound forms (no extended-loop keywords). Such loops
+  ;; have no implicit termination -- they exit only via RETURN, GO,
+  ;; THROW, or non-local unwind. The rewriter skips the "no termination
+  ;; source" check when this is set.
+  (simple-form-p nil)
+  unsupported)
+
+(defvar-compile-time *loop-original-form* nil
+  "The full LOOP form being parsed (for context in walker error messages).")
+
+(defvar-compile-time *loop-source-context* nil
+  "Tail of the parser's input list as of the last clause boundary.
+Appended to error messages so the user sees where in the LOOP source
+the parser was when the diagnostic fired.")
+
+(defun-compile-time walk-loop-error (ir format-string &rest format-args)
+  "Mark IR unsupported with a diagnostic: the formatted text plus the
+current LOOP context (the unparsed remainder of the LOOP body as of
+the last clause boundary). The walker's outer wrapper signals
+SCREAMER-ERROR using this string + the original LOOP form."
+  (setf (loop-ir-unsupported ir)
+        (let ((msg (apply #'format nil format-string format-args))
+              (ctx *loop-source-context*))
+          (cond (ctx (format nil "~A~%current LOOP context:~{ ~S~}." msg ctx))
+                (t msg)))))
+
+(defun-compile-time walk-loop-record-var (ir var clause-name)
+  "Record VAR as a binding introduced by CLAUSE-NAME (a string) and
+diagnose duplicates. Returns T on success, NIL when an error was
+recorded (caller may continue past or abort). Diagnoses:
+  - non-symbol VAR (Bad variable)
+  - VAR already bound by a prior clause (Duplicated variable)
+NIL VAR is allowed (FOR NIL IN list -- discarded iter var)."
+  (cond ((null var) t)
+        ((not (symbolp var))
+         (walk-loop-error ir "Bad variable ~S in ~A clause." var clause-name)
+         nil)
+        ((member var (loop-ir-introduced-vars ir) :test #'eq)
+         (walk-loop-error ir "Duplicated variable ~S in LOOP." var)
+         nil)
+        (t (push var (loop-ir-introduced-vars ir))
+           t)))
+
+(defun-compile-time walk-loop-pop-or-error (ir cs slot-msg)
+  "Return (values FIRST-OF-CS REST-OF-CS) when CS is non-empty; otherwise
+mark IR unsupported with \"LOOP source code ran out when another token
+was expected\" and return (values NIL NIL). SLOT-MSG names what was
+expected (e.g. \"after FOR variable\")."
+  (cond ((null cs)
+         (walk-loop-error ir
+                          "LOOP source code ran out when another token was ~
+                           expected (~A)."
+                          slot-msg)
+         (values nil nil))
+        (t (values (first cs) (rest cs)))))
+
+(defun-compile-time walk-loop-get-form-or-error (ir cs slot-msg)
+  "Like walk-loop-pop-or-error but the diagnostic is the form-position
+variant: \"LOOP code ran out where a form was expected\"."
+  (cond ((null cs)
+         (walk-loop-error ir
+                          "LOOP code ran out where a form was expected (~A)."
+                          slot-msg)
+         (values nil nil))
+        (t (values (first cs) (rest cs)))))
+
+(defun-compile-time walk-loop-get-compound-or-error (ir cs slot-msg)
+  "Pop a single compound form from CS. Errors with \"A compound form
+was expected, but ~S found.\" if next token is not a cons, or with the
+source-ran-out variant if CS is empty."
+  (cl:multiple-value-bind (form rest) (walk-loop-get-form-or-error ir cs slot-msg)
+    (cond ((loop-ir-unsupported ir) (values nil nil))
+          ((not (consp form))
+           (walk-loop-error ir
+                            "A compound form was expected, but ~S found (~A)."
+                            form slot-msg)
+           (values nil nil))
+          (t (values form rest)))))
+
+(defun-compile-time walk-loop-destructure-bindings (pattern source-form)
+  "Expand a destructuring PATTERN bound to SOURCE-FORM into a list of
+LET*-style (var expr) bindings. Returns a list whose head binding
+captures SOURCE-FORM in a gensym so it is not re-evaluated, and whose
+tail bindings extract each component via CAR/CDR/NTH chains.
+
+Examples:
+  (a)         -> ((G1 source) (a (car G1)))
+  (a b)       -> ((G1 source) (a (car G1)) (b (cadr G1)))
+  (a b c)     -> ((G1 source) (a (car G1)) (b (cadr G1)) (c (caddr G1)))
+  (a . rest)  -> ((G1 source) (a (car G1)) (rest (cdr G1)))
+  ((a b) c)   -> ((G1 source) (G2 (car G1)) (a (car G2)) (b (cadr G2))
+                  (c (cadr G1)))     ;; nested
+
+A bare symbol PATTERN means no destructuring; returns ((pattern source-form))."
+  (cond ((null pattern) nil)
+        ((symbolp pattern)
+         (list (list pattern source-form)))
+        ((consp pattern)
+         (let ((temp (gensym "DESTRUCT-")))
+           (cons (list temp source-form)
+                 (walk-loop-destructure-pattern pattern temp))))
+        (t (error "[walk-loop-destructure-bindings] - Bad destructuring pattern in LOOP: ~S" pattern))))
+
+(defun-compile-time walk-loop-destructure-pattern (pattern temp)
+  "Walk PATTERN whose bound value lives in TEMP; return (var expr) bindings
+for each leaf symbol via NTH/NTHCDR accessors at each list position.
+Handles dotted tails (a . rest) and nested patterns ((a b) c)."
+  (let ((bindings '())
+        (idx 0)
+        (cell pattern))
+    (loop
+      (cond ((null cell) (return))
+            ((symbolp cell)
+             ;; Dotted-tail variable: bind it to (nthcdr IDX TEMP).
+             (push (list cell (cond ((zerop idx) temp)
+                                    (t `(nthcdr ,idx ,temp))))
+                   bindings)
+             (return))
+            ((consp cell)
+             (let ((car-pat (first cell))
+                   (access (cond ((zerop idx) `(car ,temp))
+                                 (t `(nth ,idx ,temp)))))
+               (cond ((null car-pat))
+                     ((symbolp car-pat)
+                      (push (list car-pat access) bindings))
+                     ((consp car-pat)
+                      ;; Nested pattern: introduce sub-temp.
+                      (let ((sub-temp (gensym "DSUB-")))
+                        (push (list sub-temp access) bindings)
+                        (setf bindings
+                              (revappend
+                               (walk-loop-destructure-pattern car-pat sub-temp)
+                               bindings)))))
+               (setf cell (rest cell))
+               (incf idx)))
+            (t (error "[walk-loop-destructure-pattern] - Bad destructuring pattern in LOOP: ~S" pattern))))
+    (nreverse bindings)))
+
+(defun-compile-time walk-loop-pattern-vars (pattern)
+  "Return all leaf symbol vars in a destructuring PATTERN.
+Used to record vars for duplicate-var detection and binding tracking."
+  (cond ((null pattern) nil)
+        ((symbolp pattern) (list pattern))
+        ((consp pattern)
+         (append (walk-loop-pattern-vars (first pattern))
+                 (walk-loop-pattern-vars (rest pattern))))))
+
+(defun-compile-time walk-loop-zip-pattern-types (var-pattern type-pattern)
+  "Walk VAR-PATTERN and TYPE-PATTERN structurally in parallel and return
+a list of (var . type) cons cells, one per leaf var. Used by the FOR
+clause to support `FOR (a b) OF-TYPE (fixnum string)' (parallel types).
+
+If TYPE-PATTERN is a single type symbol (e.g., FIXNUM), apply that type
+to every leaf in VAR-PATTERN. If TYPE-PATTERN is a cons that mirrors
+VAR-PATTERN's shape, pair leaves positionally. NIL TYPE-PATTERN means
+no type info (returns NIL).
+
+Examples:
+  (a   . fixnum)              -> ((a . fixnum))
+  ((a b) . (fixnum string))   -> ((a . fixnum) (b . string))
+  ((a . rest) . (fixnum list)) -> ((a . fixnum) (rest . list))
+  ((a b) . fixnum)            -> ((a . fixnum) (b . fixnum))   ; broadcast"
+  (cond ((null type-pattern) nil)
+        ((null var-pattern) nil)
+        ((symbolp var-pattern)
+         ;; If TYPE-PATTERN is a single-element proper list (the
+         ;; structural cdr left over when the user wrote a parallel
+         ;; type-list `(fixnum list)' against a dotted var-pattern
+         ;; `(a . rest)'), unwrap it so REST gets type LIST rather
+         ;; than the syntactically nonsensical (LIST).
+         (cond ((and (consp type-pattern)
+                     (null (cdr type-pattern)))
+                (list (cons var-pattern (car type-pattern))))
+               (t (list (cons var-pattern type-pattern)))))
+        ((and (consp var-pattern) (symbolp type-pattern))
+         ;; Broadcast a single type to every leaf var.
+         (mapcar (lambda (v) (cons v type-pattern))
+                 (walk-loop-pattern-vars var-pattern)))
+        ((and (consp var-pattern) (consp type-pattern))
+         (append (walk-loop-zip-pattern-types (car var-pattern)
+                                              (car type-pattern))
+                 (walk-loop-zip-pattern-types (cdr var-pattern)
+                                              (cdr type-pattern))))))
+
+(defun-compile-time walk-loop-parse-type-spec (cs)
+  "Parse an optional type specifier from CS. Returns (values TYPE REST):
+TYPE is the parsed CL type (or NIL if no type spec at the head of CS),
+REST is CS advanced past consumed tokens. Recognizes:
+  OF-TYPE <type-form>            -> any CL type form
+  FIXNUM | FLOAT | T | NIL       -> short-form simple-type-spec
+The short-form keywords are matched by symbol name across packages."
+  (let ((kw (first cs)))
+    (cond ((walk-loop-kw-eq kw "OF-TYPE")
+           (values (second cs) (cddr cs)))
+          ((and (symbolp kw)
+                (member (symbol-name kw)
+                        '("FIXNUM" "FLOAT" "T" "NIL")
+                        :test #'string-equal))
+           (values (or (find-symbol (symbol-name kw) :common-lisp) kw)
+                   (rest cs)))
+          (t (values nil cs)))))
+
+(defun-compile-time walk-loop-kw-eq (sym name)
+  (and (symbolp sym) (string-equal (symbol-name sym) name)))
+
+(defun-compile-time walk-loop-typed-default (data-type step-var-p)
+  "Typed default for arithmetic-FOR. DATA-TYPE: NIL (untyped), a symbol
+type-spec, or a CL type form. STEP-VAR-P non-NIL means BY default
+(1 / 1.0 / etc.); otherwise FROM default (0 / 0.0 / etc.)."
+  (let ((init (if step-var-p 1 0)))
+    (cond ((null data-type) init)
+          ((symbolp data-type)
+           (cond ((member data-type '(single-float float) :test #'eq)
+                  (coerce init 'single-float))
+                 ((eq data-type 'double-float) (coerce init 'double-float))
+                 ((eq data-type 'short-float)  (coerce init 'short-float))
+                 ((eq data-type 'long-float)   (coerce init 'long-float))
+                 ((eq data-type 'complex)
+                  (complex (coerce init 'single-float)
+                           (coerce init 'single-float)))
+                 (t init)))
+          ((and (consp data-type) (eq (car data-type) 'complex))
+           (complex (walk-loop-typed-default
+                     (or (second data-type) 'real)
+                     step-var-p)
+                    0))
+          (t init))))
+
+(defun-compile-time walk-loop-tree-contains-loop-finish? (form)
+  "Tree-walk FORM checking for any (loop-finish) call. Used by the
+FINALLY parser to reject (loop-finish) inside FINALLY at parse time
+-- ANSI says that's undefined behavior. Skips QUOTE forms and
+nested (LOOP ...) forms (whose loop-finish belongs to the inner)."
+  (cond ((atom form) nil)
+        ((eq (car form) 'quote) nil)
+        ((and (symbolp (car form))
+              (string-equal (symbol-name (car form)) "LOOP"))
+         nil)
+        ((and (symbolp (car form))
+              (string-equal (symbol-name (car form)) "LOOP-FINISH")
+              (null (cdr form)))
+         t)
+        (t (or (walk-loop-tree-contains-loop-finish? (car form))
+               (walk-loop-tree-contains-loop-finish? (cdr form))))))
+
+(defun-compile-time walk-loop-tree-subst-it (form replacement)
+  "Tree-substitute any symbol whose name is \"IT\" with REPLACEMENT in
+FORM. Implements the LOOP IT anaphor: inside a WHEN/IF/UNLESS sub-
+clause IT refers to the value of the most recent test. Skips QUOTE
+forms and nested (LOOP ...) forms (whose IT belongs to the inner
+loop). Returns FORM unchanged when REPLACEMENT is NIL (no enclosing
+conditional)."
+  (cond ((null replacement) form)
+        ((symbolp form)
+         (cond ((string-equal (symbol-name form) "IT") replacement)
+               (t form)))
+        ((atom form) form)
+        ((eq (car form) 'quote) form)
+        ((and (symbolp (car form))
+              (string-equal (symbol-name (car form)) "LOOP"))
+         form)
+        (t (cons (walk-loop-tree-subst-it (car form) replacement)
+                 (walk-loop-tree-subst-it (cdr form) replacement)))))
+
+(defun-compile-time walk-loop-loop-keyword-p (sym)
+  (and (symbolp sym)
+       (member (symbol-name sym)
+               '("WITH" "REPEAT" "FOR" "AS" "DO" "DOING"
+                 "WHILE" "UNTIL"
+                 "COLLECT" "COLLECTING"
+                 "SUM" "SUMMING"
+                 "COUNT" "COUNTING"
+                 "MAX" "MAXIMIZE" "MAXIMIZING"
+                 "MIN" "MINIMIZE" "MINIMIZING"
+                 "APPEND" "APPENDING" "NCONC" "NCONCING"
+                 "ALWAYS" "NEVER" "THEREIS" "LOOP-FINISH"
+                 "FINALLY" "INITIALLY"
+                 "RETURN" "AND" "INTO" "BY" "OF-TYPE"
+                 "FROM" "UPFROM" "DOWNFROM"
+                 "TO" "UPTO" "BELOW" "ABOVE" "DOWNTO"
+                 "THEN"
+                 "ON" "IN" "ACROSS" "BEING" "THE"
+                 "HASH-KEY" "HASH-KEYS" "HASH-VALUE" "HASH-VALUES"
+                 "EACH" "USING" "=" "NAMED"
+                 "WHEN" "UNLESS" "IF" "ELSE" "END")
+               :test #'string-equal)))
+
+(cl:defun loop-hash-table-pairs (table)
+  "Materialize TABLE as an alist of (key . value) cons cells. Called
+from the outer-binding of a FOR-AS-HASH iterator."
+  (cl:loop for k being the hash-keys of table using (hash-value v)
+           collect (cons k v)))
+
+(cl:defun loop-package-symbols (package kind)
+  "Materialize PACKAGE's symbols as a list. KIND is :all (SYMBOL[S]),
+:present (PRESENT-SYMBOL[S]), or :external (EXTERNAL-SYMBOL[S])."
+  (cl:let ((result nil))
+    (cl:case kind
+      (:all
+       (cl:with-package-iterator (next package :internal :external :inherited)
+         (cl:loop (cl:multiple-value-bind (more sym) (next)
+                    (cl:unless more (cl:return))
+                    (cl:push sym result)))))
+      (:present
+       (cl:with-package-iterator (next package :internal :external)
+         (cl:loop (cl:multiple-value-bind (more sym) (next)
+                    (cl:unless more (cl:return))
+                    (cl:push sym result)))))
+      (:external
+       (cl:with-package-iterator (next package :external)
+         (cl:loop (cl:multiple-value-bind (more sym) (next)
+                    (cl:unless more (cl:return))
+                    (cl:push sym result))))))
+    result))
+
+(defun-compile-time walk-loop-parse-iterator (ir cs)
+  "Parse an iterator clause starting at CS (after FOR/AS keyword).
+Returns (VALUES VAR INIT STEP TERMINATE FOR-LET-BINDING REST-CS
+         OUTER-BINDING TYPE) or (VALUES :unsupported REASON-STRING ...)
+if the iterator form isn't recognized. REASON-STRING (when VAR is
+:unsupported) is the diagnostic text for the caller to relay via
+walk-loop-error. FOR-LET-BINDING is non-NIL when the iterator value
+comes from a let expression (e.g., for x in list -> binding
+x = (car tail)). TYPE is the optional type spec (FIXNUM / FLOAT
+/ via OF-TYPE), or NIL. IR is used to record additional dup-detection
+vars (USING (hash-X other-var) etc.) before returning."
+  ;; Source-end check before any access.
+  (when (null cs)
+    (return-from walk-loop-parse-iterator
+      (values :unsupported
+              "LOOP code ran out where a FOR/AS variable was expected."
+              nil nil nil nil nil nil nil)))
+  ;; CLHS d-var-spec: NIL in any position means "ignore this value"
+  ;; (no visible binding). For arithmetic FOR with `for nil from N
+  ;; to M', we still need an iter-var internally; gensym it so the
+  ;; emitted LET* binding is `(#:ITER-NIL- N)' rather than `(NIL N)'.
+  (let ((var (cond ((null (first cs)) (gensym "ITER-NIL-"))
+                   (t (first cs))))
+        (rest (rest cs))
+        (var-type nil))
+    ;; Optional type spec immediately after VAR: "for i fixnum from ..."
+    ;; or "for i of-type fixnum from ...". Consume before iterator kw.
+    (cl:multiple-value-bind (ty rest1) (walk-loop-parse-type-spec rest)
+      (when ty (setf var-type ty rest rest1)))
+    (cond
+      ;; for VAR = INIT THEN STEP  -> iterator: init once, step each later iter
+      ;; for VAR = EXPR            -> for-let binding (re-eval each iter)
+      ;;
+      ;; FOR-LET return is now ALWAYS a list of (target expr) bindings
+      ;; (possibly empty / one / many). When VAR is consp (destructuring
+      ;; pattern), the bindings are an NTH-based extraction chain so
+      ;; that LET* can splice them in source order.
+      ((walk-loop-kw-eq (first rest) "=")
+       ;; CLHS 6.1.2.1.3: VAR visible throughout body and FINALLY.
+       (let ((init-expr (second rest))
+             (after (cddr rest)))
+         (cond
+           ((walk-loop-kw-eq (first after) "THEN")
+            (cond ((symbolp var)
+                   (values var init-expr (second after) nil nil (cddr after)
+                           nil var-type nil))
+                  (t
+                   (let ((temp (gensym "FOR-=-")))
+                     (values temp init-expr (second after) nil
+                             (walk-loop-destructure-pattern var temp)
+                             (cddr after) nil var-type nil)))))
+           (t
+            (let ((init-default (when var-type
+                                  (walk-loop-typed-default var-type nil))))
+              (cond ((symbolp var)
+                     (values var init-default var nil
+                             (list (list var init-expr))
+                             after nil var-type nil))
+                    (t
+                     (let ((temp (gensym "FOR-=-")))
+                       (values temp init-default temp nil
+                               (cons (list temp init-expr)
+                                     (walk-loop-destructure-pattern var temp))
+                               after nil var-type nil)))))))))
+      ;; for VAR in LIST [BY step-fn] -> tail iterator, var = (car tail).
+      ;; CLHS 6.1.2.1.2: BY is evaluated exactly once at loop entry, so
+      ;; we bind it to BY-SYM via outer-bindings.
+      ((walk-loop-kw-eq (first rest) "IN")
+       (let* ((list-expr (second rest))
+              (after-list (cddr rest))
+              (by-fn (when (walk-loop-kw-eq (first after-list) "BY")
+                       (second after-list)))
+              (rest-after (if by-fn (cddr after-list) after-list))
+              (tail-sym (gensym "TAIL-"))
+              (by-sym (when by-fn (gensym "BY-")))
+              (step-form (if by-sym
+                             `(funcall ,by-sym ,tail-sym)
+                             `(cdr ,tail-sym))))
+         (values tail-sym list-expr step-form `(null ,tail-sym)
+                 (walk-loop-destructure-bindings var `(car ,tail-sym))
+                 rest-after
+                 (when by-sym `((,by-sym ,by-fn))) var-type nil)))
+      ;; for VAR across VECTOR -> integer index iterator. Vector binding
+      ;; is returned via OUTER-BINDING (seventh value); evaluated once.
+      ((walk-loop-kw-eq (first rest) "ACROSS")
+       (let* ((vec-expr (second rest))
+              (after (cddr rest))
+              (vec-sym (gensym "VEC-"))
+              (idx-sym (gensym "IDX-")))
+         (values idx-sym 0 `(1+ ,idx-sym) `(>= ,idx-sym (length ,vec-sym))
+                 (walk-loop-destructure-bindings
+                  var `(aref ,vec-sym ,idx-sym))
+                 after
+                 ;; outer-bindings now is a LIST of (var expr) pairs.
+                 `((,vec-sym ,vec-expr))
+                 var-type nil)))
+      ;; for VAR on LIST [BY step-fn] -> var IS the tail. CLHS 6.1.2.1.2:
+      ;; BY evaluated exactly once at loop entry.
+      ((walk-loop-kw-eq (first rest) "ON")
+       (let* ((list-expr (second rest))
+              (after-list (cddr rest))
+              (by-fn (when (walk-loop-kw-eq (first after-list) "BY")
+                       (second after-list)))
+              (rest-after (if by-fn (cddr after-list) after-list))
+              (by-sym (when by-fn (gensym "BY-")))
+              (by-outer (when by-sym `((,by-sym ,by-fn)))))
+         (cond ((symbolp var)
+                (let ((step-form (if by-sym `(funcall ,by-sym ,var)
+                                     `(cdr ,var))))
+                  (values var list-expr step-form `(atom ,var)
+                          nil rest-after by-outer var-type nil)))
+               (t
+                (let* ((tail (gensym "ON-TAIL-"))
+                       (step-form (if by-sym `(funcall ,by-sym ,tail)
+                                      `(cdr ,tail))))
+                  (values tail list-expr step-form `(atom ,tail)
+                          (walk-loop-destructure-pattern var tail)
+                          rest-after by-outer var-type nil))))))
+      ;; for VAR being [the|each] hash-key[s]|hash-value[s] [of|in] table
+      ;;     [using (hash-{value|key} other)]
+      ;; for VAR being [the|each] {symbol|present-symbol|external-symbol}[s]
+      ;;     [of|in] package
+      ((walk-loop-kw-eq (first rest) "BEING")
+       (let ((cs1 (rest rest)))
+         (when (or (walk-loop-kw-eq (first cs1) "THE")
+                   (walk-loop-kw-eq (first cs1) "EACH"))
+           (setf cs1 (rest cs1)))
+         (let ((being-kind
+                (cond ((or (walk-loop-kw-eq (first cs1) "HASH-KEY")
+                           (walk-loop-kw-eq (first cs1) "HASH-KEYS"))
+                       :hash-key)
+                      ((or (walk-loop-kw-eq (first cs1) "HASH-VALUE")
+                           (walk-loop-kw-eq (first cs1) "HASH-VALUES"))
+                       :hash-value)
+                      ((or (walk-loop-kw-eq (first cs1) "SYMBOL")
+                           (walk-loop-kw-eq (first cs1) "SYMBOLS"))
+                       :symbol-all)
+                      ((or (walk-loop-kw-eq (first cs1) "PRESENT-SYMBOL")
+                           (walk-loop-kw-eq (first cs1) "PRESENT-SYMBOLS"))
+                       :symbol-present)
+                      ((or (walk-loop-kw-eq (first cs1) "EXTERNAL-SYMBOL")
+                           (walk-loop-kw-eq (first cs1) "EXTERNAL-SYMBOLS"))
+                       :symbol-external))))
+           (cond
+             ((null being-kind)
+              (values :unsupported
+                      "Expected HASH-KEY[S], HASH-VALUE[S], SYMBOL[S], PRESENT-SYMBOL[S], or EXTERNAL-SYMBOL[S] after BEING."
+                      nil nil nil nil nil nil nil))
+             (t
+              (setf cs1 (rest cs1))
+              (cond
+                ((not (or (walk-loop-kw-eq (first cs1) "OF")
+                          (walk-loop-kw-eq (first cs1) "IN")))
+                 (values :unsupported
+                         (if (member being-kind '(:hash-key :hash-value))
+                             "Expected OF or IN after hash-key/value keyword."
+                             "Expected OF or IN after symbol keyword.")
+                         nil nil nil nil nil nil nil))
+                (t
+                 (setf cs1 (rest cs1))
+                 (cond
+                   ((null cs1)
+                    (values :unsupported
+                            (if (member being-kind '(:hash-key :hash-value))
+                                "Expected hash-table expression after OF/IN."
+                                "Expected package expression after OF/IN.")
+                            nil nil nil nil nil nil nil))
+                   (t
+                    (let* ((src-expr (first cs1))
+                           (after-src (rest cs1))
+                           (using-other nil)
+                           (rest-after after-src)
+                           (using-error nil))
+                      (when (walk-loop-kw-eq (first after-src) "USING")
+                        (cond
+                          ((not (member being-kind '(:hash-key :hash-value)))
+                           (setf using-error
+                                 "USING is not allowed with SYMBOL iteration."))
+                          (t
+                           (let ((spec (second after-src)))
+                             (cond
+                               ((not (and (consp spec)
+                                          (consp (cdr spec))
+                                          (null (cddr spec))))
+                                (setf using-error
+                                      "USING clause must be (hash-key/value var)."))
+                               (t
+                                (let ((other-kw (first spec))
+                                      (other-spec (second spec)))
+                                  (cond
+                                    ((not (case being-kind
+                                            (:hash-key
+                                             (or (walk-loop-kw-eq other-kw "HASH-VALUE")
+                                                 (walk-loop-kw-eq other-kw "HASH-VALUES")))
+                                            (:hash-value
+                                             (or (walk-loop-kw-eq other-kw "HASH-KEY")
+                                                 (walk-loop-kw-eq other-kw "HASH-KEYS")))))
+                                     (setf using-error
+                                           "USING keyword does not match BEING primary."))
+                                    (t
+                                     (setf using-other other-spec)
+                                     (setf rest-after (cddr after-src)))))))))))
+                      (cond
+                        (using-error
+                         (values :unsupported using-error
+                                 nil nil nil nil nil nil nil))
+                        ((member being-kind '(:hash-key :hash-value))
+                         (let* ((pairs-sym (gensym "HT-PAIRS-"))
+                                (cur-sym   (gensym "HT-CUR-"))
+                                (outer-binding
+                                 `((,pairs-sym
+                                    (loop-hash-table-pairs ,src-expr))))
+                                (primary-expr
+                                 (case being-kind
+                                   (:hash-key   `(car (car ,cur-sym)))
+                                   (:hash-value `(cdr (car ,cur-sym)))))
+                                (using-expr
+                                 (case being-kind
+                                   (:hash-key   `(cdr (car ,cur-sym)))
+                                   (:hash-value `(car (car ,cur-sym)))))
+                                (for-let-primary
+                                 (walk-loop-destructure-bindings var primary-expr))
+                                (for-let-using
+                                 (cond ((null using-other) nil)
+                                       (t (walk-loop-destructure-bindings
+                                           using-other using-expr))))
+                                (for-let (append for-let-primary for-let-using)))
+                           (when using-other
+                             (cond ((symbolp using-other)
+                                    (walk-loop-record-var ir using-other "FOR/AS"))
+                                   (t (dolist (lv (walk-loop-pattern-vars using-other))
+                                        (walk-loop-record-var ir lv "FOR/AS")))))
+                           (values cur-sym pairs-sym
+                                   `(cdr ,cur-sym)
+                                   `(null ,cur-sym)
+                                   for-let
+                                   rest-after
+                                   outer-binding
+                                   var-type
+                                   nil)))
+                        (t
+                         (let* ((syms-sym (gensym "PKG-SYMS-"))
+                                (cur-sym  (gensym "PKG-CUR-"))
+                                (sym-kind (case being-kind
+                                            (:symbol-all      :all)
+                                            (:symbol-present  :present)
+                                            (:symbol-external :external)))
+                                (outer-binding
+                                 `((,syms-sym
+                                    (loop-package-symbols ,src-expr ',sym-kind))))
+                                (for-let (walk-loop-destructure-bindings
+                                          var `(car ,cur-sym))))
+                           (values cur-sym syms-sym
+                                   `(cdr ,cur-sym)
+                                   `(null ,cur-sym)
+                                   for-let
+                                   rest-after
+                                   outer-binding
+                                   var-type
+                                   nil))))))))))))))
+      ;; for VAR {prep form}+  -- arithmetic FOR per CLHS 6.1.2.1.1.
+      ;; Prepositions (FROM/UPFROM/DOWNFROM, TO/UPTO/BELOW/DOWNTO/ABOVE,
+      ;; BY) appear in any order; each group at most once.
+      ((let ((kw (first rest)))
+         (and (symbolp kw)
+              (or (walk-loop-kw-eq kw "FROM")
+                  (walk-loop-kw-eq kw "UPFROM")
+                  (walk-loop-kw-eq kw "DOWNFROM")
+                  (walk-loop-kw-eq kw "BY")
+                  (walk-loop-loop-direction-keyword-p kw))))
+       (let ((from-kw nil)
+             (limit-kw nil)
+             (by-raw nil)
+             (cs2 rest))
+         ;; Collect preposition phrases in source order. Only kw + value
+         ;; pairs; we just need WHICH kw appeared (for direction logic)
+         ;; and whether BY was supplied (since default is 1). The actual
+         ;; value-forms are captured via the second pass into outer-pairs
+         ;; below, in source order, for evaluation-order semantics.
+         (loop while (and (consp cs2) (consp (rest cs2))
+                          (symbolp (first cs2))) do
+           (let ((kw (first cs2)))
+             (cond
+               ((or (walk-loop-kw-eq kw "FROM")
+                    (walk-loop-kw-eq kw "UPFROM")
+                    (walk-loop-kw-eq kw "DOWNFROM"))
+                (when from-kw
+                  (return-from walk-loop-parse-iterator
+                    (values :unsupported
+                            "Duplicate FROM/UPFROM/DOWNFROM in arithmetic FOR."
+                            nil nil nil nil nil nil nil)))
+                (setf from-kw kw  cs2 (cddr cs2)))
+               ((walk-loop-loop-direction-keyword-p kw)
+                (when limit-kw
+                  (return-from walk-loop-parse-iterator
+                    (values :unsupported
+                            "Duplicate TO/UPTO/BELOW/DOWNTO/ABOVE in arithmetic FOR."
+                            nil nil nil nil nil nil nil)))
+                (setf limit-kw kw  cs2 (cddr cs2)))
+               ((walk-loop-kw-eq kw "BY")
+                (when by-raw
+                  (return-from walk-loop-parse-iterator
+                    (values :unsupported
+                            "Duplicate BY in arithmetic FOR."
+                            nil nil nil nil nil nil nil)))
+                (setf by-raw t  cs2 (cddr cs2)))
+               (t (return)))))
+         (let* (;; Direction: DOWNFROM, DOWNTO, ABOVE imply DOWN.
+                ;; UPFROM, UPTO, BELOW imply UP. TO is direction-flexible
+                ;; (UP unless from-kw is DOWNFROM).
+                (down-from? (walk-loop-kw-eq from-kw "DOWNFROM"))
+                (down-limit? (or (walk-loop-kw-eq limit-kw "DOWNTO")
+                                 (walk-loop-kw-eq limit-kw "ABOVE")))
+                (up-limit?   (or (walk-loop-kw-eq limit-kw "UPTO")
+                                 (walk-loop-kw-eq limit-kw "BELOW")))
+                (up-from?    (walk-loop-kw-eq from-kw "UPFROM"))
+                (downward? (cond (up-from? nil)
+                                 (down-from? t)
+                                 (down-limit? t)
+                                 (up-limit? nil)))
+                ;; Default FROM=0 when not specified (CLHS 6.1.2.1.1).
+                ;; Default BY=1.
+                (has-from (not (null from-kw)))
+                (has-limit (not (null limit-kw)))
+                ;; ANSI: each form evaluated exactly once at loop entry,
+                ;; in source order. Capture in outer-bindings -- the
+                ;; LET* wrapping LABELS evaluates them once before the
+                ;; helper-call. Source-order list ordered FROM/LIMIT/BY
+                ;; or LIMIT/FROM/BY etc., depending on what user wrote.
+                (from-sym (gensym "FROM-"))
+                (limit-sym (when has-limit (gensym "LIMIT-")))
+                (by-sym (when by-raw (gensym "BY-")))
+                ;; Default BY = typed-1 (1 untyped, 1.0 single-float,
+                ;; #c(1 0) complex, etc.).
+                (by-expr (or by-sym
+                             (walk-loop-typed-default var-type t)))
+                ;; Source-order outer-bindings: walk rest from start
+                ;; and emit each prep in encountered order.
+                (outer-pairs
+                 (let ((pairs nil)
+                       (scan rest))
+                   (loop while (and (consp scan) (consp (rest scan))) do
+                     (let ((kw (first scan)))
+                       (cond
+                         ((or (walk-loop-kw-eq kw "FROM")
+                              (walk-loop-kw-eq kw "UPFROM")
+                              (walk-loop-kw-eq kw "DOWNFROM"))
+                          (push `(,from-sym ,(second scan)) pairs)
+                          (setf scan (cddr scan)))
+                         ((walk-loop-loop-direction-keyword-p kw)
+                          (push `(,limit-sym ,(second scan)) pairs)
+                          (setf scan (cddr scan)))
+                         ((walk-loop-kw-eq kw "BY")
+                          (push `(,by-sym ,(second scan)) pairs)
+                          (setf scan (cddr scan)))
+                         (t (return)))))
+                   (nreverse pairs)))
+                ;; If FROM not provided, prepend default from-sym
+                ;; binding to 0. Place it FIRST so it's bound before
+                ;; any user-provided phrase (which could reference it
+                ;; -- though that's degenerate use).
+                (extra-outer
+                 (cond (has-from outer-pairs)
+                       ;; Default FROM = typed-0 (0 untyped, 0.0
+                       ;; single-float, #c(0 0) complex, etc.). Placed
+                       ;; FIRST so any user phrase that references the
+                       ;; iter-var sees this value.
+                       (t (cons `(,from-sym ,(walk-loop-typed-default
+                                              var-type nil))
+                                outer-pairs))))
+                (incr-step `(+ ,var ,by-expr))
+                (decr-step `(- ,var ,by-expr))
+                (default-step (if downward? decr-step incr-step))
+                (step (cond ((not has-limit) default-step)
+                            ((walk-loop-kw-eq limit-kw "TO")
+                             (if downward? decr-step incr-step))
+                            ((or (walk-loop-kw-eq limit-kw "UPTO")
+                                 (walk-loop-kw-eq limit-kw "BELOW"))
+                             incr-step)
+                            ((or (walk-loop-kw-eq limit-kw "DOWNTO")
+                                 (walk-loop-kw-eq limit-kw "ABOVE"))
+                             decr-step)
+                            (t :unsupported)))
+                (limit (if has-limit limit-sym nil))
+                (term (cond ((not has-limit) nil)
+                            ((walk-loop-kw-eq limit-kw "TO")
+                             (if downward? `(< ,var ,limit) `(> ,var ,limit)))
+                            ((walk-loop-kw-eq limit-kw "UPTO")  `(> ,var ,limit))
+                            ((walk-loop-kw-eq limit-kw "BELOW") `(>= ,var ,limit))
+                            ((walk-loop-kw-eq limit-kw "DOWNTO") `(< ,var ,limit))
+                            ((walk-loop-kw-eq limit-kw "ABOVE")  `(<= ,var ,limit))
+                            (t :unsupported))))
+           (if (eq step :unsupported)
+               (values :unsupported
+                       (format nil "FOR/AS direction keyword: ~S not recognized." limit-kw)
+                       nil nil nil nil nil nil nil)
+               ;; iter-init is FROM-SYM (symbol load); FROM-SYM was
+               ;; bound in outer-bindings before the helper call.
+               (values var from-sym step term nil cs2 extra-outer var-type nil)))))
+      ;; for VAR -- bare variable as iterator, no init/step (for use with WHILE)
+      ((or (null rest) (walk-loop-loop-keyword-p (first rest)))
+       (values var nil nil nil nil rest nil var-type nil))
+      (t (values :unsupported
+                 (format nil "~S is an unknown keyword in FOR or AS clause in LOOP."
+                         (first rest))
+                 nil nil nil nil nil nil nil)))))
+
+(defun-compile-time walk-loop-loop-direction-keyword-p (sym)
+  "True for the keywords that bound the direction of a numeric FOR
+iterator (TO/UPTO/BELOW/DOWNTO/ABOVE). Used to detect whether FROM..."
+  (and (symbolp sym)
+       (member (symbol-name sym)
+               '("TO" "UPTO" "BELOW" "DOWNTO" "ABOVE")
+               :test #'string-equal)))
+
+(defun-compile-time walk-loop-parse (form)
+  "Parse (loop CLAUSES...) into a LOOP-IR. Always returns the IR.
+On unsupported clause, sets LOOP-IR-UNSUPPORTED to a description and
+stops parsing. The caller signals an error mentioning that description
+so the user sees exactly which clause is missing."
+  (let* ((*loop-original-form* form)
+         (*loop-source-context* (rest form))
+         (ir (make-loop-ir))
+         (cs (rest form))
+         (implicit-acc nil))
+    (labels ((mark-unsupported (reason)
+               (setf (loop-ir-unsupported ir) reason))
+             (acc-init (kind)
+               (case kind
+                 ((:collect :append :nconc) nil)
+                 ((:sum :count) 0)
+                 ((:max :min) nil)))
+             (mk-acc (kind &optional named-var)
+               "Get or create an accumulator. NAMED-VAR non-NIL means INTO
+              clause: lookup-or-create by name; auto-return is suppressed
+              (caller leaves the FIFTH slot NIL). NIL means implicit
+              singleton: at most one per loop, returned automatically.
+
+              Returns (VALUES RECORD ALREADY-HAS-UPDATE?). The second
+              value is true iff the record's UPDATE-FN slot was already
+              set, meaning the caller's clause is being combined with
+              an earlier clause that targeted the same accumulator.
+
+              Errors recorded via walk-loop-error in two cases:
+                - INTO target is not a symbol.
+                - INTO target collides with a WITH binding (incompatible
+                  KIND :user vs accumulator)."
+               (cond
+                 (named-var
+                  (cond ((not (symbolp named-var))
+                         (walk-loop-error
+                          ir
+                          "The value accumulation recipient name, ~S, is not a symbol."
+                          named-var)
+                         ;; Return a placeholder record so caller code
+                         ;; doesn't crash before the parse loop checks
+                         ;; loop-ir-unsupported.
+                         (values (list named-var (acc-init kind) kind nil nil nil)
+                                 nil))
+                        (t
+                  (let ((existing (find named-var (loop-ir-accumulators ir)
+                                        :key #'first :test #'eq)))
+                    (cond ((and existing
+                                (eq (third existing) :user)
+                                (not (eq kind :user)))
+                           ;; INTO targets a WITH-bound var. Always an error.
+                           (walk-loop-error
+                            ir
+                            "The variable ~S, which is being used as the value ~
+                             accumulation recipient, has already been bound by ~
+                             a WITH (or other) clause in this LOOP."
+                            named-var)
+                           (values existing nil))
+                          ((and existing
+                                (not (eq kind :user))
+                                (not (eq (third existing) kind))
+                                (not (and (member kind '(:collect :append :nconc))
+                                          (member (third existing)
+                                                  '(:collect :append :nconc))))
+                                (not (and (member kind '(:count :sum))
+                                          (member (third existing)
+                                                  '(:count :sum))))
+                                (not (and (member kind '(:max :min))
+                                          (member (third existing)
+                                                  '(:max :min)))))
+                           (walk-loop-error
+                            ir
+                            "The accumulation kinds ~S and ~S are incompatible ~
+                             for the same INTO variable ~S."
+                            kind (third existing) named-var)
+                           (values existing nil))
+                          (existing (values existing (and (fourth existing) t)))
+                          (t
+                           (let ((record (list named-var (acc-init kind)
+                                               kind nil nil nil)))
+                             (walk-loop-record-var ir named-var "INTO")
+                             (push record (loop-ir-accumulators ir))
+                             (values record nil))))))))
+                 (t
+                  ;; Anonymous (implicit) accumulator. Only ONE allowed per
+                  ;; LOOP, and only of compatible kinds (mixing aggregate-
+                  ;; boolean with value-acc is forbidden -- handled via
+                  ;; this same path because ALWAYS/NEVER/THEREIS use
+                  ;; anonymous acc with kind :always/:never/:thereis).
+                  (cond ((and implicit-acc
+                              (not (eq (third implicit-acc) kind))
+                              (not (and (member kind '(:collect :append :nconc))
+                                        (member (third implicit-acc)
+                                                '(:collect :append :nconc))))
+                              (not (and (member kind '(:count :sum))
+                                        (member (third implicit-acc)
+                                                '(:count :sum))))
+                              (not (and (member kind '(:max :min))
+                                        (member (third implicit-acc)
+                                                '(:max :min)))))
+                         (walk-loop-error
+                          ir
+                          "Anonymous accumulator clauses of kind ~S and ~S ~
+                           cannot be mixed in the same LOOP. Use INTO names ~
+                           or split into separate LOOPs."
+                          (third implicit-acc) kind)
+                         (values implicit-acc nil))
+                        (t
+                  (or (when implicit-acc (values implicit-acc
+                                                 (and (fourth implicit-acc) t)))
+                      (let* ((var (gensym (format nil "ACC-~A-" kind)))
+                             (record (list var (acc-init kind) kind nil nil nil)))
+                        (push record (loop-ir-accumulators ir))
+                        (setf implicit-acc record)
+                        (values record nil)))))))))
+      (labels ((needs-arg (cs0 kw-name)
+                 ;; Guard for clauses that require at least one token after
+                 ;; the keyword (e.g., WHEN test, RETURN expr, COLLECT expr).
+                 ;; Returns T if cs0 has more than one token, otherwise
+                 ;; records "source ran out" diagnostic and returns NIL.
+                 ;; Caller must then return cs0 unchanged so the parse loop
+                 ;; terminates.
+                 (cond ((null (rest cs0))
+                        (walk-loop-error
+                         ir
+                         "LOOP source code ran out when another token was ~
+                          expected (after ~A)."
+                         kw-name)
+                        nil)
+                       (t t)))
+               (wrap-update (new-update acc-var)
+                 ;; Conditional accumulator update: when *conditional-guard*
+                 ;; is active, the no-op branch returns the current acc-var
+                 ;; (i.e., this iteration contributes nothing).
+                 (cond ((null *conditional-guard*) new-update)
+                       (t `(if ,*conditional-guard* ,new-update ,acc-var))))
+               (wrap-body (form)
+                 ;; Conditional body / RETURN form: (when guard ...).
+                 (cond ((null *conditional-guard*) form)
+                       (t `(when ,*conditional-guard* ,form))))
+               (parse-acc (cs0 kind compute-update final-fn)
+                 ;; Common path for accumulator clauses. COMPUTE-UPDATE is
+                 ;; a function (acc-or-prev expr) -> update-form. FINAL-FN
+                 ;; is a function (acc-var) -> form for the implicit-
+                 ;; return FIFTH slot, or :default to use the acc-var
+                 ;; as-is. Multiple clauses targeting the same acc
+                 ;; (THEN/ELSE/AND chain on implicit, or repeated INTO)
+                 ;; compose: each new update is applied on top of the
+                 ;; previous via a LET-bound temp.
+                 (cond ((not (needs-arg cs0 (string (first cs0)))) cs0)
+                       (t
+                 ;; Mark "body emitted" so a subsequent FOR/AS errors
+                 ;; with "iteration follows body code".
+                 (setf (loop-ir-emitted-body ir) t)
+                 (let* ((kw (first cs0))
+                        (expr (walk-loop-tree-subst-it (second cs0) *it-var*))
+                        (after (cddr cs0))
+                        (into-var (when (walk-loop-kw-eq (first after) "INTO")
+                                    (second after)))
+                        ;; ANSI: SUM/COUNT/MAX/MIN [TYPE-SPEC] | INTO var
+                        ;; [TYPE-SPEC]. Type-spec may appear inline after the
+                        ;; expr (implicit acc) or after the INTO target.
+                        (into-type-spec nil)
+                        (after-into-type
+                         (cond (into-var
+                                (cl:multiple-value-bind (ty rest1)
+                                    (walk-loop-parse-type-spec (cddr after))
+                                  (when ty (setf into-type-spec ty))
+                                  rest1))
+                               (t
+                                (cl:multiple-value-bind (ty rest1)
+                                    (walk-loop-parse-type-spec after)
+                                  (when ty (setf into-type-spec ty))
+                                  rest1)))))
+                   (declare (ignore kw))
+                   (cl:multiple-value-bind (record combined?)
+                       (mk-acc kind into-var)
+                     (declare (ignore combined?))
+                     (let* ((acc-var (first record))
+                            (existing-kind (third record))
+                            (collect-first-mixing?
+                             (and (null into-var)
+                                  (member kind '(:append :nconc))
+                                  (eq existing-kind :collect)
+                                  (fourth record))))
+                       (when collect-first-mixing?
+                         (walk-loop-retro-wrap-acc-markers
+                          (loop-ir-body ir) (sixth record))
+                         (setf (third record) :append)
+                         (setf (fifth record)
+                               `(apply (function append) (reverse ,acc-var))))
+                       (let* ((prev (or (fourth record) acc-var))
+                              (effective-compute-update
+                               (cond ((and (eq kind :collect)
+                                           (null into-var)
+                                           (member existing-kind '(:append :nconc)))
+                                      (lambda (av e) `(cons (list ,e) ,av)))
+                                     (t compute-update)))
+                              (update-expr
+                               (cond ((null *conditional-guard*)
+                                      (funcall effective-compute-update prev expr))
+                                     (t
+                                      `(if ,*conditional-guard*
+                                           ,(funcall effective-compute-update prev expr)
+                                           ,prev))))
+                              (tmp-sym (gensym "ACC-TMP-")))
+                         (push `(:acc-update ,tmp-sym ,update-expr)
+                               (loop-ir-body ir))
+                         (setf (fourth record) tmp-sym)
+                         (setf (sixth record) (cons tmp-sym (sixth record))))
+                       (when into-type-spec
+                         ;; MAX/MIN accumulators init to NIL (no value
+                         ;; seen yet), so a strict (TYPE FLOAT VAR) decl
+                         ;; would be violated before the first iter.
+                         ;; Wrap in (OR NULL ...) for those kinds.
+                         (push (cons acc-var
+                                     (cond ((member kind '(:max :min))
+                                            `(or null ,into-type-spec))
+                                           (t into-type-spec)))
+                               (loop-ir-type-decls ir))
+                         (when (member kind '(:sum :count))
+                           (setf (second record)
+                                 (walk-loop-typed-default into-type-spec nil))))
+                       (when (and (null into-var) (not (eq final-fn :skip))
+                                  (null (fifth record)))
+                         (setf (fifth record)
+                               (cond ((eq final-fn :default) acc-var)
+                                     (t (funcall final-fn acc-var))))))
+                     after-into-type)))))
+               (parse-one-with-binding (cs)
+                 ;; Parses one WITH binding starting at CS:
+                 ;;   var-or-pattern [type-spec] [= form]
+                 ;; NIL var becomes a gensym (discarded binding).
+                 (let* ((raw-var (first cs))
+                        (var (cond ((null raw-var) (gensym "WITH-NIL-"))
+                                   (t raw-var)))
+                        (after-var (rest cs)))
+                   (cl:multiple-value-bind (var-type after-type)
+                       (walk-loop-parse-type-spec after-var)
+                     (let* ((has-eq (walk-loop-kw-eq (first after-type) "="))
+                            (init-form (and has-eq (second after-type)))
+                            (after-init (cond (has-eq (cddr after-type))
+                                              (t after-type))))
+                       (cond ((and has-eq (null (rest after-type)))
+                              (walk-loop-error
+                               ir
+                               "LOOP code ran out where a form was expected (after WITH ~S =)."
+                               var)
+                              cs)
+                             ((symbolp var)
+                              (walk-loop-record-var ir var "WITH")
+                              (when var-type
+                                (push (cons var var-type)
+                                      (loop-ir-type-decls ir)))
+                              (push (list var
+                                          (cond (has-eq init-form)
+                                                (var-type
+                                                 (walk-loop-typed-default
+                                                  var-type nil)))
+                                          :user nil nil nil)
+                                    (loop-ir-accumulators ir))
+                              after-init)
+                             ((consp var)
+                              (let* ((leaf-vars (walk-loop-pattern-vars var))
+                                     (leaf-types
+                                      (cond (var-type
+                                             (mapcar #'cdr
+                                                     (walk-loop-zip-pattern-types
+                                                      var var-type)))
+                                            (t (mapcar (constantly nil)
+                                                       leaf-vars)))))
+                                (dolist (v leaf-vars)
+                                  (walk-loop-record-var ir v "WITH"))
+                                (when var-type
+                                  (loop for v in leaf-vars
+                                        for ty in leaf-types
+                                        when ty do
+                                        (push (cons v ty)
+                                              (loop-ir-type-decls ir))))
+                                (cond ((null init-form)
+                                       (loop for v in leaf-vars
+                                             for ty in leaf-types do
+                                             (push (list v
+                                                         (walk-loop-typed-default ty nil)
+                                                         :user nil nil nil)
+                                                   (loop-ir-accumulators ir))))
+                                      (t
+                                       (dolist (b (walk-loop-destructure-bindings
+                                                   var init-form))
+                                         (push b (loop-ir-outer-bindings ir))))))
+                              after-init)
+                             (t
+                              (walk-loop-error
+                               ir
+                               "Bad variable ~S in WITH clause." var)
+                              cs))))))
+               (parse-with-chain (cs)
+                 ;; Parses one or more WITH bindings, separated by AND
+                 ;; for parallel WITH. Loops until next non-AND keyword.
+                 (loop with cs1 = (parse-one-with-binding cs)
+                       do (cond ((loop-ir-unsupported ir) (return cs1))
+                                ((walk-loop-kw-eq (first cs1) "AND")
+                                 (setf cs1 (parse-one-with-binding (rest cs1))))
+                                (t (return cs1)))))
+               (parse-conditional (cs0 negate?)
+                 ;; WHEN/IF/UNLESS test sub-clauses [AND sub-clauses]*
+                 ;; [ELSE sub-clauses [AND sub-clauses]*] [END].
+                 ;;
+                 ;; Allocates a per-conditional IT-VAR and emits the test
+                 ;; once as a body form: (when outer-guard (setq it-var
+                 ;; test)). Subsequent sub-clauses use it-var as the
+                 ;; guard, which (a) avoids re-evaluating test for each
+                 ;; AND-chained sub-clause and (b) makes the value
+                 ;; available for the IT anaphor inside sub-clause
+                 ;; expressions. IT references in test itself refer to
+                 ;; the OUTER scope's *it-var* (most recent enclosing
+                 ;; conditional).
+                 (let* ((raw-test (second cs0))
+                        (test (walk-loop-tree-subst-it raw-test *it-var*))
+                        (it-var (gensym "IT-"))
+                        (test-form (cond (*conditional-guard*
+                                          `(when ,*conditional-guard*
+                                             (setq ,it-var ,test)))
+                                         (t `(setq ,it-var ,test))))
+                        (then-eff (if negate? `(not ,it-var) it-var))
+                        (then-guard (cond (*conditional-guard*
+                                           `(and ,*conditional-guard*
+                                                 ,then-eff))
+                                          (t then-eff)))
+                        (after-test (cddr cs0)))
+                   ;; Declare it-var as a per-iteration LET binding via
+                   ;; FOR-LET, NOT as an accumulator. Acc vars are
+                   ;; threaded through recursion as helper params, so
+                   ;; the test SETQ would lag one iteration. FOR-LET
+                   ;; binds fresh each iteration; SETQ in the body
+                   ;; updates the LET, and accumulator-update args
+                   ;; (computed after body for the recursive call) see
+                   ;; the just-updated it-var.
+                   (push (list it-var nil) (loop-ir-for-let ir))
+                   ;; Push test evaluation as the FIRST body form for
+                   ;; this conditional. Body forms execute in iteration
+                   ;; order before accumulator updates, so the SETQ is
+                   ;; in effect by the time any sub-clause guard fires.
+                   (push test-form (loop-ir-body ir))
+                   (let* ((after-then
+                           (let ((*conditional-guard* then-guard)
+                                 (*it-var* it-var))
+                             (loop with cs1 = after-test
+                                   do (setf cs1 (parse-clause cs1))
+                                      (cond ((walk-loop-kw-eq (first cs1) "AND")
+                                             (setf cs1 (rest cs1)))
+                                            (t (loop-finish)))
+                                   finally (return cs1))))
+                          (after-else
+                           (cond ((walk-loop-kw-eq (first after-then) "ELSE")
+                                  (let* ((else-eff (if negate?
+                                                       it-var
+                                                       `(not ,it-var)))
+                                         (else-guard
+                                          (cond (*conditional-guard*
+                                                 `(and ,*conditional-guard*
+                                                       ,else-eff))
+                                                (t else-eff))))
+                                    (let ((*conditional-guard* else-guard)
+                                          (*it-var* it-var))
+                                      (loop with cs1 = (cdr after-then)
+                                            do (setf cs1 (parse-clause cs1))
+                                               (cond ((walk-loop-kw-eq
+                                                       (first cs1) "AND")
+                                                      (setf cs1 (rest cs1)))
+                                                     (t (loop-finish)))
+                                            finally (return cs1)))))
+                                 (t after-then))))
+                     (cond ((walk-loop-kw-eq (first after-else) "END")
+                            (cdr after-else))
+                           (t after-else)))))
+               (parse-clause (cs0)
+                 (let ((kw (first cs0)))
+                   ;; ANSI: certain clauses are forbidden inside a
+                   ;; conditional sub-clause body (WHEN/IF/UNLESS).
+                   ;; *conditional-guard* is non-NIL exactly inside such
+                   ;; a body.
+                   (when (and *conditional-guard*
+                              (or (walk-loop-kw-eq kw "FOR")
+                                  (walk-loop-kw-eq kw "AS")
+                                  (walk-loop-kw-eq kw "REPEAT")
+                                  (walk-loop-kw-eq kw "WITH")
+                                  (walk-loop-kw-eq kw "NAMED")
+                                  (walk-loop-kw-eq kw "INITIALLY")
+                                  (walk-loop-kw-eq kw "FINALLY")))
+                     (cond ((or (walk-loop-kw-eq kw "FOR")
+                                (walk-loop-kw-eq kw "AS"))
+                            (walk-loop-error
+                             ir
+                             "~A does not introduce a LOOP clause that can ~
+                              follow a conditional sub-clause."
+                             kw))
+                           ((walk-loop-kw-eq kw "NAMED")
+                            (walk-loop-error
+                             ir
+                             "The NAMED ~S clause occurs too late ~
+                              (cannot appear inside a conditional)."
+                             (second cs0)))
+                           (t
+                            (walk-loop-error
+                             ir
+                             "The LOOP :~A clause is not permitted inside ~
+                              a conditional."
+                             (string kw))))
+                     (return-from parse-clause cs0))
+                   (cond
+                     ((walk-loop-kw-eq kw "WITH")
+                      ;; WITH var-or-pattern [type-spec] [= form]
+                      ;;     [AND var-or-pattern [type-spec] [= form]]*
+                      ;;
+                      ;; Each binding is parallel (the AND chain has no
+                      ;; ordering dependency between bindings; all init
+                      ;; forms are evaluated, then all are bound). var
+                      ;; can be a symbol or a destructuring pattern
+                      ;; ((a b c) or (a . rest)).
+                      (cond ((not (needs-arg cs0 "WITH")) cs0)
+                            (t (parse-with-chain (rest cs0)))))
+                     ((walk-loop-kw-eq kw "REPEAT")
+                      (cond ((not (needs-arg cs0 "REPEAT")) cs0)
+                            (t
+                             (let ((counter (gensym "REPEAT-")))
+                               (push (list counter (second cs0)
+                                           `(1- ,counter) `(<= ,counter 0))
+                                     (loop-ir-iterators ir)))
+                             (cddr cs0))))
+                     ((or (walk-loop-kw-eq kw "FOR") (walk-loop-kw-eq kw "AS"))
+                      ;; ANSI iter-driving clauses must come before any
+                      ;; body code. REPEAT is excluded -- REPEAT after
+                      ;; COLLECT is allowed.
+                      (when (loop-ir-emitted-body ir)
+                        (walk-loop-error
+                         ir
+                         "iteration in LOOP follows body code (~A clause ~
+                          appears after a body-emitting clause)."
+                         kw)
+                        (return-from parse-clause cs0))
+                      ;; Parses ONE iterator subclause, then keeps parsing
+                      ;; AND-chained subclauses (parallel iteration). All
+                      ;; subclauses share the FOR scope; on each iteration
+                      ;; ALL iterators advance lockstep in the recursive
+                      ;; call, and the loop ends when ANY of them
+                      ;; signals termination (existing term-conds OR).
+                      (labels ((push-iter (cs1)
+                                 (cl:multiple-value-bind
+                                       (var reason-or-init step term for-let
+                                            new-cs outer-binding var-type
+                                            init-for-let-p)
+                                     (walk-loop-parse-iterator ir cs1)
+                                   (cond
+                                     ((eq var :unsupported)
+                                      ;; reason-or-init is the diagnostic
+                                      ;; produced by walk-loop-parse-iterator.
+                                      (walk-loop-error
+                                       ir "~A" (or reason-or-init
+                                                   (format nil "Bad FOR/AS clause: ~S" cs1)))
+                                      :unsupported)
+                                     (t
+                                      ;; FOR-LET is now ALWAYS a list of
+                                      ;; (target expr) bindings (or NIL).
+                                      ;; For destructuring, it has multiple
+                                      ;; entries; for plain symbol var it
+                                      ;; has zero or one. Each is pushed
+                                      ;; individually to loop-ir-for-let
+                                      ;; so the post-parse nreverse keeps
+                                      ;; them in source order for LET*.
+                                      (let* ((init reason-or-init)
+                                             ;; User-visible vars to
+                                             ;; record (for dup detection
+                                             ;; and type-decl wiring).
+                                             ;; Use (first cs1) -- the
+                                             ;; var AS WRITTEN -- not
+                                             ;; the gensym tail-sym/idx
+                                             ;; that parse-iterator
+                                             ;; returns as VAR.
+                                             (user-var (first cs1))
+                                             (record-targets
+                                              (cond ((consp user-var)
+                                                     (walk-loop-pattern-vars user-var))
+                                                    (t (list user-var)))))
+                                        (dolist (rv record-targets)
+                                          (walk-loop-record-var ir rv "FOR/AS"))
+                                        ;; Push iterator when the clause
+                                        ;; supplies any of init/step/term.
+                                        ;; Edge case: `for x in nil' has
+                                        ;; init=NIL (the literal) but
+                                        ;; step/term are non-NIL -- still
+                                        ;; a valid iterator that yields
+                                        ;; zero iterations.
+                                        (when (or init step term)
+                                          (push (list var init step term)
+                                                (loop-ir-iterators ir)))
+                                        (when for-let
+                                          (dolist (b for-let)
+                                            (cond (init-for-let-p
+                                                   (push b (loop-ir-init-for-let ir)))
+                                                  (t
+                                                   (push b (loop-ir-for-let ir))))))
+                                        (when outer-binding
+                                          ;; outer-binding is now a LIST
+                                          ;; of (var expr) pairs (or NIL).
+                                          ;; Each is pushed individually
+                                          ;; so the post-parse nreverse
+                                          ;; preserves source order.
+                                          (dolist (b outer-binding)
+                                            (push b
+                                                  (loop-ir-outer-bindings ir))))
+                                        (when var-type
+                                          (cond ((consp user-var)
+                                                 ;; FOR (a b) OF-TYPE
+                                                 ;; (fixnum string) --
+                                                 ;; pair leaves with
+                                                 ;; types via zip helper.
+                                                 ;; If type-spec is a
+                                                 ;; single symbol, it
+                                                 ;; broadcasts to every
+                                                 ;; leaf.
+                                                 (dolist (pair
+                                                          (walk-loop-zip-pattern-types
+                                                           user-var var-type))
+                                                   (push pair
+                                                         (loop-ir-type-decls
+                                                          ir))))
+                                                (t
+                                                 (push (cons user-var var-type)
+                                                       (loop-ir-type-decls ir)))))
+                                        new-cs))))))
+                        (loop with cs1 = (push-iter (rest cs0))
+                              do (cond ((eq cs1 :unsupported)
+                                        (return cs0))
+                                       ((walk-loop-kw-eq (first cs1) "AND")
+                                        (setf cs1 (push-iter (rest cs1))))
+                                       (t (return cs1))))))
+                     ((or (walk-loop-kw-eq kw "DO") (walk-loop-kw-eq kw "DOING"))
+                      ;; ANSI: do compound-form+ -- at least one form
+                      ;; required and all must be compound (lists).
+                      (cond ((or (null (rest cs0))
+                                 (not (consp (second cs0))))
+                             (mark-unsupported
+                              (format nil "A compound form was expected, but ~S found (after DO/DOING)."
+                                      (second cs0)))
+                             cs0)
+                            (t (setf (loop-ir-emitted-body ir) t)
+                               (let ((cs1 cs0))
+                                 (loop while (and (rest cs1) (consp (second cs1)))
+                                       do (push (wrap-body
+                                                 (walk-loop-tree-subst-it
+                                                  (second cs1) *it-var*))
+                                                (loop-ir-body ir))
+                                          (setf cs1 (cdr cs1)))
+                                 (cdr cs1)))))
+                     ;; CLHS 6.1.6: WHILE/UNTIL evaluated in source order with
+                     ;; surrounding body forms. Each becomes an inline exit form
+                     ;; in body; (LOOP-FINISH) is later substituted with the
+                     ;; loop's return form.
+                     ((walk-loop-kw-eq kw "WHILE")
+                      (cond ((needs-arg cs0 "WHILE")
+                             (let ((test (walk-loop-tree-subst-it
+                                          (second cs0) *it-var*)))
+                               (cond ((null test)
+                                      (push (wrap-body '(loop-finish))
+                                            (loop-ir-body ir)))
+                                     ((eq test t))
+                                     (t (push (wrap-body
+                                               `(unless ,test (loop-finish)))
+                                              (loop-ir-body ir)))))
+                             (cddr cs0))
+                            (t cs0)))
+                     ((walk-loop-kw-eq kw "UNTIL")
+                      (cond ((needs-arg cs0 "UNTIL")
+                             (let ((test (walk-loop-tree-subst-it
+                                          (second cs0) *it-var*)))
+                               (cond ((eq test t)
+                                      (push (wrap-body '(loop-finish))
+                                            (loop-ir-body ir)))
+                                     ((null test))
+                                     (t (push (wrap-body
+                                               `(when ,test (loop-finish)))
+                                              (loop-ir-body ir)))))
+                             (cddr cs0))
+                            (t cs0)))
+                     ;; UPDATE-FN slots store a PURE EXPRESSION using the
+                     ;; acc var that produces the NEW acc value. Used as the
+                     ;; recursive call argument -- no in-body mutation.
+                     ((or (walk-loop-kw-eq kw "COLLECT")
+                          (walk-loop-kw-eq kw "COLLECTING"))
+                      ;; Implicit acc stores reversed; INTO acc forward.
+                      (let* ((after (cddr cs0))
+                             (into? (walk-loop-kw-eq (first after) "INTO")))
+                        (parse-acc cs0 :collect
+                                   (lambda (acc-var expr)
+                                     (cond (into? `(append ,acc-var (list ,expr)))
+                                           (t `(cons ,expr ,acc-var))))
+                                   (cond (into? :skip)
+                                         (t (lambda (acc-var)
+                                              `(reverse ,acc-var)))))))
+                     ((or (walk-loop-kw-eq kw "APPEND") (walk-loop-kw-eq kw "APPENDING")
+                          (walk-loop-kw-eq kw "NCONC")  (walk-loop-kw-eq kw "NCONCING"))
+                      ;; Implicit: list-of-lists reversed, flattened at end.
+                      ;; INTO: forward APPEND (non-destructive even for NCONC,
+                      ;; since shared cons cells leak across backtrack paths).
+                      (let* ((after (cddr cs0))
+                             (into? (walk-loop-kw-eq (first after) "INTO")))
+                        (parse-acc cs0 :append
+                                   (lambda (acc-var expr)
+                                     (cond (into? `(append ,acc-var ,expr))
+                                           (t `(cons ,expr ,acc-var))))
+                                   (cond (into? :skip)
+                                         (t (lambda (acc-var)
+                                              `(apply (function append)
+                                                      (reverse ,acc-var))))))))
+                     ((or (walk-loop-kw-eq kw "SUM") (walk-loop-kw-eq kw "SUMMING"))
+                      (parse-acc cs0 :sum
+                                 (lambda (acc-var expr) `(+ ,expr ,acc-var))
+                                 :default))
+                     ((or (walk-loop-kw-eq kw "COUNT") (walk-loop-kw-eq kw "COUNTING"))
+                      (parse-acc cs0 :count
+                                 (lambda (acc-var expr)
+                                   (cond ((eq expr t) `(1+ ,acc-var))
+                                         ((null expr) acc-var)
+                                         (t `(if ,expr (1+ ,acc-var) ,acc-var))))
+                                 :default))
+                     ((or (walk-loop-kw-eq kw "MAX") (walk-loop-kw-eq kw "MAXIMIZE")
+                          (walk-loop-kw-eq kw "MAXIMIZING"))
+                      (parse-acc cs0 :max
+                                 (lambda (acc-var expr)
+                                   (let ((val-sym (gensym "VAL-")))
+                                     `(let ((,val-sym ,expr))
+                                        (cond ((null ,acc-var) ,val-sym)
+                                              ((> ,val-sym ,acc-var) ,val-sym)
+                                              (t ,acc-var)))))
+                                 :default))
+                     ((or (walk-loop-kw-eq kw "MIN") (walk-loop-kw-eq kw "MINIMIZE")
+                          (walk-loop-kw-eq kw "MINIMIZING"))
+                      (parse-acc cs0 :min
+                                 (lambda (acc-var expr)
+                                   (let ((val-sym (gensym "VAL-")))
+                                     `(let ((,val-sym ,expr))
+                                        (cond ((null ,acc-var) ,val-sym)
+                                              ((< ,val-sym ,acc-var) ,val-sym)
+                                              (t ,acc-var)))))
+                                 :default))
+                     ;; CLHS 6.1.7.1: `return form` is `do (return-from name form)'
+                     ;; where name is the loop's block (default NIL, else NAMED arg).
+                     ((walk-loop-kw-eq kw "RETURN")
+                      (cond ((needs-arg cs0 "RETURN")
+                             (setf (loop-ir-emitted-body ir) t)
+                             (push (wrap-body
+                                    `(return-from ,(loop-ir-block-name ir)
+                                                  ,(walk-loop-tree-subst-it
+                                                    (second cs0) *it-var*)))
+                                   (loop-ir-body ir))
+                             (cddr cs0))
+                            (t cs0)))
+                     ;; Boolean termination clauses. Modeled as accumulators:
+                     ;; each iter updates the boolean acc; the loop exits as
+                     ;; soon as the acc settles (extra-term-cond).
+                     ((or (walk-loop-kw-eq kw "ALWAYS") (walk-loop-kw-eq kw "NEVER")
+                          (walk-loop-kw-eq kw "THEREIS"))
+                      (cond
+                        ((not (needs-arg cs0 (string kw))) cs0)
+                        ;; ANSI: an aggregate boolean cannot be mixed with
+                        ;; a value-accumulator that also auto-returns. The
+                        ;; anonymous (implicit) value accumulator slot is
+                        ;; recorded in IMPLICIT-ACC.
+                        ((and implicit-acc
+                              (member (third implicit-acc)
+                                      '(:collect :append :nconc :sum
+                                        :count :max :min)))
+                         (walk-loop-error
+                          ir
+                          "An aggregate boolean (~A) cannot follow or precede ~
+                           a value accumulator (~S) in the same LOOP."
+                          kw (third implicit-acc))
+                         cs0)
+                        (t
+                      (setf (loop-ir-emitted-body ir) t)
+                      (let* ((expr (walk-loop-tree-subst-it
+                                    (second cs0) *it-var*))
+                             (kind (cond ((walk-loop-kw-eq kw "ALWAYS")  :always)
+                                         ((walk-loop-kw-eq kw "NEVER")   :never)
+                                         (t                              :thereis)))
+                             (var (gensym (format nil "BOOL-~A-" kind)))
+                             (init (case kind ((:always :never) t) (:thereis nil)))
+                             (update (case kind
+                                       (:always (cond ((eq expr t) var)
+                                                      ((null expr) nil)
+                                                      (t `(if ,expr ,var nil))))
+                                       (:never (cond ((eq expr t) nil)
+                                                     ((null expr) var)
+                                                     (t `(if ,expr nil ,var))))
+                                       (:thereis (cond ((eq expr t) t)
+                                                       ((null expr) var)
+                                                       (t `(or ,var ,expr))))))
+                             (exit-cond (case kind
+                                          ((:always :never) `(not ,var))
+                                          (:thereis         var)))
+                             (tmp-sym (gensym "BOOL-TMP-")))
+                        (push `(:acc-update ,tmp-sym ,(wrap-update update var))
+                              (loop-ir-body ir))
+                        (push (list var init kind tmp-sym var (list tmp-sym))
+                              (loop-ir-accumulators ir))
+                        (unless implicit-acc
+                          (setf implicit-acc (first (loop-ir-accumulators ir))))
+                        (push exit-cond (loop-ir-extra-term-conds ir))
+                        (cddr cs0)))))
+                     ((walk-loop-kw-eq kw "INITIALLY")
+                      ;; Prologue: at least one compound form required
+                      ;; (ANSI: initially compound-form+).
+                      (cond ((or (null (rest cs0))
+                                 (not (consp (second cs0))))
+                             (mark-unsupported
+                              (format nil "A compound form was expected, but ~S found (after INITIALLY)."
+                                      (second cs0)))
+                             cs0)
+                            (t (let ((cs1 cs0))
+                                 (loop while (and (rest cs1) (consp (second cs1)))
+                                       do (push (second cs1)
+                                                (loop-ir-initially-body ir))
+                                          (setf cs1 (cdr cs1)))
+                                 (cdr cs1)))))
+                     ((walk-loop-kw-eq kw "FINALLY")
+                      ;; finally (return form) | finally form+
+                      ;; FINALLY DO is not supported: users write bare
+                      ;; forms after FINALLY. Reject (loop-finish)
+                      ;; inside FINALLY at parse time -- ANSI undefined
+                      ;; behavior; we error explicitly.
+                      (setf (loop-ir-emitted-body ir) t)
+                      (cond ((and (consp (second cs0))
+                                  (walk-loop-kw-eq (first (second cs0)) "RETURN"))
+                             (let ((rf (walk-loop-tree-subst-it
+                                        (second (second cs0)) *it-var*)))
+                               (when (walk-loop-tree-contains-loop-finish? rf)
+                                 (walk-loop-error
+                                  ir
+                                  "(LOOP-FINISH) is not permitted inside FINALLY (RETURN ...) -- ANSI undefined behavior."))
+                               (setf (loop-ir-return-form ir) rf)
+                               (cddr cs0)))
+                            ((consp (second cs0))
+                             (let ((cs1 cs0))
+                               (loop while (and (rest cs1) (consp (second cs1)))
+                                     do (let ((form (walk-loop-tree-subst-it
+                                                     (second cs1) *it-var*)))
+                                          (when (walk-loop-tree-contains-loop-finish? form)
+                                            (walk-loop-error
+                                             ir
+                                             "(LOOP-FINISH) is not permitted inside FINALLY -- ANSI undefined behavior."))
+                                          (push form (loop-ir-finally-body ir)))
+                                        (setf cs1 (cdr cs1)))
+                               (cdr cs1)))
+                            (t
+                             (mark-unsupported
+                              (format nil "FINALLY clause: ~S" (second cs0)))
+                             cs0)))
+                     ;; NAMED can appear only as the very first clause and
+                     ;; only once. Reaching parse-clause means it's too late
+                     ;; (or this is a second NAMED).
+                     ((walk-loop-kw-eq kw "NAMED")
+                      (cond ((loop-ir-named-seen ir)
+                             (walk-loop-error
+                              ir
+                              "You may only use one NAMED clause in your loop: ~
+                               NAMED ~S ... NAMED ~S."
+                              (loop-ir-block-name ir) (second cs0)))
+                            (t
+                             (walk-loop-error
+                              ir
+                              "The NAMED ~S clause occurs too late."
+                              (second cs0))))
+                      cs0)
+                     ((or (walk-loop-kw-eq kw "WHEN") (walk-loop-kw-eq kw "IF"))
+                      (cond ((not (needs-arg cs0 (string kw))) cs0)
+                            (t (parse-conditional cs0 nil))))
+                     ((walk-loop-kw-eq kw "UNLESS")
+                      (cond ((not (needs-arg cs0 "UNLESS")) cs0)
+                            (t (parse-conditional cs0 t))))
+                     ;; AND/ELSE/END are secondary keywords valid only
+                     ;; inside conditional clauses. AND inside FOR is
+                     ;; consumed by the parallel-iteration loop in the
+                     ;; FOR handler; AND inside WHEN/IF/UNLESS is
+                     ;; consumed by parse-conditional. Reaching parse-
+                     ;; clause means the user wrote one at top level.
+                     ((or (walk-loop-kw-eq kw "AND")
+                          (walk-loop-kw-eq kw "ELSE")
+                          (walk-loop-kw-eq kw "END"))
+                      (mark-unsupported
+                       (format nil "secondary clause misplaced at top level in LOOP macro: ~S ~S ~S ..."
+                               kw (second cs0) (third cs0)))
+                      cs0)
+                     ;; Non-symbol where a keyword is required.
+                     ((not (symbolp kw))
+                      (mark-unsupported
+                       (format nil "~S found where LOOP keyword expected" kw))
+                      cs0)
+                     ;; Symbol but unrecognized as any LOOP keyword.
+                     (t
+                      (mark-unsupported
+                       (format nil "unknown LOOP keyword: ~S" kw))
+                      cs0)))))
+        ;; ANSI: NAMED foo, if present, must be the first clause.
+        ;; Consume it before entering the main parse loop. NAMED
+        ;; elsewhere errors via the loop-ir-named-seen flag in
+        ;; parse-clause's default branch.
+        (when (walk-loop-kw-eq (first cs) "NAMED")
+          (setf (loop-ir-named-seen ir) t)
+          (cond ((null (rest cs))
+                 (walk-loop-error
+                  ir
+                  "LOOP source code ran out when another token was ~
+                   expected (after NAMED)."))
+                ((not (symbolp (second cs)))
+                 (walk-loop-error
+                  ir
+                  "~S is an invalid name for your LOOP."
+                  (second cs)))
+                (t
+                 (setf (loop-ir-block-name ir) (second cs))
+                 (setf cs (cddr cs)))))
+        ;; CLHS 6.1.1.1 simple-loop dispatch: if the first remaining
+        ;; clause is a compound form (cons), the entire body is a
+        ;; sequence of forms with no extended-loop keywords. Ingest
+        ;; the body as a single implicit DO clause and skip the main
+        ;; parse loop. This unifies simple and extended LOOP through
+        ;; the IR + LABELS-recursion pipeline instead of carrying a
+        ;; second emission path.
+        (when (and cs (consp (first cs)) (not (loop-ir-unsupported ir)))
+          (setf (loop-ir-simple-form-p ir) t)
+          (dolist (form-in cs)
+            (push form-in (loop-ir-body ir)))
+          (setf cs nil))
+        (loop while (and cs (not (loop-ir-unsupported ir))) do
+          ;; Snapshot the source position at every clause boundary, so
+          ;; walk-loop-error can quote the surrounding context.
+          (let ((*loop-source-context* cs))
+            (let ((next (parse-clause cs)))
+              ;; Guard against handlers that returned the same cs (i.e.,
+              ;; they couldn't advance). The diagnostic was already
+              ;; recorded; the main loop exits via the unsupported check.
+              (when (eq next cs) (loop-finish))
+              (setf cs next))))))
+    (setf (loop-ir-iterators ir)      (nreverse (loop-ir-iterators ir)))
+    (setf (loop-ir-for-let ir)        (nreverse (loop-ir-for-let ir)))
+    (setf (loop-ir-init-for-let ir)   (nreverse (loop-ir-init-for-let ir)))
+    (setf (loop-ir-accumulators ir)   (nreverse (loop-ir-accumulators ir)))
+    (setf (loop-ir-body ir)           (nreverse (loop-ir-body ir)))
+    (setf (loop-ir-outer-bindings ir) (nreverse (loop-ir-outer-bindings ir)))
+    (setf (loop-ir-initially-body ir) (nreverse (loop-ir-initially-body ir)))
+    (setf (loop-ir-finally-body ir)   (nreverse (loop-ir-finally-body ir)))
+    ir))
+
+(defun-compile-time walk-loop-collect-free-symbols (form bound)
+  "Walk FORM, return symbols in value positions that aren't in BOUND
+and aren't constants/keywords. Heuristic: skips operators, declares,
+quoted forms, lambda-list keywords. Tracks lexical bindings of LET/
+LET*/LAMBDA encountered during walk."
+  (let ((free '()))
+    (labels ((bound-here (vars more-bound)
+               (append (remove-if-not #'symbolp vars) more-bound))
+             (push-binding (b)
+               (cond ((symbolp b) (list b))
+                     ((consp b) (list (first b)))))
+             (walk (x bnd)
+               (cond
+                 ((null x) nil)
+                 ((symbolp x)
+                  (unless (or (member x bnd :test #'eq)
+                              (member x lambda-list-keywords :test #'eq)
+                              (typep x 'boolean)
+                              (keywordp x))
+                    (pushnew x free)))
+                 ((atom x) nil)
+                 ((eq (car x) 'quote) nil)
+                 ((eq (car x) 'function)
+                  ;; (function NAME) -- if NAME is a symbol, it's the
+                  ;; function name, not a free variable.
+                  nil)
+                 ((eq (car x) 'declare) nil)
+                 ((member (car x) '(let let*) :test #'eq)
+                  (let* ((bindings (second x))
+                         (vars (mapcan #'push-binding bindings)))
+                    ;; Walk init forms in outer scope
+                    (dolist (b bindings)
+                      (when (consp b) (walk (second b) bnd)))
+                    (let ((new-bnd (bound-here vars bnd)))
+                      (mapc (lambda (s) (walk s new-bnd)) (cddr x)))))
+                 ((eq (car x) 'lambda)
+                  (let* ((ll (second x))
+                         (vars (mapcan #'push-binding ll))
+                         (new-bnd (bound-here vars bnd)))
+                    (mapc (lambda (s) (walk s new-bnd)) (cddr x))))
+                 (t
+                  ;; Function call form: skip the operator (it's a function
+                  ;; or special form name, not a value reference), walk args.
+                  (mapc (lambda (s) (walk s bnd)) (cdr x))))))
+      (walk form bound))
+    (nreverse free)))
+
+(defun-compile-time walk-loop-extract-mutations (body acc-vars)
+  "Walk BODY (a list of forms). Recognize (push X V) and (setq V EXPR)
+where V is in ACC-VARS; record after-body expression for each. Returns
+(VALUES FILTERED-BODY UPDATES) where FILTERED-BODY is BODY with the
+mutation forms removed, and UPDATES is alist (VAR . AFTER-EXPR) for
+each accumulator that gets mutated. ACC-VARS not present in UPDATES
+are unchanged across iterations."
+  (let ((filtered '())
+        (updates '()))
+    (dolist (form body)
+      (cond
+        ((and (consp form)
+              (eq (first form) 'push)
+              (member (third form) acc-vars :test #'eq))
+         ;; (push X V) -> after V = (cons X current-V-expr)
+         (let* ((var (third form))
+                (current (or (cdr (assoc var updates :test #'eq)) var)))
+           (setf updates
+                 (cons (cons var `(cons ,(second form) ,current))
+                       (remove var updates :key #'car :test #'eq)))))
+        ((and (consp form)
+              (eq (first form) 'setq)
+              (= (length form) 3)
+              (member (second form) acc-vars :test #'eq))
+         (let ((var (second form)))
+           (setf updates
+                 (cons (cons var (third form))
+                       (remove var updates :key #'car :test #'eq)))))
+        (t (push form filtered))))
+    (values (nreverse filtered) updates)))
+
+(defun-compile-time walk-loop-substitute-loop-finish (form replacement)
+  "Recursively replace (LOOP-FINISH) with REPLACEMENT in FORM. Matches
+any symbol whose SYMBOL-NAME is \"LOOP-FINISH\" regardless of package
+(handles both CL:LOOP-FINISH and screamer:loop-finish). Does not
+descend into nested (LOOP ...) forms -- their loop-finish belongs to
+the inner loop."
+  (cond
+    ((atom form) form)
+    ((and (symbolp (car form))
+          (string-equal (symbol-name (car form)) "LOOP-FINISH")
+          (null (cdr form)))
+     replacement)
+    ((and (symbolp (car form))
+          (string-equal (symbol-name (car form)) "LOOP"))
+     form)
+    (t
+     (cons (walk-loop-substitute-loop-finish (car form) replacement)
+           (mapcar (lambda (sub)
+                     (walk-loop-substitute-loop-finish sub replacement))
+                   (cdr form))))))
+
+(defun-compile-time walk-loop-rewrite-as-recursion (ir)
+  (let* ((helper-name (intern (symbol-name (gensym "WALK-LOOP-HELPER-"))
+                              :screamer))
+         (acc-records (loop-ir-accumulators ir))
+         (acc-vars (mapcar #'first acc-records))
+         (acc-inits (mapcar #'second acc-records)))
+    (walk-loop-rewrite-as-recursion-finish
+     ir helper-name acc-records acc-vars acc-inits)))
+
+(defun-compile-time walk-loop-rewrite-as-recursion-finish
+    (ir helper-name acc-records acc-vars acc-inits)
+  "Continuation of walk-loop-rewrite-as-recursion. Split into a separate
+function so the gating in the caller stays readable."
+  (let* ((other-term-conds (loop-ir-extra-term-conds ir))
+              (other-term-form (cond ((null other-term-conds) nil)
+                                     ((= 1 (length other-term-conds))
+                                      (first other-term-conds))
+                                     (t `(or ,@other-term-conds))))
+              (for-lets (loop-ir-for-let ir))
+              (init-for-lets (loop-ir-init-for-let ir))
+              ;; Compute final/return form. ANSI: FINALLY clauses always
+              ;; run for side-effects at natural end, regardless of
+              ;; whether the return value comes from FINALLY (RETURN ...),
+              ;; an auto-returning accumulator (COLLECT/SUM/etc.), or
+              ;; defaults to NIL.
+              (finally-body (loop-ir-finally-body ir))
+              (auto-return-expr
+               (when (some (lambda (a) (fifth a)) acc-records)
+                 (let ((fns (mapcar #'fifth
+                                    (remove-if-not #'fifth acc-records))))
+                   (if (= 1 (length fns)) (first fns) `(values ,@fns)))))
+              (return-form
+               (cond ((loop-ir-return-form ir)
+                      (if finally-body
+                          `(progn ,@finally-body ,(loop-ir-return-form ir))
+                          (loop-ir-return-form ir)))
+                     ;; Auto-return from accumulator(s) -- run finally
+                     ;; FIRST for side-effects, then return the acc value.
+                     (auto-return-expr
+                      (if finally-body
+                          `(progn ,@finally-body ,auto-return-expr)
+                          auto-return-expr))
+                     ;; FINALLY without RETURN and no acc: side-effects
+                     ;; only, result is NIL (per ANSI).
+                     (finally-body
+                      `(progn ,@finally-body nil)))))
+         ;; Extract user mutations on user (WITH) accumulator vars from body
+         (cl:multiple-value-bind (filtered-body updates)
+             (walk-loop-extract-mutations
+              (loop-ir-body ir)
+              (loop for r in acc-records when (eq (third r) :user)
+                    collect (first r)))
+           ;; Carried-only iter-vars (step = var) demote to for-let
+           ;; unless FINALLY references them.
+           (let* ((carried-candidates
+                   (loop for spec in (loop-ir-iterators ir)
+                         when (eq (first spec) (third spec))
+                         collect (first spec)))
+                  (return-form-symbols
+                   (when carried-candidates
+                     (walk-loop-collect-free-symbols return-form '())))
+                  (kept-iters
+                   (loop for spec in (loop-ir-iterators ir)
+                         when (or (not (eq (first spec) (third spec)))
+                                  (member (first spec) return-form-symbols
+                                          :test #'eq))
+                         collect spec))
+                  (iter-vars (mapcar #'first kept-iters))
+                  (iter-inits (mapcar #'second kept-iters))
+                  (iter-steps (mapcar (lambda (it) (or (third it) (first it)))
+                                      kept-iters))
+                  (iter-terms (remove nil (mapcar #'fourth kept-iters)))
+                  (iter-term-form (cond ((null iter-terms) nil)
+                                        ((= 1 (length iter-terms))
+                                         (first iter-terms))
+                                        (t `(or ,@iter-terms))))
+                  (helper-params (append iter-vars acc-vars))
+                  (block-name (loop-ir-block-name ir))
+                  (loop-finish-form
+                   `(return-from ,block-name ,return-form))
+                  (acc-call-args
+                   (mapcar (lambda (r)
+                             (let* ((v (first r))
+                                    (kind (third r))
+                                    (tmp (fourth r)))
+                               (cond ((eq kind :user)
+                                      (walk-loop-substitute-loop-finish
+                                       (or (cdr (assoc v updates :test #'eq)) v)
+                                       loop-finish-form))
+                                     (tmp tmp)
+                                     (t v))))
+                           acc-records))
+                  (next-iter-vars iter-steps)
+                  (filtered-body-rewritten
+                   (mapcar (lambda (f)
+                             (walk-loop-substitute-loop-finish
+                              f loop-finish-form))
+                           filtered-body))
+                  (for-let-vars (mapcar #'first for-lets))
+                  (init-for-let-vars (mapcar #'first init-for-lets))
+                  (param-set (append iter-vars acc-vars))
+                  (param-decls
+                   (loop for (v . ty) in (loop-ir-type-decls ir)
+                         when (member v param-set :test #'eq)
+                         collect `(type ,ty ,v)))
+                  (for-let-decls
+                   (loop for (v . ty) in (loop-ir-type-decls ir)
+                         when (member v for-let-vars :test #'eq)
+                         collect `(type ,ty ,v)))
+                  (init-for-let-decls
+                   (loop for (v . ty) in (loop-ir-type-decls ir)
+                         when (member v init-for-let-vars :test #'eq)
+                         collect `(type ,ty ,v)))
+                  (inner-recurse
+                   `(let* ,init-for-lets
+                      (declare (ignorable ,@init-for-let-vars)
+                               ,@init-for-let-decls)
+                      ,(walk-loop-fold-body
+                        filtered-body-rewritten
+                        `(,helper-name ,@next-iter-vars ,@acc-call-args))))
+                  (post-for-let-form
+                   (cond (other-term-form
+                          `(if ,other-term-form ,return-form ,inner-recurse))
+                         (t inner-recurse)))
+                  (let-for-lets-form
+                   `(let* ,for-lets
+                      (declare (ignorable ,@for-let-vars)
+                               ,@for-let-decls)
+                      ,post-for-let-form))
+                  (helper-body
+                   (cond (iter-term-form
+                          `(if ,iter-term-form
+                               ,return-form
+                               ,let-for-lets-form))
+                         (t let-for-lets-form))))
+             (let* ((inner-let*-bindings
+                     (append (mapcar #'list iter-vars iter-inits)
+                             (mapcar #'list acc-vars acc-inits)))
+                    (call-form `(,helper-name ,@iter-vars ,@acc-vars))
+                    (with-init (if (loop-ir-initially-body ir)
+                                   `(progn ,@(loop-ir-initially-body ir)
+                                           ,call-form)
+                                   call-form))
+                    (labels-body
+                     (cond (inner-let*-bindings
+                            `(let* ,inner-let*-bindings ,with-init))
+                           (t with-init)))
+                    (labels-form
+                     `(labels ((,helper-name (,@helper-params)
+                                 (declare (ignorable ,@iter-vars ,@acc-vars))
+                                 ,@(when param-decls
+                                     `((declare ,@param-decls)))
+                                 ,helper-body))
+                        ,labels-body)))
+               (cond ((loop-ir-outer-bindings ir)
+                      `(block ,block-name
+                         (let* ,(loop-ir-outer-bindings ir)
+                           (declare (ignorable ,@(mapcar #'first
+                                                         (loop-ir-outer-bindings ir))))
+                           ,labels-form)))
+                     (t `(block ,block-name ,labels-form))))))))
+
+(defun-compile-time walk-loop-collect-mutated-vars (form)
+  "Walk FORM, return the list of variables that appear as the target of
+SETQ/PUSH/POP/INCF/DECF anywhere inside. Used by the rewriter to detect
+mutations on outer (non-loop-internal) variables, which the recursion
+model cannot propagate through helper parameters."
+  (let ((vars '()))
+    (labels ((walk (x)
+               (when (consp x)
+                 (case (car x)
+                   ((quote function) nil)
+                   ((setq)
+                    (loop for cell on (cdr x) by #'cddr do
+                          (when (symbolp (first cell))
+                            (pushnew (first cell) vars))
+                          (walk (second cell))))
+                   ((push)
+                    (when (symbolp (third x))
+                      (pushnew (third x) vars))
+                    (walk (second x)))
+                   ((pop incf decf)
+                    (when (symbolp (second x))
+                      (pushnew (second x) vars))
+                    (mapc #'walk (cddr x)))
+                   (t (mapc #'walk x))))))
+      (walk form))
+    vars))
+
+(defun-compile-time walk-loop-acc-wrap-collect-conses (form)
+  "Walk FORM, an acc-update tree built from COLLECT-style clauses
+(`(cons EXPR REST)' chains, possibly wrapped in LET/IF for conditional
+clauses), and wrap each top-level (cons EXPR REST) pattern's EXPR in
+(LIST EXPR). Does not recurse into EXPR (user code). Used when
+COLLECT-first is later mixed with APPEND/NCONC on the same implicit
+accumulator -- retroactively normalizes the prior conses so the
+unified APPLY APPEND REVERSE final-fn produces a flat list."
+  (cond
+    ((atom form) form)
+    ((and (consp form) (eq (car form) 'cons))
+     `(cons (list ,(second form))
+            ,(walk-loop-acc-wrap-collect-conses (third form))))
+    ((and (consp form) (member (car form) '(let let*)))
+     `(,(car form)
+       ,(mapcar (lambda (b)
+                  (cond ((consp b)
+                         (list (first b)
+                               (walk-loop-acc-wrap-collect-conses (second b))))
+                        (t b)))
+                (second form))
+       ,@(mapcar #'walk-loop-acc-wrap-collect-conses (cddr form))))
+    ((and (consp form) (eq (car form) 'if))
+     `(if ,(second form)
+          ,(walk-loop-acc-wrap-collect-conses (third form))
+          ,(walk-loop-acc-wrap-collect-conses (fourth form))))
+    ((and (consp form) (eq (car form) 'progn))
+     `(progn ,@(mapcar #'walk-loop-acc-wrap-collect-conses (cdr form))))
+    (t form)))
+
+(defun-compile-time walk-loop-retro-wrap-acc-markers (body tmp-syms)
+  "BODY (list of forms) may contain (:ACC-UPDATE TMP EXPR) markers from
+parse-acc. For each marker whose TMP is in TMP-SYMS, destructively rewrap
+its EXPR via walk-loop-acc-wrap-collect-conses."
+  (dolist (form body)
+    (when (and (consp form)
+               (eq (first form) :acc-update)
+               (member (second form) tmp-syms :test #'eq))
+      (setf (third form)
+            (walk-loop-acc-wrap-collect-conses (third form))))))
+
+(defun-compile-time walk-loop-fold-body (forms tail)
+  "Fold FORMS (a list of body forms possibly containing (:ACC-UPDATE TMP
+EXPR) markers) into nested form ending in TAIL. Each marker becomes a
+LET-binding scoping the rest of the body and TAIL. Regular forms emit
+sequentially via PROGN."
+  (cond
+    ((null forms) tail)
+    ((and (consp (first forms))
+          (eq (first (first forms)) :acc-update))
+     (let ((marker (first forms)))
+       `(let ((,(second marker) ,(third marker)))
+          ,(walk-loop-fold-body (rest forms) tail))))
+    (t
+     (cl:multiple-value-bind (plain rest-forms)
+         (walk-loop-split-plain-prefix forms)
+       (cond ((null plain)
+              (walk-loop-fold-body rest-forms tail))
+             (t
+              `(progn ,@plain ,(walk-loop-fold-body rest-forms tail))))))))
+
+(defun-compile-time walk-loop-split-plain-prefix (forms)
+  "Return (VALUES PLAIN-PREFIX REST). PLAIN-PREFIX is the leading run of
+FORMS that are not :ACC-UPDATE markers; REST is the suffix starting at
+the first marker (or NIL)."
+  (let ((plain '())
+        (rest forms))
+    (loop while (and rest
+                     (not (and (consp (first rest))
+                               (eq (first (first rest)) :acc-update))))
+          do (push (first rest) plain)
+             (setf rest (cdr rest)))
+    (values (nreverse plain) rest)))
+
+(defun-compile-time walk-loop-form-has-explicit-exit-p (form)
+  "T if FORM syntactically contains RETURN, RETURN-FROM, THROW, GO, or
+LOOP-FINISH anywhere in tree position."
+  (cond ((atom form) nil)
+        ((and (symbolp (car form))
+              (member (symbol-name (car form))
+                      '("RETURN" "RETURN-FROM" "THROW" "GO" "LOOP-FINISH")
+                      :test #'string-equal))
+         t)
+        (t (some #'walk-loop-form-has-explicit-exit-p form))))
+
+(defun-compile-time walk-loop-no-termination-source-p (ir)
+  (flet ((exit-in-binding (b)
+           (walk-loop-form-has-explicit-exit-p (second b))))
+    (not (or (some #'fourth (loop-ir-iterators ir))
+             (loop-ir-extra-term-conds ir)
+             (loop-ir-simple-form-p ir)
+             (loop-ir-return-form ir)
+             (some #'walk-loop-form-has-explicit-exit-p
+                   (loop-ir-body ir))
+             (some (lambda (it)
+                     (or (walk-loop-form-has-explicit-exit-p (second it))
+                         (walk-loop-form-has-explicit-exit-p (third it))))
+                   (loop-ir-iterators ir))
+             (some #'exit-in-binding (loop-ir-outer-bindings ir))
+             (some #'exit-in-binding (loop-ir-for-let ir))
+             (some #'exit-in-binding (loop-ir-init-for-let ir))
+             (some #'walk-loop-form-has-explicit-exit-p
+                   (loop-ir-initially-body ir))))))
+
+(defun-compile-time walk-loop
+    (map-function reduce-function screamer? partial? nested? form environment)
+  (let ((ir (walk-loop-parse form)))
+    (cond
+      ((or (loop-ir-unsupported ir)
+           (walk-loop-no-termination-source-p ir))
+       (cond (reduce-function
+              (walk-macro-call map-function reduce-function screamer?
+                               partial? nested? form environment))
+             ((loop-ir-unsupported ir)
+              (error 'screamer-loop-malformed-error
+                     :format-control "~A~%Loop form: ~S"
+                     :format-arguments (list (loop-ir-unsupported ir) form)))
+             (t
+              (error 'screamer-loop-malformed-error
+                     :format-control "(LOOP ...) has no termination source~%(no iterator with TO/BELOW/etc, no WHILE/UNTIL, no boolean clause).~%Loop form: ~S"
+                     :format-arguments (list form)))))
+      ((and (null reduce-function) (deterministic? form environment))
+       (walk map-function reduce-function screamer? partial? nested?
+             (let ((*macroexpand-hook* #'funcall))
+               (macroexpand-1 form environment))
+             environment))
+      (t
+       (walk map-function reduce-function screamer? partial? nested?
+             (walk-loop-rewrite-as-recursion ir)
+             environment)))))
 
 (defun-compile-time walk-macro-call
     (map-function reduce-function screamer? partial? nested? form environment)
@@ -1317,24 +3690,19 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                      (let ((*macroexpand-hook* #'funcall))
                        (macroexpand-1 form environment))
                      environment))
-      (progn
-        (when (and screamer?
-                   (eq (first form) 'loop)
-                   (not (deterministic? form environment)))
-          (error "Cannot (currently) handle LOOP in a nondeterministic context."))
-        (walk map-function
-              reduce-function
-              screamer?
-              partial?
-              nested?
-              (let ((*macroexpand-hook* #'funcall))
-                (macroexpand-1 form environment))
-              environment))))
+      (walk map-function
+            reduce-function
+            screamer?
+            partial?
+            nested?
+            (let ((*macroexpand-hook* #'funcall))
+              (macroexpand-1 form environment))
+            environment)))
 
 (defun-compile-time walk-function-call
     (map-function reduce-function screamer? partial? nested? form environment)
   (unless (null (rest (last form)))
-    (error "Improper function call form: ~S" form))
+    (error "[walk-function-call] - Improper function call form: ~S" form))
   (cond
     ((lambda-expression? (first form))
      (if reduce-function
@@ -1404,7 +3772,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                                                 environment))
                                       (rest form))))
              (funcall map-function form 'setf-call))))
-    (t (error "CAR of form ~S is not a valid function" form))))
+    (t (error "[walk-function-call] - CAR of form ~S is not a valid function" form))))
 
 ;;; Possible FORM-TYPEs
 ;;;  Other:
@@ -1425,7 +3793,6 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 
 (defun-compile-time walk
     (map-function reduce-function screamer? partial? nested? form environment)
-  ;; needs work: special forms not in both CLtL1 and CLtL2.
   (cond
     ((self-evaluating? form) (funcall map-function form 'quote))
     ((symbolp form)
@@ -1511,6 +3878,20 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
     ((eq (first form) 'unwind-protect)
      (walk-unwind-protect
       map-function reduce-function screamer? partial? nested? form environment))
+    ((eq (first form) 'handler-bind)
+     (walk-handler-bind
+      map-function reduce-function screamer? partial? nested? form environment))
+    ((eq (first form) 'handler-case)
+     (walk-handler/restart-case
+      map-function reduce-function screamer? partial? nested? form environment
+      'handler-case))
+    ((eq (first form) 'restart-case)
+     (walk-handler/restart-case
+      map-function reduce-function screamer? partial? nested? form environment
+      'restart-case))
+    ((eq (first form) 'ignore-errors)
+     (walk-ignore-errors
+      map-function reduce-function screamer? partial? nested? form environment))
     ((and screamer? (eq (first form) 'for-effects))
      (walk-for-effects
       map-function reduce-function screamer? partial? nested? form environment))
@@ -1531,24 +3912,30 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
      (walk-multiple-value-call-nondeterministic
       map-function reduce-function screamer? partial? nested? form environment))
     ((and partial? (eq (first form) 'full)) (walk-full map-function form))
+    ((and screamer? (eq (first form) 'loop))
+     (walk-loop
+      map-function reduce-function screamer? partial? nested? form environment))
     ((and (symbolp (first form))
           (macro-function (first form) environment))
      (walk-macro-call
       map-function reduce-function screamer? partial? nested? form environment))
-    #+ccl
-    ((eq (first form) 'ccl:compiler-let)
-    (walk-let/let*
+    #+(or allegro ccl)
+    ((eq (first form)
+         #+allegro 'excl:compiler-let
+         #+ccl     'ccl:compiler-let)
+     (walk-let/let*
       map-function reduce-function screamer? partial? nested? form environment
-      'ccl:compiler-let))
+      #+allegro 'excl:compiler-let
+      #+ccl     'ccl:compiler-let))
     ((and (symbolp (first form)) (special-operator-p (first form)))
-     (error "Cannot (currently) handle the special form ~S" (first form)))
+     (error "[walk] - Cannot (currently) handle the special form ~S" (first form)))
     (t (walk-function-call
         map-function reduce-function screamer? partial? nested? form
         environment))))
 
 (defun-compile-time process-subforms (function form form-type environment)
   (case form-type
-    (lambda-list (error "This shouldn't happen"))
+    (lambda-list (error "[process-subforms] - This shouldn't happen (A)"))
     ((variable go) form)
     ((eval-when)
      (cons (first form)
@@ -1630,7 +4017,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                  (rest form))))
     (quote (quotify form))
     (the `(the ,(second form) ,(funcall function (third form) environment)))
-    (macro-call (error "This shouldn't happen"))
+    (macro-call (error "[process-subforms] - This shouldn't happen (B)"))
     (lambda-call
      (cl:multiple-value-bind (body declarations documentation-string)
          (peal-off-documentation-string-and-declarations
@@ -1644,8 +4031,8 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
          ,@(mapcar
             #'(lambda (subform) (funcall function subform environment))
             (rest form)))))
-     #+ccl       
-     ((ccl:compiler-let)
+     #+(or allegro ccl)
+     ((#+allegro excl:compiler-let #+ccl ccl:compiler-let)
      (cl:multiple-value-bind (body declarations)
          (peal-off-documentation-string-and-declarations (rest (rest form)))
        `(,(first form)
@@ -1665,12 +4052,24 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                    (rest form))))))
 
 (defun-compile-time deterministic? (form environment)
+  ;; FLET/LABELS bindings descend; FUNCTION-LAMBDA stays opaque (handled
+  ;; surgically in WALK-MULTIPLE-VALUE-CALL for immediate-invoke).
   (walk
    #'(lambda (form form-type)
        (case form-type
          ((symbol-call setf-call)
-          (function-record-deterministic? (get-function-record (first form))))
+          (function-record-deterministic?
+           (function-record-or-lexical (first form))))
          (multiple-value-call-nondeterministic nil)
+         ((flet labels)
+          (every (lambda (binding)
+                   (and (deterministic-lambda-list?
+                         (second binding) environment)
+                        (every (lambda (subform)
+                                 (deterministic? subform environment))
+                               (peal-off-documentation-string-and-declarations
+                                (rest (rest binding)) t))))
+                 (second form)))
          ;; note: not really sure about CATCH, THROW and UNWIND-PROTECT
          (otherwise t)))
    ;; note: potentially inefficient because must walk entire form even
@@ -1734,12 +4133,10 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
             (declare (ignore form))
             (or (and *local?* (eq form-type 'setq))
                 (eq form-type 'local-setf)))
-        ;; note: potentially inefficient because must walk entire form even
-        ;;       after it is known to contain a LOCAL SETF/SETQ special form
         #'(lambda (&optional (x nil x?) y) (if x? (or x y) '()))
         t
         nil
-        nil
+        t
         form
         environment))
 
@@ -1836,8 +4233,8 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
       (walk
        #'(lambda (form form-type)
            (case form-type
-             (lambda-list (error "This shouldn't happen"))
-             (variable (error "This shouldn't happen"))
+             (lambda-list (error "[perform-substitutions] - This shouldn't happen (A)"))
+             (variable (error "[perform-substitutions] - This shouldn't happen (B)"))
              (block (let ((*block-tags*
                            (cons (list (second form) nil) *block-tags*)))
                       (process-subforms
@@ -1892,7 +4289,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                    ;; note: Can't issue an error here if tag not found since it
                    ;;       might be outside the scope of a FOR-EFFECTS.
                    (if (and tag (second tag)) `(,(second tag)) form)))
-             (quote (error "This shouldn't happen"))
+             (quote (error "[perform-substitutions] - This shouldn't happen (C)"))
              (return-from
               (let ((tag (assoc (second form) *block-tags* :test #'eq))
                     (value (perform-substitutions
@@ -1921,7 +4318,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
              (local-setf (perform-substitutions
                           (expand-local-setf (rest form) environment)
                           environment))
-             (macro-call (error "This shouldn't happen"))
+             (macro-call (error "[perform-substitutions] - This shouldn't happen (D)"))
              (otherwise (process-subforms
                          #'perform-substitutions form form-type environment))))
        nil
@@ -1956,6 +4353,33 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
       (second (second (second continuation)))
       (first (second (second continuation)))))
 
+(defun-compile-time form-references-symbol-p (form target)
+  "T iff TARGET appears anywhere in the sexp tree FORM."
+  (cond ((eq form target) t)
+        ((atom form) nil)
+        (t (or (form-references-symbol-p (car form) target)
+               (form-references-symbol-p (cdr form) target)))))
+
+(defun-compile-time collect-gensyms (form)
+  "Return a list of distinct gensym atoms (symbols with no SYMBOL-PACKAGE)
+appearing anywhere in FORM."
+  (let ((result '()))
+    (labels ((walk (x)
+               (cond ((null x))
+                     ((and (symbolp x) (null (symbol-package x)))
+                      (pushnew x result :test #'eq))
+                     ((consp x) (walk (car x)) (walk (cdr x))))))
+      (walk form))
+    result))
+
+(defun-compile-time subst-collision-risk-p (form magic-arg body)
+  "T iff a (subst FORM MAGIC-ARG BODY :test #'eq) would risk symbol capture:
+either FORM and BODY share a gensym other than MAGIC-ARG, or FORM is itself
+a gensym already present in BODY at non-MAGIC-ARG positions."
+  (let ((form-gs (remove magic-arg (collect-gensyms form) :test #'eq))
+        (body-gs (remove magic-arg (collect-gensyms body) :test #'eq)))
+    (and (intersection form-gs body-gs :test #'eq) t)))
+
 (defun-compile-time possibly-beta-reduce-funcall
     (continuation types form value?)
   (unless (or (and (symbolp continuation) (not (symbol-package continuation)))
@@ -1965,7 +4389,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                    (= (length continuation) 2)
                    (symbolp (second continuation)))
               (is-magic-continuation? continuation))
-    (error "Please report this bug; This shouldn't happen (A)"))
+    (error "[possibly-beta-reduce-funcall] - Please report this bug; This shouldn't happen (A)"))
   (cond
     ((symbolp continuation)
      (if value?
@@ -1994,37 +4418,81 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
     (t (if value?
            (progn
              (if (null (second (second continuation)))
-                 (error "Please report this bug; This shouldn't happen (B)"))
+                 (error "[possibly-beta-reduce-funcall] - Please report this bug; This shouldn't happen (B)"))
              (cond
                ((eq (first (second (second continuation))) '&rest)
                 (if (null types)
                     `(let ((,(magic-continuation-argument continuation)
                             (multiple-value-list ,form)))
+                       (declare (ignorable ,(magic-continuation-argument continuation)))
                        ;; Peal off LAMBDA, arguments, and DECLARE.
                        ,@(rest (rest (rest (second continuation)))))
                     `(let ((,(magic-continuation-argument continuation)
                             (list (the (and ,@types) ,form))))
+                       (declare (ignorable ,(magic-continuation-argument continuation)))
                        ;; Peal off LAMBDA, arguments, and DECLARE.
                        ,@(rest (rest (rest (second continuation)))))))
-               (t
-                (if (null types)
-                    `(let ((,(magic-continuation-argument continuation) ,form))
-                       ,@(if (and *dynamic-extent?* (is-magic-continuation? form))
-                             `((declare
-                                (dynamic-extent
-                                 ,(magic-continuation-argument continuation)))))
-                       ;; Peal off LAMBDA, arguments, and DECLARE.
-                       ,@(rest (rest (rest (second continuation)))))
-                    `(let ((,(magic-continuation-argument continuation)
-                            (the (and ,@types) ,form)))
-                       (declare
-                        (type (and ,@types)
-                              ,(magic-continuation-argument continuation)))
-                       ;; Peal off LAMBDA, arguments, and DECLARE.
-                       ,@(rest (rest (rest (second continuation)))))))))
+               ((or (and (consp form)
+                         (not
+                          (and (eq (first form) 'function)
+                               (null (rest (last form)))
+                               (= (length form) 2)
+                               (symbolp (second form)))))
+                    (and (symbolp form) (symbol-package form))
+                    (symbol-package (magic-continuation-argument continuation)))
+                (cond
+                  ((and (null types) (is-magic-continuation? form))
+                   (let* ((arg (magic-continuation-argument continuation))
+                          (cont-body (rest (rest (rest (second continuation))))))
+                     (cond
+                       ((not (form-references-symbol-p cont-body arg))
+                        (if (= 1 (length cont-body))
+                            (first cont-body)
+                            `(progn ,@cont-body)))
+                       (t
+                        (let* ((form-lambda (second form))
+                               (fn-name (gensym "K-FN-")))
+                          `(flet ((,fn-name ,(second form-lambda)
+                                    ,@(rest (rest form-lambda))))
+                             (declare (ignorable (function ,fn-name))
+                                      (dynamic-extent (function ,fn-name)))
+                             (symbol-macrolet ((,arg (function ,fn-name)))
+                               ,@cont-body)))))))
+                  ((null types)
+                   `(let ((,(magic-continuation-argument continuation) ,form))
+                      (declare (ignorable ,(magic-continuation-argument continuation)))
+                      ,@(rest (rest (rest (second continuation))))))
+                  (t
+                   `(let ((,(magic-continuation-argument continuation)
+                           (the (and ,@types) ,form)))
+                      (declare (ignorable ,(magic-continuation-argument continuation))
+                               (type (and ,@types)
+                                     ,(magic-continuation-argument continuation)))
+                      ,@(rest (rest (rest (second continuation))))))))
+               ;; Fallback: MAGIC-ARG is a gensym. If FORM and the
+               ;; continuation body share a gensym, SUBST would capture;
+               ;; emit a LET binding instead. Otherwise SUBST is safe.
+               (t (let* ((mag (magic-continuation-argument continuation))
+                         (cont-body (rest (rest (rest (second continuation)))))
+                         (body-progn `(progn ,@cont-body)))
+                    (cond
+                      ((subst-collision-risk-p form mag body-progn)
+                       (if (null types)
+                           `(let ((,mag ,form))
+                              (declare (ignorable ,mag))
+                              ,@cont-body)
+                           `(let ((,mag (the (and ,@types) ,form)))
+                              (declare (ignorable ,mag)
+                                       (type (and ,@types) ,mag))
+                              ,@cont-body)))
+                      (t
+                       (if (null types)
+                           (subst form mag body-progn :test #'eq)
+                           (subst `(the (and ,@types) ,form) mag body-progn
+                                  :test #'eq))))))))
            (progn
              (unless (null (second (second continuation)))
-               (error "Please report this bug; This shouldn't happen (C)"))
+               (error "[possibly-beta-reduce-funcall] - Please report this bug; This shouldn't happen (C)"))
              ;; Peal off LAMBDA, arguments, and DECLARE.
              `(progn ,form ,@(rest (rest (rest (second continuation))))))))))
 
@@ -2036,7 +4504,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                    (= (length continuation) 2)
                    (symbolp (second continuation)))
               (is-magic-continuation? continuation))
-    (error "Please report this bug; This shouldn't happen (D)"))
+    (error "[void-continuation] - Please report this bug; This shouldn't happen (D)"))
   (let ((ignored (gensym "IGNORED-")))
     ;; note: We could get rid of this bogosity by having two versions of each
     ;;       nondeterministic function, one which returned a value and one which
@@ -2097,6 +4565,92 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
      continuation
      t)))
 
+(defun-compile-time lambda-list-variable-names (lambda-list)
+  "Return all variable names introduced by LAMBDA-LIST (required,
+optional, rest, key, aux, plus their supplied-p variables)."
+  (reduce
+   #'append
+   (mapcar
+    (lambda (argument)
+      (cond ((consp argument)
+             (if (and (consp (rest argument))
+                      (consp (rest (rest argument))))
+                 (list (first argument) (third argument))
+                 (list (first argument))))
+            (t (list argument))))
+    (set-difference lambda-list lambda-list-keywords :test #'eq))))
+
+(defun-compile-time cps-convert-flet/labels
+    (bindings body declarations continuation types value? environment kind)
+  "CPS-convert (FLET/LABELS bindings decl... body). Each nondet binding
+keeps the user's original name and prepends a continuation parameter K
+to the lambda-list; calls in BODY are routed to the binding via
+*LEXICAL-FUNCTION-RECORDS*. Det bindings emit unchanged."
+  (let* ((analyses
+          (mapcar
+           (lambda (binding)
+             (let* ((cps-needed-p
+                     (or (eq kind :labels)
+                         (not (flet-binding-deterministic? binding environment)))))
+               (cons binding cps-needed-p)))
+           bindings))
+         (lex-records
+          (mapcar
+           (lambda (a)
+             (let* ((binding (car a))
+                    (cps-needed-p (cdr a))
+                    (name (first binding))
+                    (rec (make-function-record :function-name name)))
+               (setf (function-record-deterministic? rec) (not cps-needed-p))
+               (setf (function-record-cps-name rec) (when cps-needed-p name))
+               (cons name rec)))
+           analyses))
+         (binding-walk-records
+          (if (eq kind :labels)
+              (append lex-records *lexical-function-records*)
+              *lexical-function-records*))
+         (body-walk-records
+          (append lex-records *lexical-function-records*))
+         (emitted-bindings
+          (mapcar
+           (lambda (a)
+             (let* ((binding (car a))
+                    (cps-needed-p (cdr a))
+                    (name (first binding))
+                    (lambda-list (second binding))
+                    (raw-body (rest (rest binding))))
+               (cond
+                 ((not cps-needed-p) binding)
+                 (t
+                  (unless (deterministic-lambda-list? lambda-list environment)
+                    (screamer-error
+                     "Cannot (currently) handle a ~A binding ~S with~%~
+                      nondeterministic initialization forms for~%~
+                      &OPTIONAL, &KEY, or &AUX parameters."
+                     (if (eq kind :labels) 'labels 'flet)
+                     name))
+                  (cl:multiple-value-bind (binding-body binding-decls binding-doc)
+                      (peal-off-documentation-string-and-declarations raw-body t)
+                    (let ((k (gensym "K-"))
+                          (binding-vars (lambda-list-variable-names lambda-list)))
+                      (let ((*lexical-function-records* binding-walk-records)
+                            (*block-tags* (cons (list name k '() t)
+                                                *block-tags*)))
+                        `(,name (,k ,@lambda-list)
+                                ,@(when binding-doc (list binding-doc))
+                                (declare (ignorable ,k ,@binding-vars))
+                                ,@binding-decls
+                                ,(cps-convert-progn
+                                  binding-body k '() t environment)))))))))
+           analyses))
+         (converted-body
+          (let ((*lexical-function-records* body-walk-records))
+            (cps-convert-progn body continuation types value? environment)))
+         (form-keyword (if (eq kind :labels) 'labels 'flet)))
+    (if declarations
+        `(,form-keyword ,emitted-bindings ,@declarations ,converted-body)
+        `(,form-keyword ,emitted-bindings ,converted-body))))
+
 (defun-compile-time cps-convert-let (bindings
                                      body
                                      declarations
@@ -2108,6 +4662,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                                      new-bindings)
   (if (null bindings)
       `(let ,new-bindings
+         (declare (ignorable ,@(mapcar #'first new-bindings)))
          ,@declarations
          ,(cps-convert-progn body continuation types value? environment))
       (let* ((binding (first bindings))
@@ -2179,52 +4734,6 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
           '()
           t
           environment))))))
-
-(defun-compile-time continuation-primary-param (params)
-  (block found
-    (let ((after-keyword? nil))
-      (dolist (p params nil)
-        (cond ((member p lambda-list-keywords :test #'eq)
-               (setf after-keyword? (not (eq p '&optional))))
-              (after-keyword? nil)
-              (t (return-from found
-                   (if (consp p) (first p) p))))))))
-
-(defun-compile-time split-leading-declares (body)
-  (let ((decls '()))
-    (loop while (and body (consp (car body)) (eq (caar body) 'declare))
-          do (push (pop body) decls))
-    (values (nreverse decls) body)))
-
-(defun-compile-time inject-type-into-magic-continuation (continuation types)
-  (let* ((lam       (second continuation))
-         (params    (second lam))
-         (rest-body (rest (rest lam)))
-         (primary   (continuation-primary-param params)))
-    (when (and primary (symbolp primary))
-      (cl:multiple-value-bind (decls body) (split-leading-declares rest-body)
-        `(function (lambda ,params
-                    ,@decls
-                    (let ((,primary (the (and ,@types) ,primary)))
-                      (declare (type (and ,@types) ,primary))
-                      ,@body)))))))
-
-(defun-compile-time wrap-runtime-the-continuation (cps-name arg-vars c types outer-cont)
-  (let ((v (gensym "V-"))
-        (rest (gensym "REST-"))
-        (wrap-fn (gensym "TYPED-K-")))
-    (possibly-beta-reduce-funcall
-     `#'(lambda (,c)
-          (declare (magic))
-          (flet ((,wrap-fn (&optional ,v &rest ,rest)
-                   (declare (magic) (ignorable ,rest))
-                   (apply ,c (the (and ,@types) ,v) ,rest)))
-            (declare (ignorable (function ,wrap-fn))
-                     (dynamic-extent (function ,wrap-fn)))
-            (,cps-name #',wrap-fn ,@(reverse arg-vars))))
-     '()
-     outer-cont
-     t)))
 
 (defun-compile-time cps-convert-multiple-value-call-internal
     (nondeterministic? function forms continuation types value? environment
@@ -2400,36 +4909,34 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
             (push (list form c) *tagbody-tags*)
             (push (list c) segments))))
     (push nil (rest (first segments)))
-    (let ((segments (reverse segments))
-          (ignored (gensym "IGNORED-"))
-          (other-arguments (gensym "OTHER-")))
-      ;; Add DYNAMIC-EXTENT declarations for LABELS functions
-      ;; This enables stack allocation instead of heap allocation for closures
-      (let ((function-names (mapcar #'first (rest segments))))
-        `(labels ,(mapcar
-                   #'(lambda (segment)
-                       (let ((next (rest (member segment segments :test #'eq))))
-                         `(,(first segment)
-                            (&optional ,ignored &rest ,other-arguments)
-                            (declare (ignore ,ignored ,other-arguments))
-                            ,(cps-convert-progn
-                              (reverse (rest segment))
-                              (if next `#',(first (first next)) continuation)
-                              (if next '() types)
-                              (or next value?)
-                              environment))))
-                   (rest segments))
-           ;; Add DYNAMIC-EXTENT declaration for all generated functions
-           ,@(when function-names
-               `((declare (dynamic-extent ,@(mapcar (lambda (name) `#',name)
-                                                   function-names)))))
-           ,(let ((next (rest segments)))
-                 (cps-convert-progn
-                  (reverse (rest (first segments)))
-                  (if next `#',(first (first next)) continuation)
-                  (if next '() types)
-                  (or next value?)
-                  environment)))))))
+    (let* ((segments (reverse segments))
+           (ignored (gensym "IGNORED-"))
+           (other-arguments (gensym "OTHER-"))
+           (segment-names (mapcar #'first (rest segments))))
+      `(labels ,(mapcar
+                 #'(lambda (segment)
+                     (let ((next (rest (member segment segments :test #'eq))))
+                       `(,(first segment)
+                          (&optional ,ignored &rest ,other-arguments)
+                          (declare (ignore ,ignored ,other-arguments))
+                          ,(cps-convert-progn
+                            (reverse (rest segment))
+                            (if next `#',(first (first next)) continuation)
+                            (if next '() types)
+                            (or next value?)
+                            environment))))
+                 (rest segments))
+         ,@(when segment-names
+             `((declare (dynamic-extent
+                         ,@(mapcar (lambda (n) `(function ,n))
+                                   segment-names)))))
+         ,(let ((next (rest segments)))
+               (cps-convert-progn
+                (reverse (rest (first segments)))
+                (if next `#',(first (first next)) continuation)
+                (if next '() types)
+                (or next value?)
+                environment))))))
 
 (defun-compile-time cps-convert-local-setf/setq
     (arguments continuation types value? environment)
@@ -2471,6 +4978,52 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
            t
            environment)))))
 
+(defun-compile-time continuation-primary-param (params)
+  (block found
+    (let ((after-keyword? nil))
+      (dolist (p params nil)
+        (cond ((member p lambda-list-keywords :test #'eq)
+               (setf after-keyword? (not (eq p '&optional))))
+              (after-keyword? nil)
+              (t (return-from found
+                   (if (consp p) (first p) p))))))))
+
+(defun-compile-time split-leading-declares (body)
+  (let ((decls '()))
+    (loop while (and body (consp (car body)) (eq (caar body) 'declare))
+          do (push (pop body) decls))
+    (values (nreverse decls) body)))
+
+(defun-compile-time inject-type-into-magic-continuation (continuation types)
+  (let* ((lam       (second continuation))
+         (params    (second lam))
+         (rest-body (rest (rest lam)))
+         (primary   (continuation-primary-param params)))
+    (when (and primary (symbolp primary))
+      (cl:multiple-value-bind (decls body) (split-leading-declares rest-body)
+        `(function (lambda ,params
+                    ,@decls
+                    (let ((,primary (the (and ,@types) ,primary)))
+                      (declare (type (and ,@types) ,primary))
+                      ,@body)))))))
+
+(defun-compile-time wrap-runtime-the-continuation (cps-name arg-vars c types outer-cont)
+  (let ((v (gensym "V-"))
+        (rest (gensym "REST-"))
+        (wrap-fn (gensym "TYPED-K-")))
+    (possibly-beta-reduce-funcall
+     `#'(lambda (,c)
+          (declare (magic))
+          (flet ((,wrap-fn (&optional ,v &rest ,rest)
+                   (declare (magic) (ignorable ,rest))
+                   (apply ,c (the (and ,@types) ,v) ,rest)))
+            (declare (ignorable (function ,wrap-fn))
+                     (dynamic-extent (function ,wrap-fn)))
+            (,cps-name #',wrap-fn ,@(reverse arg-vars))))
+     '()
+     outer-cont
+     t)))
+
 (defun-compile-time cps-convert-call (function-name
                                       arguments
                                       continuation
@@ -2481,7 +5034,9 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                                       arg-vars)
   (if (null arguments)
       (let* ((c (gensym "CONTINUATION-"))
-             (cps-name (cps-convert-function-name function-name))
+             (cps-name (let ((rec (function-record-or-lexical function-name)))
+                         (or (and rec (function-record-cps-name rec))
+                             (cps-convert-function-name function-name))))
              (outer-cont (if value? continuation (void-continuation continuation))))
         (cond
           ((or (not value?) (null types))
@@ -2572,7 +5127,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                  (perform-substitutions form environment)
                  value?)
                 (case form-type
-                  (lambda-list (error "This shouldn't happen"))
+                  (lambda-list (error "[cps-convert] - This shouldn't happen (A)"))
                   (variable (possibly-beta-reduce-funcall
                              continuation types form value?))
                   (block (cps-convert-block (second form)
@@ -2587,7 +5142,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                     types
                     (perform-substitutions form environment)
                     value?))
-                  (go (error "This shouldn't happen"))
+                  (go (error "[cps-convert] - This shouldn't happen (B)"))
                   (if (cps-convert-if (second form)
                                       (third form)
                                       (if (null (rest (rest (rest form))))
@@ -2608,6 +5163,19 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                           types
                           value?
                           environment)))
+                  ((flet labels)
+                   (cl:multiple-value-bind (body declarations)
+                       (peal-off-documentation-string-and-declarations
+                        (rest (rest form)))
+                     (cps-convert-flet/labels
+                      (second form)
+                      body
+                      declarations
+                      continuation
+                      types
+                      value?
+                      environment
+                      (if (eq form-type 'labels) :labels :flet))))
                   (let* (cl:multiple-value-bind (body declarations)
                             (peal-off-documentation-string-and-declarations
                              (rest (rest form)))
@@ -2691,7 +5259,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                     types
                     value?
                     environment))
-                  (macro-call (error "This shouldn't happen"))
+                  (macro-call (error "[cps-convert] - This shouldn't happen (C)"))
                   (lambda-call
                    (unless (deterministic-lambda-list?
                             (second (first form)) environment)
@@ -2706,14 +5274,14 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                                      (not (member argument lambda-list-keywords
                                                   :test #'eq))))
                             (second (first form)))
-                     (error "Cannot (currently) handle a nondeterministic~%~
+                     (error "[cps-convert] - Cannot (currently) handle a nondeterministic~%~
                          form whose CAR is a LAMBDA expression with~%~
                          lambda list keywords or arguments that are not~%~
                          symbols: ~S"
                             form))
                    (unless (= (length (second (first form)))
                               (length (rest form)))
-                     (error "The form ~S has a CAR which is a LAMBDA~%~
+                     (error "[cps-convert] - The form ~S has a CAR which is a LAMBDA~%~
                          expression which takes a different number of~%~
                          arguments than it is called with"
                             form))
@@ -2732,7 +5300,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                       environment)))
                   ((symbol-call setf-call)
                    (if (function-record-deterministic?
-                        (get-function-record (first form)))
+                        (function-record-or-lexical (first form)))
                        (cps-non-convert-call (first form)
                                              (rest form)
                                              continuation
@@ -2835,21 +5403,7 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
                       ,@(if documentation-string (list documentation-string))
                       ,@declarations
                       (declare
-                       (ignore
-                        ,@(reduce
-                           #'append
-                           (mapcar
-                            #'(lambda (argument)
-                                (if (consp argument)
-                                    (if (and (consp (rest argument))
-                                             (consp (rest (rest argument))))
-                                        (list (first argument) (third argument))
-                                        (list (first argument)))
-                                    (list argument)))
-                            (set-difference
-                             lambda-list
-                             lambda-list-keywords
-                             :test #'eq)))))
+                       (ignore ,@(lambda-list-variable-names lambda-list)))
                       (screamer-error
                        "Function ~S is a nondeterministic function. As such, it~%~
                    must be called only from a nondeterministic context."
@@ -3376,7 +5930,7 @@ PRINT-VALUES is analogous to the standard top-level user interface in Prolog."
 (defvar *fail* (lambda ()
                  (if *nondeterministic-context*
                      (throw '%fail nil)
-                     (error "Cannot FAIL: no choice-point to backtrack to."))))
+                     (error "[a-boolean-nondeterministic] - Cannot FAIL: no choice-point to backtrack to."))))
 
 (defun fail ()
   "Backtracks to the most recent choice-point.
@@ -3541,9 +6095,9 @@ function."
 
 (defun map-nondeterministic (result-type function sequence &rest sequences)
  (unless (subtypep result-type 'sequence)
-  (error "~A is a bad result type specifier for sequences." result-type))
+  (error "[map-nondeterministic] - ~A is a bad result type specifier for sequences." result-type))
  (unless (every #'(lambda (seq) (and seq (sequencep seq))) (cons sequence sequences))
-  (error "SEQUENCE must be a sequence"))
+  (error "[map-nondeterministic] - SEQUENCE must be a sequence"))
   (cond
     ((not (nondeterministic-function? function))
      (apply #'map result-type function sequence sequences))
@@ -3723,7 +6277,7 @@ either a list or a vector."
               (dotimes (i n)
                 (choice-point-internal (funcall continuation (aref sequence i)))))
              (funcall continuation (aref sequence n))))))
-      (t (error "SEQUENCE must be a sequence")))))
+      (t (error "[a-member-of-nondeterministic] - SEQUENCE must be a sequence")))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (declare-nondeterministic 'a-random-member-of))
@@ -3738,7 +6292,7 @@ either a list or a vector."
 
 (cl:defun a-random-member-of-nondeterministic (continuation sequence)
  (unless (sequencep sequence)
-  (error "SEQUENCE must be a sequence, got ~A" (type-of sequence)))
+  (error "[a-random-member-of-nondeterministic] - SEQUENCE must be a sequence, got ~A" (type-of sequence)))
   (let ((sequence (value-of sequence)))
     (unless (alexandria:emptyp sequence)
       (choice-point-external
@@ -3823,14 +6377,14 @@ either a list or a vector."
   "Returns the least ratio > x with denominator ≤ max-denom, skipping integers.
    If x is already a ratio, returns x."
   (typecase x
-    (ratio x
+    (ratio
      (if (<= (denominator x) max-denom)
-          x
+         x
          (let* ((step (/ 1 max-denom))
                 (result (* (ceiling (/ x step)) step)))
-          (if (integerp result)
-              (+ result (/ 1 max-denom))
-              result))))
+           (if (integerp result)
+               (+ result (/ 1 max-denom))
+               result))))
     (integer
      (+ x (/ 1 max-denom)))
     (t
@@ -4123,12 +6677,12 @@ requiring `slime-enable-evaluate-in-emacs' (the RPC permission is
 granted by `defslimefun' on that function)."
   (unless *screamer-output-channel-id*
     (unless *iscream?*
-      (error "Cannot start screamer-output channel unless *ISCREAM?* is T."))
+      (error "[start-screamer-output-channel] - Cannot start screamer-output channel unless *ISCREAM?* is T."))
     (let* ((channel-class    (find-symbol "CHANNEL" :swank))
            (id-slot          (find-symbol "ID" :swank))
            (ed-rpc-no-wait   (find-symbol "ED-RPC-NO-WAIT" :swank)))
       (unless (and channel-class id-slot ed-rpc-no-wait)
-        (error "swank channel API (channel / ed-rpc-no-wait) not~%~
+        (error "[start-screamer-output-channel] - swank channel API (channel / ed-rpc-no-wait) not~%~
                 available in this SLIME version."))
       (let* ((ch (make-instance channel-class :name "screamer-output"))
              (id (slot-value ch id-slot)))
@@ -4143,7 +6697,7 @@ EVAL-IN-EMACS, just a `(:channel-send ID MSG)' event."
   (funcall (or *swank-send-to-remote-channel*
                (setf *swank-send-to-remote-channel*
                      (or (find-symbol "SEND-TO-REMOTE-CHANNEL" :swank)
-                         (error "swank::send-to-remote-channel not~%~
+                         (error "[screamer-slime-send] - swank::send-to-remote-channel not~%~
                                  available in this SLIME version."))))
            *screamer-output-channel-id*
            msg))
@@ -4165,7 +6719,7 @@ screamer-slime.el loaded on the Emacs side."
         (result (gensym "RESULT-")))
     `(progn
        (unless *iscream?*
-         (error "Cannot do LOCAL-OUTPUT unless *ISCREAM?* is T (Screamer~%~
+         (error "[local-output] - Cannot do LOCAL-OUTPUT unless *ISCREAM?* is T (Screamer~%~
                  running under SLIME with screamer-slime.el loaded)."))
        (unless *screamer-output-channel-id*
          (start-screamer-output-channel))
@@ -4515,7 +7069,7 @@ SAFEST-FAREY-RANGE-SIZE under this denominator.")
       ((variable? x)
        (if (and (not (eq (variable-enumerated-domain x) t))
                 (not (null (variable-enumerated-antidomain x))))
-           (error "This shouldn't happen"))
+           (error "[print-variable] - This shouldn't happen"))
        (format stream "[~S" (variable-name x))
       (format stream "~A"
         (cond
@@ -4646,12 +7200,9 @@ Otherwise returns nil."
 copy of the tree with all variables dereferenced.
 Otherwise returns the value of X."
   (let ((x (value-of x)))
-    (etypecase x
+    (typecase x
       (cons (if (null (cdr (last x)))
-                ;; If terminates with nil (ie normal list)
-                ;; use mapcar to not consume stack
                 (mapcar #'apply-substitution x)
-                ;; Otherwise recurse on the car and cdr
                 (cons (apply-substitution (car x))
                       (apply-substitution (cdr x)))))
       (string x)
@@ -4666,7 +7217,7 @@ Otherwise returns the value of X."
                  (setf (row-major-aref arr idx)
                        (apply-substitution (row-major-aref arr idx))))
                arr))
-      (t x))))
+      (otherwise x))))
 
 (cl:defun occurs-in? (x value)
   ;; NOTE: X must be a variable such that (EQ X (VALUE-OF X)).
@@ -6072,7 +8623,7 @@ Otherwise returns the value of X."
               (>= max-denom 1))          
    (fail))
    (if (variable? max-denom)
-       (error "The current implementation does not allow maximum denominators%~
+       (error "[restrict-max-denom!] - The current implementation does not allow maximum denominators%~
               of RATIO/RATIONAL VARIABLES to be an unbound variable"))
    (when (or (eq (variable-value x) x) (not (variable? (variable-value x))))
          (cond ((variable-integer? x)
@@ -6193,7 +8744,7 @@ Otherwise returns the value of X."
   (if (and (variable-integer? z) (or (variable-ratio? x) (variable-ratio? y)))
       (restrict-ratio! x))
   (if (and (variable-ratio? z) (or (variable-integer? x) (variable-integer? y)))
-      (unless (variable-integer? x) (restrict-ratio! x)))
+      (unless (variable-integer? x) (restrict-ratio! x)))   
   (if (and (variable-rational? z) (or (variable-rational? x) (variable-rational? y)))
       (restrict-rational! x))
   (if (and (variable-float? z) (variable-rational? y))
@@ -8054,7 +10605,7 @@ in the process of determining a good search order."
                  (zerop (- (variable-upper-bound variable)
                            (variable-lower-bound variable))))
             (variable-lower-bound variable))
-           (t (error "It is only possible to linear force a variable that~%~
+           (t (error "[linear-force] - It is only possible to linear force a variable that~%~
                         has a countable domain")))))
     (value-of variable)))
 
@@ -8110,9 +10661,9 @@ in the process of determining a good search order."
                          (rationals-between (variable-lower-bound variable)
                                             (variable-upper-bound variable)
                                             (variable-max-denom variable))))
-                    (t (error "It is only possible to random force a rational variable with~%~
+                    (t (error "[random-force] - It is only possible to random force a rational variable with~%~
                                 a maximum denominator and a small finite range."))))))
-           (t (error "It is only possible to random force a variable that~%~
+           (t (error "[random-force] - It is only possible to random force a variable that~%~
                       has a finite range.")))))
     (value-of variable)))
 
@@ -8214,10 +10765,10 @@ sufficient hooks for the user to define her own force functions.)"
 (defun known?-constraint (f polarity? x)
   (let ((f (value-of f)))
     (if (variable? f)
-        (error "The current implementation does not allow the first argument~%~
+        (error "[known?-constraint] - The current implementation does not allow the first argument~%~
               of FUNCALLV or APPLYV to be an unbound variable"))
     (unless (functionp f)
-      (error "The first argument to FUNCALLV or APPLYV must be a deterministic~%~
+      (error "[known?-constraint] - The first argument to FUNCALLV or APPLYV must be a deterministic~%~
            function"))
         (and (deep-finite-domain? x)
              (block exit
@@ -8306,10 +10857,10 @@ sufficient hooks for the user to define her own force functions.)"
         (multiple-unassigned-variables? nil)
         (unassigned-variable nil))
     (if (variable? predicate)
-        (error "The current implementation does not allow the first argument~%~
+        (error "[assert!-constraint-gfc] - The current implementation does not allow the first argument~%~
               of FUNCALLV or APPLYV to be an unbound variable"))
     (unless (functionp predicate)
-      (error "The first argument to FUNCALLV or APPLYV must be a deterministic~%~
+      (error "[assert!-constraint-gfc] - The first argument to FUNCALLV or APPLYV must be a deterministic~%~
            function"))
     (dolist (variable (variables-in (copy-list variables)))
       (unless (deep-bound? variable)
@@ -8353,10 +10904,10 @@ sufficient hooks for the user to define her own force functions.)"
 (defun assert!-constraint-ac (predicate polarity? variables)
   (let ((predicate (value-of predicate)))
     (if (variable? predicate)
-        (error "The current implementation does not allow the first argument~%~
+        (error "[assert!-constraint-ac] - The current implementation does not allow the first argument~%~
               of FUNCALLV or APPLYV to be an unbound variable"))
     (unless (functionp predicate)
-      (error "The first argument to FUNCALLV or APPLYV must be a deterministic~%~
+      (error "[assert!-constraint-ac] - The first argument to FUNCALLV or APPLYV must be a deterministic~%~
            function"))
     (dolist (variable (variables-in variables))
       (attach-noticer!
@@ -8380,10 +10931,10 @@ sufficient hooks for the user to define her own force functions.)"
 (defun funcallv (f &rest x)
   (let ((f (value-of f)))
     (if (variable? f)
-        (error "The current implementation does not allow the first argument~%~
+        (error "[funcallv] - The current implementation does not allow the first argument~%~
               of FUNCALLV to be an unbound variable"))
     (unless (functionp f)
-      (error "The first argument to FUNCALLV must be a deterministic function"))
+      (error "[funcallv] - The first argument to FUNCALLV must be a deterministic function"))
         (if (deep-bound? x)
             (apply f (deep-value-of x))
             (let ((z (make-variable)))
@@ -8401,7 +10952,7 @@ sufficient hooks for the user to define her own force functions.)"
 
 (defun arguments-for-applyv (x xs)
   (unless (bound? (first (last (cons x xs))))
-    (error "The current implementation does not allow the last argument to~%~
+    (error "[arguments-for-applyv] - The current implementation does not allow the last argument to~%~
           APPLYV to be an unbound variable"))
   (apply #'list* (mapcar #'value-of (cons x xs))))
 
@@ -8420,10 +10971,10 @@ sufficient hooks for the user to define her own force functions.)"
 (defun applyv (f x &rest xs)
   (let ((f (value-of f)))
     (if (variable? f)
-        (error "The current implementation does not allow the first argument~%~
+        (error "[applyv] - The current implementation does not allow the first argument~%~
               of APPLYV to be an unbound variable"))
     (unless (functionp f)
-      (error "The first argument to APPLYV must be a deterministic function"))
+      (error "[applyv] - The first argument to APPLYV must be a deterministic function"))
     (let ((arguments (apply #'list* (mapcar #'value-of (cons x xs)))))
           (if (deep-bound? arguments)
               (apply f (deep-value-of arguments))
@@ -9588,7 +12139,7 @@ VALUES can be either a vector or a list designator."
     (assert! (memberv v (alexandria::shuffle (copy-list values))))
     (value-of v)))
 
-(defmacro-compile-time n-variables (n var-fn &rest args)
+(defmacro n-variables (n var-fn &rest args)
   "Generate N variables using VAR-FN and ARGS.
   Ex.: (n-variables 3 'an-integer-betweenv 0 10)."
   (let ((variables (gensym "VARIABLES")))
@@ -9597,7 +12148,7 @@ VALUES can be either a vector or a list designator."
       (push (apply ,var-fn (list ,@args)) ,variables))
       ,variables)))
 
-(defmacro-compile-time n-lists-of-variables (sizes var-fn &rest args)
+(defmacro n-lists-of-variables (sizes var-fn &rest args)
   "Generate lists of variables. SIZES is a list, each element is the number of variables in that list.
 VAR-FN and ARGS are used to construct each variable.
   Ex.: (n-lists-of-variables '(2 3) 'an-integer-betweenv 0 10)."
@@ -9747,7 +12298,7 @@ domain size is odd, the halves differ in size by at most one."
                            (restrict-lower-bound! variable midpoint)
                            (if (= old-bound (variable-lower-bound variable))
                                (fail))))))))
-          (t (error "It is only possible to divide and conquer force a~%~
+          (t (error "[divide-and-conquer-force] - It is only possible to divide and conquer force a~%~
                   variable that has a countable domain or a finite range")))))
   (value-of variable))
 

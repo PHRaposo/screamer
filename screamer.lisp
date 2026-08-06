@@ -169,6 +169,7 @@ searches and avoid mid-search reallocation."
                          (:predicate nondeterministic-function?-internal))
   function)
 
+#+(or sbcl ccl allegro lispworks)
 (define-condition-compile-time screamer-error (error)
     ((message :initarg :message :initform nil)
      (args :initarg :args :initform nil))
@@ -179,7 +180,8 @@ searches and avoid mid-search reallocation."
                      (apply #'format nil
                             (slot-value condition 'message)
                             (slot-value condition 'args))))))
-
+                            
+#+(or sbcl ccl allegro lispworks)
 (defun-compile-time screamer-error (header &rest args)
   (error 'screamer-error
          :message (remove #\return
@@ -202,6 +204,29 @@ Note that the default forms of &OPTIONAL and &KEY arguments and the
 initialization forms of &AUX variables are always deterministic
 contexts even though they may appear inside a SCREAMER::DEFUN."))
          :args args))
+
+#-(or sbcl ccl allegro lispworks)
+(defun-compile-time screamer-error (header &rest args)
+  (apply
+   #'error
+   (concatenate
+    'string
+    header
+    "~2%There are nine types of nondeterministic contexts:
+
+  1. the body of a function defined with SCREAMER::DEFUN
+  2. the body of a FOR-EFFECTS macro invocation
+  3. the body of an ALL-VALUES macro invocation
+  4. the first argument of a ONE-VALUE macro invocation
+  5. the body of a PRINT-VALUES macro invocation
+  6. the second argument of an ITH-VALUE macro invocation
+  7. the second argument of an N-VALUES macro invocation
+  8. the body of a POSSIBLY? macro invocation
+  9. the body of a NECESSARILY? macro invocation.
+
+Note that the default forms of &OPTIONAL and &KEY arguments and the
+initialization forms of &AUX variables are always deterministic
+contexts even though they may appear inside a SCREAMER::DEFUN.") args))
 
 (defun-compile-time get-function-record (function-name)
   (or (gethash function-name *function-record-table*)

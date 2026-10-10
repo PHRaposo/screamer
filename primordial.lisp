@@ -887,6 +887,16 @@
     (assert! (memberv x #(3 4 5)))
     (known? (andv (>=v x 3) (<=v x 5)))))
 
+(defun test71 ()
+  (let ((x (an-integer-betweenv 0 1d38)))
+    (assert! (>=v x 3))
+    (known? (>=v x 3))))
+
+(defun test72 ()
+  (let ((x (an-integer-betweenv -1d38 0)))
+    (assert! (<=v x -4))
+    (known? (<=v x -4))))
+
 ;;; This is the classic Screamer test entry point.
 ;;; screamer-tests::prime-ordeal runs the same tests under Stefil.
 (defun prime-ordeal ()
@@ -957,6 +967,8 @@
   (unless (test68) (format t "~% Test 68 failed") (setf bug? t))
   (unless (test69) (format t "~% Test 69 failed") (setf bug? t))
   (unless (test70) (format t "~% Test 70 failed") (setf bug? t))
+  (unless (test71) (format t "~% Test 71 failed") (setf bug? t))
+  (unless (test72) (format t "~% Test 72 failed") (setf bug? t))
   (if bug? (error "Screamer has a bug")))
  t)
 

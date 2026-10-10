@@ -3784,7 +3784,24 @@ either a list or a vector."
  (typep x 'ratio))
 
 ;;; Farey generators
-  
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline modular-inverse)))
+
+(defun-compile-time modular-inverse (a modulus)
+  (declare (type integer a modulus))
+  (let ((old-r modulus)
+        (r (mod a modulus))
+        (old-s 0)
+        (s 1))
+    (loop while (not (zerop r))
+          do (let ((quotient (floor old-r r)))
+               (psetq old-r r
+                      r (- old-r (* quotient r))
+                      old-s s
+                      s (- old-s (* quotient s)))))
+    (mod old-s modulus)))
+
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (declaim (inline farey-next-value)))
 
@@ -3794,26 +3811,107 @@ either a list or a vector."
            (type integer max-denominator))
   (let* ((a (the integer (numerator frac)))
          (b (the integer (denominator frac))))
-    (do ((q (the fixnum max-denominator) (the fixnum (1- q))))
-        ((< q 1) nil)
-      (let ((p (the integer (floor (+ (* a q) 1) b))))
-        (when (and (= (gcd p q) 1)
-                   (> (/ p q) (/ a b)))
-          (return (/ p q)))))))
+    (if (<= b max-denominator)
+        (let* ((d (if (= b 1)
+                      max-denominator
+                      (let* ((inverse (modular-inverse a b))
+                             (residue (mod (- inverse) b)))
+                        (+ residue
+                           (* (floor (- max-denominator residue) b) b)))))
+               (c (/ (1+ (* a d)) b)))
+          (/ c d))
+        (do ((q max-denominator (1- q)))
+            ((< q 1) nil)
+          (let ((p (floor (+ (* a q) 1) b)))
+            (when (and (= (gcd p q) 1)
+                       (> (/ p q) frac))
+              (return (/ p q))))))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (declaim (inline farey-prev-value)))
 
 (cl:defun farey-prev-value (frac max-denominator)
   "Returns the previous Farey fraction before FRAC with denominator <= max-denominator, starting from high denominators."
-  (let* ((a (numerator frac))
-         (b (denominator frac)))
-    (do ((q max-denominator (1- q)))
-        ((< q 1) nil)
-      (let ((p (ceiling (- (* a q) 1) b)))
-        (when (and (= (gcd p q) 1)
-                   (< (/ p q) (/ a b)))
-          (return (/ p q)))))))
+  (declare (type rational frac)
+           (type integer max-denominator))
+  (let* ((a (the integer (numerator frac)))
+         (b (the integer (denominator frac))))
+    (if (<= b max-denominator)
+        (let* ((d (if (= b 1)
+                      max-denominator
+                      (let ((residue (modular-inverse a b)))
+                        (+ residue
+                           (* (floor (- max-denominator residue) b) b)))))
+               (c (/ (1- (* a d)) b)))
+          (/ c d))
+        (do ((q max-denominator (1- q)))
+            ((< q 1) nil)
+          (let ((p (ceiling (- (* a q) 1) b)))
+            (when (and (= (gcd p q) 1)
+                       (< (/ p q) frac))
+              (return (/ p q))))))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline farey-predecessor farey-bracket)))
+
+(defun-compile-time farey-predecessor (numerator denominator maximum-denominator)
+  (if (= denominator 1)
+      (values (- (* numerator maximum-denominator) 1)
+              maximum-denominator)
+      (let* ((d0 (modular-inverse (mod numerator denominator) denominator))
+             (n0 (/ (- (* numerator d0) 1) denominator))
+             (k (floor (- maximum-denominator d0) denominator)))
+        (values (+ n0 (* k numerator))
+                (+ d0 (* k denominator))))))
+
+(defun-compile-time farey-bracket (numerator denominator maximum-denominator)
+  (let* ((integer-part (floor numerator denominator))
+         (left-numerator integer-part)
+         (left-denominator 1)
+         (right-numerator (1+ integer-part))
+         (right-denominator 1))
+    (when (= (* integer-part denominator) numerator)
+      (return-from farey-bracket
+        (values numerator denominator numerator denominator t)))
+    (loop
+      (when (> (+ left-denominator right-denominator) maximum-denominator)
+        (return (values left-numerator left-denominator
+                        right-numerator right-denominator nil)))
+      (let ((left-distance (- (* numerator left-denominator)
+                              (* denominator left-numerator)))
+            (right-distance (- (* denominator right-numerator)
+                               (* numerator right-denominator))))
+        (cond
+          ((= left-distance right-distance)
+           (let ((n (+ left-numerator right-numerator))
+                 (d (+ left-denominator right-denominator)))
+             (return (values n d n d t))))
+          ((> left-distance right-distance)
+           (let ((step (min (floor left-distance right-distance)
+                            (floor (- maximum-denominator left-denominator)
+                                   right-denominator))))
+             (when (zerop step)
+               (return (values left-numerator left-denominator
+                               right-numerator right-denominator nil)))
+             (incf left-numerator (* step right-numerator))
+             (incf left-denominator (* step right-denominator))
+             (when (= (* denominator left-numerator)
+                      (* numerator left-denominator))
+               (return (values left-numerator left-denominator
+                               left-numerator left-denominator t)))))
+          (t
+           (let ((step (min (floor right-distance left-distance)
+                            (floor (- maximum-denominator right-denominator)
+                                   left-denominator))))
+             (when (zerop step)
+               (return (values left-numerator left-denominator
+                               right-numerator right-denominator nil)))
+             (incf right-numerator (* step left-numerator))
+             (incf right-denominator (* step left-denominator))
+             (when (= (* denominator right-numerator)
+                      (* numerator right-denominator))
+               (return (values right-numerator right-denominator
+                               right-numerator right-denominator t))))))))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (declaim (inline make-farey-generator-start)))
@@ -3843,81 +3941,101 @@ either a list or a vector."
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (declaim (inline closest-ratio-lower)))
-  
+
 (defun-compile-time closest-ratio-lower (x max-denom)
-  "Returns the least ratio > x with denominator ≤ max-denom, skipping integers.
-   If x is already a ratio, returns x."
-  (typecase x
-    (ratio x
-     (if (<= (denominator x) max-denom)
-          x
-         (let* ((step (/ 1 max-denom))
-                (result (* (ceiling (/ x step)) step)))
-          (if (integerp result)
-              (+ result (/ 1 max-denom))
-              result))))
-    (integer
-     (+ x (/ 1 max-denom)))
-    (t
-     (let* ((step (/ 1 max-denom))
-            (result (* (ceiling (/ x step)) step)))
-       (if (integerp result)
-           (+ result (/ 1 max-denom))
-           result)))))
+  "Returns the least non-integer ratio >= X with denominator <= MAX-DENOM."
+  (let ((result (closest-rational-upper x max-denom)))
+    (if (integerp result)
+        (farey-next-value result max-denom)
+        result)))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline closest-ratio-upper)))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (declaim (inline closest-ratio-upper)))
 
 (defun-compile-time closest-ratio-upper (x max-denom)
-  "Returns the greatest ratio < x with denominator ≤ max-denom, skipping integers.
-   If x is already a ratio, returns x."
-  (typecase x
-    (ratio
-     (if (<= (denominator x) max-denom)
-         x
-         (let* ((step (/ 1 max-denom))
-                (result (* (floor (/ x step)) step)))
-           (if (integerp result)
-               (- result (/ 1 max-denom))
-               result))))
-    (integer
-     (- x (/ 1 max-denom)))
-    (t
-     (let* ((step (/ 1 max-denom))
-            (result (* (floor (/ x step)) step)))
-       (if (integerp result)
-           (- result (/ 1 max-denom))
-           result)))))
+  "Returns the greatest non-integer ratio <= X with denominator <= MAX-DENOM."
+  (let ((result (closest-rational-lower x max-denom)))
+    (if (integerp result)
+        (farey-prev-value result max-denom)
+        result)))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  (declaim (inline closest-rational-lower)))
+  (declaim (inline closest-rational-bound-components
+                   closest-rational-bounds
+                   closest-rational-lower
+                   closest-rational-upper)))
+
+(defun-compile-time closest-rational-bound-components (x max-denom)
+  (declare (type rational x)
+           (type fixnum max-denom)
+           (optimize (speed 3) (safety 1) (debug 0)))
+  (multiple-value-bind (integer-part remainder)
+      (floor (numerator x) (denominator x))
+    (let ((n remainder)
+          (d (denominator x))
+          (p0 0) (q0 1)
+          (p1 1) (q1 0))
+      (declare (type integer integer-part n d p0 p1)
+               (type fixnum q0 q1))
+      (loop
+        (multiple-value-bind (a r) (floor n d)
+          (let ((q2 (+ q0 (* a q1))))
+            (when (> q2 max-denom)
+              (let* ((k (the fixnum (floor (- max-denom q0) q1)))
+                     (bp (+ p0 (* k p1)))
+                     (bq (the fixnum (+ q0 (* k q1))))
+                     (an (+ (* integer-part bq) bp))
+                     (bn (+ (* integer-part q1) p1)))
+                (if (< (* an q1) (* bn bq))
+                    (return (values an bq bn q1))
+                    (return (values bn q1 an bq)))))
+            (psetq p0 p1
+                   q0 q1
+                   p1 (+ p0 (* a p1))
+                   q1 q2
+                   n d
+                   d r)))))))
+
+(defun-compile-time closest-rational-bounds (x max-denom)
+  "Returns the greatest rational <= X and the least rational >= X,
+with denominators at most MAX-DENOM."
+  (declare (type fixnum max-denom)
+           (optimize (speed 3) (safety 1) (debug 0)))
+  (let ((x (if (rationalp x) x (rationalize x))))
+    (declare (type rational x))
+    (if (<= (denominator x) max-denom)
+        (values x x)
+        (multiple-value-bind (ln ld rn rd)
+            (closest-rational-bound-components x max-denom)
+          (values (/ ln ld) (/ rn rd))))))
 
 (defun-compile-time closest-rational-lower (x max-denom)
   "Returns the greatest rational <= x with denominator ≤ max-denom, including integers."
-  (typecase x
-    (rational
-     (if (<= (denominator x) max-denom)
-         x
-         (let* ((step (/ 1 max-denom)))
-          (* (floor (/ x step)) step))))
-    (t
-     (let* ((step (/ 1 max-denom)))
-      (* (floor (/ (rationalize x) step)) step)))))
-
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (declaim (inline closest-rational-upper)))
+  (declare (type fixnum max-denom)
+           (optimize (speed 3) (safety 1) (debug 0)))
+  (let ((x (if (rationalp x) x (rationalize x))))
+    (declare (type rational x))
+    (if (<= (denominator x) max-denom)
+        x
+        (multiple-value-bind (ln ld)
+            (closest-rational-bound-components x max-denom)
+          (/ ln ld)))))
 
 (defun-compile-time closest-rational-upper (x max-denom)
   "Returns the least rational >= x with denominator ≤ max-denom, including integers."
-  (typecase x
-    (rational
-     (if (<= (denominator x) max-denom)
-         x
-         (let* ((step (/ 1 max-denom)))
-          (* (ceiling (/ x step)) step))))
-    (t
-     (let* ((step (/ 1 max-denom)))
-      (* (ceiling (/ (rationalize x) step)) step)))))
+  (declare (type fixnum max-denom)
+           (optimize (speed 3) (safety 1) (debug 0)))
+  (let ((x (if (rationalp x) x (rationalize x))))
+    (declare (type rational x))
+    (if (<= (denominator x) max-denom)
+        x
+        (multiple-value-bind (ln ld rn rd)
+            (closest-rational-bound-components x max-denom)
+          (declare (ignore ln ld))
+          (/ rn rd)))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (declaim (inline strict-next-in-domain)))
@@ -4108,14 +4226,6 @@ either a list or a vector."
         (fail)
         variable)))
 
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (declaim (inline safest-farey-range-size)))
-
-(defun-compile-time safest-farey-range-size (desired-count max-denom)
-  "Returns the maximum interval length for which the Farey sequence with max-denom
-   will contain at most desired-count rationals (approximate, using Farey size formula)."
-  (ith-value (1- desired-count) (a-rational-above 0 max-denom)))
-
 ;;; The following two functions work when Screamer is running under SLIME
 ;;; with screamer-slime.el loaded on the Emacs side. The user opts in by
 ;;; setting *iscream?* to T after loading both ends.
@@ -4207,13 +4317,65 @@ screamer-slime.el loaded on the Emacs side."
 
 (defvar *name* 0 "The counter for anonymous names.")
 
-(defvar *minimum-shrink-ratio* 1e-8
+(defvar *minimum-shrink-ratio* 1e-2
   "Ignore propagations which reduce the range of a variable by less than this
 ratio.")
 
 (defvar *maximum-discretization-range* 20
   "Discretize integer variables whose range is not greater than this number.
 Discretize all integer variables if NIL. Must be an integer or NIL.")
+
+(defun estimate-farey-domain-size (max-denom lower-bound upper-bound)
+  "Returns the exact number of reduced rationals in [LOWER-BOUND, UPPER-BOUND]
+with denominator at most MAX-DENOM while that number is not greater than
+*MAXIMUM-DISCRETIZATION-RANGE*. Returns one greater than that limit as soon as
+the domain is known to exceed it."
+  (declare (type fixnum max-denom)
+           (type rational lower-bound upper-bound)
+           (optimize (speed 3) (safety 1) (debug 0)))
+  (when (> lower-bound upper-bound)
+    (rotatef lower-bound upper-bound))
+  (let ((lower-numerator (numerator lower-bound))
+        (lower-denominator (denominator lower-bound))
+        (upper-numerator (numerator upper-bound))
+        (upper-denominator (denominator upper-bound)))
+    (multiple-value-bind
+          (left-numerator left-denominator
+           right-numerator right-denominator exact-p)
+        (farey-bracket lower-numerator lower-denominator max-denom)
+      (let ((count 0)
+            (previous-numerator 0)
+            (previous-denominator 1)
+            (current-numerator 0)
+            (current-denominator 1))
+        (declare (type fixnum count previous-denominator current-denominator))
+        (if exact-p
+            (progn
+              (setf current-numerator left-numerator
+                    current-denominator left-denominator)
+              (multiple-value-setq (previous-numerator previous-denominator)
+                (farey-predecessor current-numerator current-denominator max-denom)))
+            (setf previous-numerator left-numerator
+                  previous-denominator left-denominator
+                  current-numerator right-numerator
+                  current-denominator right-denominator))
+        (loop
+          (when (> (* current-numerator upper-denominator)
+                   (* upper-numerator current-denominator))
+            (return count))
+          (incf count)
+          (when (> count *maximum-discretization-range*)
+            (return (1+ *maximum-discretization-range*)))
+          (let* ((k (floor (+ max-denom previous-denominator)
+                           current-denominator))
+                 (next-numerator (- (* k current-numerator)
+                                    previous-numerator))
+                 (next-denominator (- (* k current-denominator)
+                                      previous-denominator)))
+            (setf previous-numerator current-numerator
+                  previous-denominator current-denominator
+                  current-numerator next-numerator
+                  current-denominator next-denominator)))))))
 
 (defvar *strategy* :gfc
   "Strategy to use for FUNCALLV and APPLYV. Either :GFC for Generalized
@@ -4225,7 +4387,7 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
 (defvar *max-denom* 1000000
   " When non-NIL, RESTRICT-LOWER-BOUND!, RESTRICT-UPPER-BOUND! and RESTRICT-BOUNDS!
 discretize a REAL variable whose bounds become rational and whose range fits within
-SAFEST-FAREY-RANGE-SIZE under this denominator.")
+ESTIMATE-FAREY-DOMAIN-SIZE under this denominator.")
 
 ;;; note: Enable this to use CLOS instead of DEFSTRUCT for variables.
 #+(or)
@@ -4875,7 +5037,8 @@ Otherwise returns the value of X."
             (let ((lb (variable-lower-bound x))
                   (ub (variable-upper-bound x)))
               (if (and lb ub (variable-max-denom x)
-                         (<= (- ub lb) (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x))))
+                         (<= (estimate-farey-domain-size (variable-max-denom x) lb ub)
+                             *maximum-discretization-range*))
                 (set-enumerated-domain!
                   x (ratios-between lb ub (variable-max-denom x))))))
             ((not (every #'ratiop (variable-enumerated-domain x)))
@@ -4963,16 +5126,20 @@ Otherwise returns the value of X."
                                 (variable-upper-bound x)))))
                         ((and (variable-ratio? x)
                               (variable-max-denom x))
-                        (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
-                                  (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x)))       
+                        (when (<= (estimate-farey-domain-size (variable-max-denom x)
+                                                      (variable-lower-bound x)
+                                                      (variable-upper-bound x))
+                                  *maximum-discretization-range*)
                           (set-enumerated-domain!
                             x (ratios-between (variable-lower-bound x)
                                               (variable-upper-bound x)
                                               (variable-max-denom x)))))
                       ((and (variable-rational? x)
                             (variable-max-denom x))
-                        (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
-                                  (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x)))
+                        (when (<= (estimate-farey-domain-size (variable-max-denom x)
+                                                      (variable-lower-bound x)
+                                                      (variable-upper-bound x))
+                                  *maximum-discretization-range*)
                           (set-enumerated-domain!
                           x (rationals-between (variable-lower-bound x)
                                                (variable-upper-bound x)
@@ -5264,8 +5431,8 @@ Otherwise returns the value of X."
         (fail))
     (when (or (not (variable-lower-bound x))
               (not (variable-upper-bound x))
-              ;; Note: shrink ratio heuristic only for float variables
-              (variable-nonfloat? x)
+              ;; Apply the shrink ratio heuristic only when the range is below 1.
+              (>= (- (variable-upper-bound x) (variable-lower-bound x)) 1)
               (>= (/ (- lower-bound (variable-lower-bound x))
                      (- (variable-upper-bound x) (variable-lower-bound x)))
                   *minimum-shrink-ratio*))
@@ -5282,14 +5449,18 @@ Otherwise returns the value of X."
            x (integers-between lower-bound (variable-upper-bound x)))))
            ((and (variable-ratio? x)
                     (variable-max-denom x))
-                (when (<= (- (variable-upper-bound x) lower-bound)
-                          (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x)))
+                (when (<= (estimate-farey-domain-size (variable-max-denom x)
+                                                      lower-bound
+                                                      (variable-upper-bound x))
+                          *maximum-discretization-range*)
                   (set-enumerated-domain!
                     x (ratios-between lower-bound (variable-upper-bound x) (variable-max-denom x)))))
            ((and (variable-rational? x)
                  (variable-max-denom x))
-             (if (<= (- (variable-upper-bound x) lower-bound)
-                     (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x)))
+             (if (<= (estimate-farey-domain-size (variable-max-denom x)
+                                                 lower-bound
+                                                 (variable-upper-bound x))
+                     *maximum-discretization-range*)
               (set-enumerated-domain!
                x (rationals-between lower-bound (variable-upper-bound x) (variable-max-denom x)))))
           ((variable-real? x)
@@ -5300,8 +5471,10 @@ Otherwise returns the value of X."
                    *maximum-discretization-range*
                    (rationalp (variable-lower-bound x))
                    (rationalp (variable-upper-bound x))
-                   (<= (- (variable-upper-bound x) (variable-lower-bound x))
-                       (safest-farey-range-size *maximum-discretization-range* *max-denom*)))
+                   (<= (estimate-farey-domain-size *max-denom*
+                                                   (variable-lower-bound x)
+                                                   (variable-upper-bound x))
+                       *maximum-discretization-range*))
               (set-enumerated-domain!
                 x (rationals-between (variable-lower-bound x)
                                      (variable-upper-bound x)
@@ -5337,8 +5510,8 @@ Otherwise returns the value of X."
     (fail))
   (when (or (not (variable-lower-bound x))
             (not (variable-upper-bound x))
-            ;; Note: shrink ratio heuristic only for float variables
-            (variable-nonfloat? x)
+            ;; Apply the shrink ratio heuristic only when the range is below 1.
+            (>= (- (variable-upper-bound x) (variable-lower-bound x)) 1)
             (>= (/ (- (variable-upper-bound x) upper-bound)
                    (- (variable-upper-bound x) (variable-lower-bound x)))
                 *minimum-shrink-ratio*))
@@ -5355,14 +5528,18 @@ Otherwise returns the value of X."
                   x (integers-between (variable-lower-bound x) upper-bound))))
               ((and (variable-ratio? x)
                     (variable-max-denom x))
-                (if (<= (- upper-bound (variable-lower-bound x))
-                          (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x)))
+                (if (<= (estimate-farey-domain-size (variable-max-denom x)
+                                                      (variable-lower-bound x)
+                                                      upper-bound)
+                          *maximum-discretization-range*)
                   (set-enumerated-domain!
                     x (ratios-between (variable-lower-bound x) upper-bound (variable-max-denom x)))))
               ((and (variable-rational? x)
                     (variable-max-denom x))
-                (if (<= (- upper-bound (variable-lower-bound x))
-                          (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x)))
+                (if (<= (estimate-farey-domain-size (variable-max-denom x)
+                                                      (variable-lower-bound x)
+                                                      upper-bound)
+                          *maximum-discretization-range*)
                   (set-enumerated-domain!
                     x (rationals-between (variable-lower-bound x) upper-bound (variable-max-denom x)))))
               ((variable-real? x)
@@ -5373,8 +5550,10 @@ Otherwise returns the value of X."
                        *maximum-discretization-range*
                        (rationalp (variable-lower-bound x))
                        (rationalp (variable-upper-bound x))
-                       (<= (- (variable-upper-bound x) (variable-lower-bound x))
-                           (safest-farey-range-size *maximum-discretization-range* *max-denom*)))
+                       (<= (estimate-farey-domain-size *max-denom*
+                                                       (variable-lower-bound x)
+                                                       (variable-upper-bound x))
+                           *maximum-discretization-range*))
                   (set-enumerated-domain!
                     x (rationals-between (variable-lower-bound x)
                                          (variable-upper-bound x)
@@ -5419,8 +5598,8 @@ Otherwise returns the value of X."
               (fail))
           (when (or (not (variable-lower-bound x))
                     (not (variable-upper-bound x))
-                    ;; Note: shrink ratio heuristic only for float variables
-                    (variable-nonfloat? x)
+                    ;; Apply the shrink ratio heuristic only when the range is below 1.
+                    (>= (- (variable-upper-bound x) (variable-lower-bound x)) 1)
                     (>= (/ (- lower-bound (variable-lower-bound x))
                            (- (variable-upper-bound x) (variable-lower-bound x)))
                     *minimum-shrink-ratio*))
@@ -5434,8 +5613,8 @@ Otherwise returns the value of X."
               (fail))
           (when (or (not (variable-lower-bound x))
                     (not (variable-upper-bound x))
-                    ;; Note: shrink ratio heuristic only for float variables
-                    (variable-nonfloat? x) 
+                    ;; Apply the shrink ratio heuristic only when the range is below 1.
+                    (>= (- (variable-upper-bound x) (variable-lower-bound x)) 1)
                     (>= (/ (- (variable-upper-bound x) upper-bound)
                            (- (variable-upper-bound x) (variable-lower-bound x)))
                     *minimum-shrink-ratio*))
@@ -5456,16 +5635,20 @@ Otherwise returns the value of X."
                                 (variable-upper-bound x)))))
                         ((and (variable-ratio? x)
                               (variable-max-denom x))
-                        (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
-                                  (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x)))       
+                        (when (<= (estimate-farey-domain-size (variable-max-denom x)
+                                                      (variable-lower-bound x)
+                                                      (variable-upper-bound x))
+                                  *maximum-discretization-range*)
                           (set-enumerated-domain!
                             x (ratios-between (variable-lower-bound x)
                                               (variable-upper-bound x)
                                               (variable-max-denom x)))))
                       ((and (variable-rational? x)
                             (variable-max-denom x))
-                        (when (<= (- (variable-upper-bound x) (variable-lower-bound x))
-                                  (safest-farey-range-size *maximum-discretization-range* (variable-max-denom x)))      
+                        (when (<= (estimate-farey-domain-size (variable-max-denom x)
+                                                      (variable-lower-bound x)
+                                                      (variable-upper-bound x))
+                                  *maximum-discretization-range*)
                           (set-enumerated-domain!
                           x (rationals-between (variable-lower-bound x)
                                                (variable-upper-bound x)
@@ -5478,8 +5661,10 @@ Otherwise returns the value of X."
                                 *maximum-discretization-range*
                                 (rationalp (variable-lower-bound x))
                                 (rationalp (variable-upper-bound x))
-                                (<= (- (variable-upper-bound x) (variable-lower-bound x))
-                                    (safest-farey-range-size *maximum-discretization-range* *max-denom*)))
+                                (<= (estimate-farey-domain-size *max-denom*
+                                                        (variable-lower-bound x)
+                                                        (variable-upper-bound x))
+                                    *maximum-discretization-range*))
                            (set-enumerated-domain!
                              x (rationals-between (variable-lower-bound x)
                                                   (variable-upper-bound x)
@@ -5704,16 +5889,18 @@ Otherwise returns the value of X."
               upper-bound
               (variable-ratio? y)
               (and (variable-max-denom y)
-                   (<= (- upper-bound lower-bound)
-                       (safest-farey-range-size *maximum-discretization-range* (variable-max-denom y)))))
+                   (<= (estimate-farey-domain-size (variable-max-denom y)
+                                                   lower-bound upper-bound)
+                       *maximum-discretization-range*)))
             (set-enumerated-domain!
             y (ratios-between lower-bound upper-bound (variable-max-denom y))))
             ((and lower-bound
               upper-bound
               (variable-rational? y)
               (and (variable-max-denom y)
-                   (<= (- upper-bound lower-bound)
-                       (safest-farey-range-size *maximum-discretization-range* (variable-max-denom y)))))
+                   (<= (estimate-farey-domain-size (variable-max-denom y)
+                                                   lower-bound upper-bound)
+                       *maximum-discretization-range*)))
             (set-enumerated-domain!
             y (rationals-between lower-bound upper-bound (variable-max-denom y)))))
             ;; The case where Y has a enumerated-domain
@@ -9736,37 +9923,44 @@ domain size is odd, the halves differ in size by at most one."
               ((and (variable-ratio? variable)
                     (variable-max-denom variable))
                (let* ((midpoint (/ (+ (variable-lower-bound variable)
-                                 (variable-upper-bound variable))
-                              2)))
+                                      (variable-upper-bound variable))
+                                    2))
+                      (max-denom (variable-max-denom variable)))
                  (either
                   (let ((old-bound (variable-upper-bound variable)))
-                    (restrict-upper-bound! variable
-                      (closest-ratio-upper midpoint (variable-max-denom variable)))
+                    (restrict-upper-bound! variable midpoint)
                     (if (= old-bound (variable-upper-bound variable))
                         (fail)))
                   (let ((old-bound (variable-lower-bound variable)))
-                    (restrict-lower-bound! variable
-                     (closest-ratio-lower midpoint (variable-max-denom variable)))
+                    (restrict-lower-bound!
+                     variable
+                     (if (and (ratiop midpoint)
+                              (<= (denominator midpoint) max-denom))
+                         (farey-next-value midpoint max-denom)
+                         midpoint))
                     (if (= old-bound (variable-lower-bound variable))
                         (fail))))))    
                 ((and (variable-rational? variable)
                       (variable-max-denom variable))
                   (let* ((midpoint (/ (+ (variable-lower-bound variable)
-                                    (variable-upper-bound variable))
-                                    2)))
-                    (either
-                      (let ((old-bound (variable-upper-bound variable)))
-                        (if (integerp midpoint)
-                            (restrict-upper-bound! variable midpoint)
-                            (restrict-upper-bound! variable (closest-ratio-upper midpoint (variable-max-denom variable))))
-                        (if (= old-bound (variable-upper-bound variable))
-                            (fail)))
-                      (let ((old-bound (variable-lower-bound variable)))
-                        (if (integerp midpoint)
-                            (restrict-lower-bound! variable (+ (/ 1 (variable-max-denom variable)) midpoint))
-                            (restrict-lower-bound! variable (closest-rational-lower midpoint (variable-max-denom variable))))
-                        (if (= old-bound (variable-lower-bound variable))
-                            (fail))))))
+                                         (variable-upper-bound variable))
+                                       2))
+                         (max-denom (variable-max-denom variable)))
+                    (multiple-value-bind (lower upper)
+                        (closest-rational-bounds midpoint max-denom)
+                      (either
+                        (let ((old-bound (variable-upper-bound variable)))
+                          (restrict-upper-bound! variable lower)
+                          (if (= old-bound (variable-upper-bound variable))
+                              (fail)))
+                        (let ((old-bound (variable-lower-bound variable)))
+                          (restrict-lower-bound!
+                           variable
+                           (if (= upper midpoint)
+                               (farey-next-value upper max-denom)
+                               upper))
+                          (if (= old-bound (variable-lower-bound variable))
+                              (fail)))))))
                (t (let ((midpoint (/ (+ (variable-lower-bound variable)
                                      (variable-upper-bound variable))
                                   2)))
@@ -9786,15 +9980,6 @@ domain size is odd, the halves differ in size by at most one."
 ;;;       KNOWN?-CONSTRAINT to avoid a forward reference to a nondeterministic
 ;;;       function.
 
-(defun estimate-farey-domain-size (max-denom lower-bound upper-bound)
-  "Estimate the number of Farey rationals in [lower-bound, upper-bound] with denominator <= max-denom."
-  (declare (type integer max-denom)
-           (type number lower-bound upper-bound))
-  (cond ((= lower-bound upper-bound) 1)
-        (t (let* ((interval (- upper-bound lower-bound))
-                  (farey-count (/ (* 3 (expt max-denom 2)) (expt pi 2))))
-            (round (* farey-count interval))))))
- 
 (defun domain-size (x)
   "Returns the domain size of X.
 
